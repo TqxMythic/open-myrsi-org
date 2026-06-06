@@ -85,9 +85,9 @@ const UnitModal: React.FC<UnitModalProps> = ({ isOpen, onClose, unit }) => {
 
         try {
             if (isEditing && unit) {
-                // IMPORTANT: Do NOT spread ...unit here. The unit object from the tree view contains
-                // a recursive 'children' array which can be massive. Passing it to the RPC causes
-                // payload bloat and circular reference errors. Only pass the ID and the new data.
+                // Do NOT spread ...unit here. The unit from the tree view carries a
+                // recursive 'children' array; passing it to the RPC causes payload
+                // bloat and circular-reference errors. Only pass the ID and new data.
                 await updateUnit({ id: unit.id, ...unitData });
                 addToast("Unit Updated", <i className="fa-solid fa-check"></i>, "bg-green-500/10 text-green-400 border-green-500/50", { description: "Unit details have been saved successfully." });
             } else {

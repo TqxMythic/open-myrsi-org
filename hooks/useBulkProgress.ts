@@ -41,13 +41,7 @@ const DEFAULT_OPTIONS: Required<Options> = {
  * sequentially. Each chunk's response is merged into a running aggregate.
  * Cancellation stops scheduling further chunks but doesn't roll back
  * already-committed ones (server-side writes have happened) — the final
- * aggregate is honest about what actually got applied.
- *
- * Designed to be hosted by a parent modal that:
- *   1. Calls run(ids, dispatch) on Confirm.
- *   2. Renders <BulkProgressDisplay> while state === 'running'.
- *   3. On state === 'done' | 'cancelled', shows a summary toast and closes.
- *   4. On state === 'error', leaves the modal open with an inline error.
+ * aggregate reflects what actually got applied.
  */
 export function useBulkProgress<T = number>(options: Options = {}): UseBulkProgressReturn<T> {
     const { chunkSize, interChunkDelayMs } = { ...DEFAULT_OPTIONS, ...options };

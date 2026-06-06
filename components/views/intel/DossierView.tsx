@@ -70,10 +70,8 @@ const DossierView: React.FC<DossierViewProps> = ({
     const { confirm: uiConfirm, addToast } = useNotification();
     const { openWindow } = useModalRegistry();
 
-    // Memoise the conditional `? : []` derivations so the empty-array branch
-    // doesn't allocate a fresh array every render — keeps downstream memo deps
-    // (isOrg, maxThreatLevel, activeWarrants) stable so they only recompute
-    // when the underlying dossier slice actually changes.
+    // Memoise the `? : []` derivations so the empty-array branch keeps a stable reference,
+    // letting downstream memos recompute only when the dossier slice actually changes.
     const reports: HydratedIntelligenceReport[] = useMemo(
         () => Array.isArray(dossier?.reports) ? dossier.reports : [],
         [dossier?.reports],
@@ -237,7 +235,6 @@ const DossierView: React.FC<DossierViewProps> = ({
 
     return (
         <div className="h-full flex flex-col overflow-y-auto custom-scrollbar animate-fade-in bg-slate-950">
-            {/* === HERO HEADER === */}
             <header className={`shrink-0 relative overflow-hidden border-b border-white/5 ${threatA.heroGrad}`}>
                 <div className={`absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[400px] ${threatA.heroOrb} rounded-full blur-[120px] pointer-events-none`} aria-hidden />
 
@@ -301,7 +298,6 @@ const DossierView: React.FC<DossierViewProps> = ({
                 </div>
             </header>
 
-            {/* === BREADCRUMB === */}
             {breadcrumbStack.length > 0 && (
                 <nav className="shrink-0 sticky top-0 z-20 backdrop-blur-md bg-slate-950/80 border-b border-white/5">
                     <div className="max-w-7xl mx-auto w-full px-4 sm:px-8 py-2 flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-widest overflow-x-auto custom-scrollbar">
@@ -337,9 +333,7 @@ const DossierView: React.FC<DossierViewProps> = ({
                 </nav>
             )}
 
-            {/* === BODY === */}
             <div className={`max-w-7xl mx-auto w-full px-4 sm:px-8 flex flex-col gap-6 mt-6 pb-8 transition-opacity duration-200 ${isLoading ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
-                {/* === WARRANTS ALARM STRIP === */}
                 {!isOrg && activeWarrants.length > 0 && (
                     <button
                         onClick={() => setActiveTab('overview')}
@@ -360,7 +354,6 @@ const DossierView: React.FC<DossierViewProps> = ({
                     </button>
                 )}
 
-                {/* Stat Tiles */}
                 <div className={`grid gap-3 ${isOrg ? 'grid-cols-2' : 'grid-cols-3 md:grid-cols-5'}`}>
                     {statItems.map(stat => {
                         const a = ACCENTS[stat.accent];
@@ -378,7 +371,6 @@ const DossierView: React.FC<DossierViewProps> = ({
                     })}
                 </div>
 
-                {/* Tabs */}
                 <div className="flex gap-1 bg-slate-900/40 p-1 rounded-lg border border-white/10 w-fit overflow-x-auto custom-scrollbar max-w-full">
                     {tabs.map(tab => (
                         <button
@@ -393,7 +385,6 @@ const DossierView: React.FC<DossierViewProps> = ({
                     ))}
                 </div>
 
-                {/* === OVERVIEW TAB === */}
                 {activeTab === 'overview' && (
                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                         <div className="lg:col-span-2 space-y-6">
@@ -435,6 +426,10 @@ const DossierView: React.FC<DossierViewProps> = ({
                                                 </p>
                                             </div>
                                         </div>
+                                        {/* AI summary generation is gated server-side at intel:manage
+                                            (it writes the global per-target cache only managers can read).
+                                            Hide the trigger from non-managers so they don't get a button that 403s. */}
+                                        {hasPermission('intel:manage') && (
                                         <button
                                             onClick={handleGenerateSummary}
                                             disabled={!aiAvailable || isGeneratingSummary || isLocked}
@@ -453,6 +448,7 @@ const DossierView: React.FC<DossierViewProps> = ({
                                                 ? <i className="fa-solid fa-spinner animate-spin" aria-hidden />
                                                 : !aiAvailable ? 'Unavailable' : isLocked ? 'Locked' : humanisedError ? 'Retry' : 'Generate'}
                                         </button>
+                                        )}
                                     </div>
 
                                     <div className="p-5 relative">
@@ -564,7 +560,6 @@ const DossierView: React.FC<DossierViewProps> = ({
                             )}
                         </div>
 
-                        {/* Sidebar */}
                         <div className="space-y-6">
                             {!isOrg && (
                                 <div className="rounded-xl border border-white/10 bg-slate-900/40 overflow-hidden">
@@ -645,7 +640,6 @@ const DossierView: React.FC<DossierViewProps> = ({
                     </div>
                 )}
 
-                {/* === REPORTS TAB === */}
                 {activeTab === 'reports' && (
                     <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 pb-8">
                         {reports.map((report, idx) => (
@@ -669,7 +663,6 @@ const DossierView: React.FC<DossierViewProps> = ({
                     </div>
                 )}
 
-                {/* === AFFILIATIONS TAB === */}
                 {activeTab === 'affiliations' && (
                     <div className="pb-8">
                         {affiliates.length > 0 ? (

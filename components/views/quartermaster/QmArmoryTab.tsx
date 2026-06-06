@@ -31,14 +31,12 @@ export default function QmArmoryTab({ locations, canManage, canRequest, onIssue,
     const { rpcAction } = useData();
     const { addToast } = useNotification();
 
-    // Filter / pagination state
     const [categoryFilter, setCategoryFilter] = useState<'all' | QmCatalogCategory>('all');
     const [locationFilter, setLocationFilter] = useState<'all' | number>('all');
     const [search, setSearch] = useState('');
     const [page, setPage] = useState(0);
     const debouncedSearch = useDebouncedValue(search.trim(), 300);
 
-    // Data
     const [items, setItems] = useState<QmInventoryItem[]>([]);
     const [totalCount, setTotalCount] = useState(0);
     const [loading, setLoading] = useState(true);
@@ -141,7 +139,6 @@ export default function QmArmoryTab({ locations, canManage, canRequest, onIssue,
 
     return (
         <div className="space-y-4">
-            {/* Filter strip */}
             <div className="flex flex-wrap items-center gap-2">
                 <div className="flex items-center gap-1 bg-slate-900 rounded-lg border border-white/10 p-1 overflow-x-auto custom-scrollbar max-w-full">
                     {(['all', 'weapon', 'armor', 'component', 'consumable', 'misc'] as const).map((cat) => (
@@ -192,7 +189,6 @@ export default function QmArmoryTab({ locations, canManage, canRequest, onIssue,
                 )}
             </div>
 
-            {/* Inventory grid */}
             {loading && !hasLoadedOnce ? (
                 <SkeletonCardGrid count={9} accent="orange" />
             ) : visible.length === 0 ? (
@@ -282,7 +278,6 @@ export default function QmArmoryTab({ locations, canManage, canRequest, onIssue,
                 </div>
             )}
 
-            {/* Pagination */}
             {totalCount > PAGE_SIZE && (
                 <div className="flex justify-end items-center gap-2 text-xs text-slate-400">
                     <button onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0}

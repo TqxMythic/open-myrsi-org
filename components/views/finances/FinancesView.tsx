@@ -85,23 +85,14 @@ export default function FinancesView() {
         }
     }, [rpcAction, canView]);
 
-    // Listen for broadcast events on the org's realtime channel. The db layer
-    // fires `finances:*` broadcasts on every mutation; subscribing here keeps
-    // the UI live without relying on postgres_changes (which would need RLS
-    // policies wide open for authenticated users).
-    //
-    // Row-slice path: ledger emits carry entryId/entryIds and account emits
-    // carry accountId, so instead of the previous blanket refresh() (3 RPCs:
-    // overview + all accounts + 200 embedded ledger rows) we fetch ONLY the
-    // changed row(s) via finance:get_entry / finance:get_account and splice
-    // them in, plus the overview aggregate. null = row gone → removed.
-    // Id-less payloads and slice-fetch errors fall back to the full refresh.
-    //
-    // ACCEPTED RACE (no generation guard here, unlike DataContext): a local
-    // mutation's own refresh() can resolve after the broadcast splice and
-    // briefly re-apply the pre-splice list. Both read the same primary and
-    // every subsequent broadcast self-heals, so the stale window is small —
-    // deliberately not worth a per-view guard.
+    // Listen for `finances:*` broadcasts fired by the db layer on every mutation;
+    // keeps the UI live without postgres_changes (which would need RLS open to all
+    // authenticated users). When an emit carries entryId(s)/accountId we fetch and
+    // splice ONLY the changed row(s) plus the overview aggregate (null = row gone →
+    // removed); id-less payloads and slice-fetch errors fall back to a full refresh.
+    // Accepted race (no generation guard here): a local mutation's own refresh() can
+    // resolve after the splice and briefly re-apply the old list; self-heals on the
+    // next broadcast.
     useEffect(() => {
         const onLedgerUpdate = async (payload: { payload?: { entryId?: string; entryIds?: string[] } }) => {
             const p = payload.payload ?? {};
@@ -138,15 +129,15 @@ export default function FinancesView() {
                 void refresh();
             }
         };
-        // SECURITY: don't wire handlers when the viewer can't read finances —
-        // the locked view otherwise fires a denied RPC on every org mutation.
+        // Don't wire handlers when the viewer can't read finances — the locked
+        // view otherwise fires a denied RPC on every org mutation.
         if (!canView) return;
         // The finances:* broadcasts arrive via DataCore's single PRIVATE
-        // 'db-changes' channel and are relayed as window CustomEvents (the
-        // handler attachment is finance:view-gated there). NEVER subscribe to
-        // the 'db-changes' topic from a view: supabase-js dedupes channels by
-        // topic, so a view-owned channel object IS DataCore's channel and
-        // removeChannel() on unmount would kill all org realtime app-wide.
+        // 'db-changes' channel and are relayed as window CustomEvents (handler
+        // attachment is finance:view-gated there). Never subscribe to the
+        // 'db-changes' topic from a view: supabase-js dedupes channels by topic,
+        // so a view-owned channel object IS DataCore's channel and removeChannel()
+        // on unmount would kill all org realtime app-wide.
         const ledger = (e: Event) => { void onLedgerUpdate({ payload: (e as CustomEvent).detail }); };
         const account = (e: Event) => { void onAccountUpdate({ payload: (e as CustomEvent).detail }); };
         const reset = () => { void refresh(); }; // post-admin-reset: module is empty — full refresh
@@ -229,7 +220,6 @@ export default function FinancesView() {
                 }) : undefined}
             />
 
-            {/* Body */}
             <div className="flex-1 overflow-y-auto">
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
                 {isLoading && (
@@ -292,7 +282,6 @@ export default function FinancesView() {
                 </div>
             </div>
 
-            {/* Modals */}
             {depositOpen && (
                 <SubmitDepositModal
                     accounts={accounts.filter((a) => a.isActive)}

@@ -179,19 +179,13 @@ export default function QuartermasterView() {
         }
     }, [tab, canView, refreshIssuances, refreshMemberRecords]);
 
-    // Live updates: surgical broadcast routing — only refresh the slice(s)
-    // the event actually changed, and where the emit carries the row id(s),
-    // fetch ONLY those rows (qm:get_catalog_item / qm:get_location /
-    // qm:get_issuance) and splice them into local state instead of
-    // re-listing. null = row gone → removed. Id-less payloads and slice-fetch
-    // errors fall back to the per-slice list refresh. Aggregates (overview /
-    // low stock / member records) are recompute-only and stay refetches; the
-    // armory inventory is a paginated self-fetch inside QmArmoryTab and stays
-    // on the bounded refresh-key bump.
-    //
-    // ACCEPTED RACE (no generation guard here, unlike DataContext): a local
-    // mutation's own list refresh can resolve after the broadcast splice and
-    // briefly re-apply the pre-splice list; self-heals on the next broadcast.
+    // Live updates: refresh only the slice(s) an event changed; when the emit
+    // carries row id(s), fetch ONLY those rows and splice them into local state
+    // (null = row gone → removed). Id-less payloads or slice-fetch errors fall
+    // back to the per-slice list refresh; aggregates stay full refetches.
+    // Accepted race (no generation guard here): a local mutation's own list
+    // refresh can resolve after the splice and briefly re-apply the old list;
+    // self-heals on the next broadcast.
     useEffect(() => {
         const onCatalogUpdate = async (payload: { payload?: { catalogId?: number; bulk?: boolean } }) => {
             const catalogId = payload.payload?.catalogId;
@@ -244,15 +238,15 @@ export default function QuartermasterView() {
             void refreshOverview();
             void refreshLowStock();
         };
-        // SECURITY: don't wire handlers when the viewer can't read QM — the
-        // locked view otherwise fires a denied RPC on every org mutation.
+        // Don't wire handlers when the viewer can't read QM — the locked view
+        // otherwise fires a denied RPC on every org mutation.
         if (!canView) return;
-        // The qm:* broadcasts arrive via DataCore's single PRIVATE
-        // 'db-changes' channel and are relayed as window CustomEvents (the
-        // handler attachment is qm:view-gated there). NEVER subscribe to the
-        // 'db-changes' topic from a view: supabase-js dedupes channels by
-        // topic, so a view-owned channel object IS DataCore's channel and
-        // removeChannel() on unmount would kill all org realtime app-wide.
+        // The qm:* broadcasts arrive via DataCore's single PRIVATE 'db-changes'
+        // channel and are relayed as window CustomEvents (handler attachment is
+        // qm:view-gated there). Never subscribe to the 'db-changes' topic from a
+        // view: supabase-js dedupes channels by topic, so a view-owned channel
+        // object IS DataCore's channel and removeChannel() on unmount would kill
+        // all org realtime app-wide.
         const catalog = (e: Event) => { void onCatalogUpdate({ payload: (e as CustomEvent).detail }); };
         const location = (e: Event) => { void onLocationUpdate({ payload: (e as CustomEvent).detail }); };
         const inventory = () => {
@@ -331,7 +325,6 @@ export default function QuartermasterView() {
                 }) : undefined}
             />
 
-            {/* Body */}
             <div className="flex-1 overflow-y-auto">
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
                 {isLoading && (
@@ -437,7 +430,6 @@ export default function QuartermasterView() {
                 </div>
             </div>
 
-            {/* Modals */}
             {createInventoryOpen && (
                 <CreateInventoryModal
                     hasOrgCatalogItems={catalog.length > 0}

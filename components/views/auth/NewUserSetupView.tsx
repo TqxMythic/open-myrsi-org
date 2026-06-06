@@ -53,18 +53,15 @@ const NewUserSetupView: React.FC<NewUserSetupViewProps> = ({ pendingUser, onSetu
 
     return (
         <div className="flex flex-col items-center justify-center min-h-screen bg-slate-950 p-6 relative overflow-hidden font-sans">
-            {/* Immersive Background Effects */}
             <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(14,165,233,0.1)_0%,transparent_70%)] pointer-events-none"></div>
             <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-size-[40px_40px] pointer-events-none"></div>
 
             <div className="w-full max-w-lg relative z-10 animate-fade-in-up space-y-6">
 
-                {/* Identity Card */}
                 <div className="bg-slate-900/60 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl overflow-hidden relative">
                     <div className="absolute top-0 left-0 w-full h-1 bg-linear-to-r from-sky-600 via-indigo-500 to-sky-600"></div>
 
                     <div className="p-8 md:p-10 text-center">
-                        {/* Logo/Icon Area */}
                         <div className="w-16 h-16 bg-sky-500/10 rounded-2xl flex items-center justify-center mx-auto mb-6 border border-sky-500/20 shadow-[0_0_30px_rgba(14,165,233,0.2)]">
                             <img src={brandingConfig.iconUrl} alt="Logo" className="w-10 h-10 drop-shadow-md" />
                         </div>
@@ -157,7 +154,6 @@ const NewUserSetupView: React.FC<NewUserSetupViewProps> = ({ pendingUser, onSetu
                         )}
                     </div>
 
-                    {/* Footer Status */}
                     <div className="bg-black/20 p-4 border-t border-white/5 flex justify-between items-center text-[10px] text-slate-600 font-mono uppercase tracking-wider">
                         <span className="flex items-center gap-1.5"><div className="w-1.5 h-1.5 rounded-full bg-sky-500 animate-pulse"></div> Secure Enrollment</span>
                         <span>NODE_VERIFY_v2.1</span>

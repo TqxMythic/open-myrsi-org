@@ -18,12 +18,11 @@ const SyncUsersModal: React.FC<SyncUsersModalProps> = ({ isOpen, onClose }) => {
     const [currentIndex, setCurrentIndex] = useState(0);
     const [completedCount, setCompletedCount] = useState(0);
 
-    // FIX: Maintain a snapshot of the users to sync. 
-    // This prevents the array from re-ordering/shifting under our feet when 
-    // the realtime updates come in (which causes users to be skipped).
+    // Snapshot of the users to sync, so realtime updates can't re-order/shift
+    // the array mid-run and cause users to be skipped.
     const [snapshot, setSnapshot] = useState<User[]>([]);
 
-    // To prevent rapid-fire effect triggers, we use a ref to track if a sync step is currently executing
+    // Ref tracking whether a sync step is currently executing, to block rapid-fire effect triggers.
     const isProcessingRef = useRef(false);
     const logContainerRef = useRef<HTMLDivElement>(null);
 

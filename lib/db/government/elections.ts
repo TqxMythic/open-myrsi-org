@@ -220,6 +220,19 @@ export async function declareCandidacy(electionId: number, userId: number, state
         .select('status').eq('id', electionId).single();
     if (!election || election.status !== 'Candidacy') throw new Error('Election is not in candidacy phase');
 
+    // Duplicate-candidacy guard: the table has no (election_id,user_id) uniqueness
+    // today, so a user could self-declare N times — each row is counted toward
+    // `min_candidates` in advanceElection and seeds a distinct votable candidate
+    // id. Pre-check for an existing ACTIVE (not withdrawn) candidacy and reject.
+    // Once the partial UNIQUE(election_id,user_id) WHERE withdrawn_at IS NULL index
+    // lands, a concurrent double-declare races to a 23505 we treat the same way.
+    const { count: existing } = await supabase.from('government_election_candidates')
+        .select('id', { count: 'exact', head: true })
+        .eq('election_id', electionId)
+        .eq('user_id', userId)
+        .is('withdrawn_at', null);
+    if (existing && existing > 0) throw new Error('You have already declared candidacy in this election');
+
     const { data: result, error } = await supabase.from('government_election_candidates')
         .insert({
             election_id: electionId,
@@ -228,6 +241,11 @@ export async function declareCandidacy(electionId: number, userId: number, state
         })
         .select()
         .single();
+    // 23505 = unique_violation: the atomic guard once the partial UNIQUE index
+    // exists. Map it to the same user-facing rejection (fail closed).
+    if (error && (error as { code?: string }).code === '23505') {
+        throw new Error('You have already declared candidacy in this election');
+    }
     handleSupabaseError({ error, message: 'Failed to declare candidacy' });
     broadcastGovernmentUpdate('elections');
     return result ? toGovernmentElectionCandidate(result) : null;
@@ -248,16 +266,89 @@ export async function withdrawCandidacy(electionId: number, userId: number) {
 // Voting (secret ballot)
 // ---------------------------------------------------------------------------
 
+// Hard ceiling on the size of a single ballot payload. No real ballot
+// ranks/approves more than a few dozen candidates, so anything larger is abusive.
+// Applied BEFORE any DB work so an oversized array never reaches the insert.
+const MAX_BALLOT_SELECTIONS = 64;
+
 export async function castElectionVote(
     electionId: number,
     userId: number,
     selections: { candidateId: number; rankOrder?: number }[]
 ) {
+    if (!Array.isArray(selections) || selections.length === 0) {
+        throw new Error('No selections provided');
+    }
+    // Reject oversized arrays outright rather than truncating — a ballot this
+    // large is never legitimate and truncation could silently drop a voter's real
+    // choices.
+    if (selections.length > MAX_BALLOT_SELECTIONS) {
+        throw new Error('Too many selections');
+    }
+
     // Verify election is in Voting phase
     const { data: election } = await supabase.from('government_elections')
-        .select('status, election_type')
+        .select('status, election_type, max_winners')
         .eq('id', electionId).single();
     if (!election || election.status !== 'Voting') throw new Error('Election is not in voting phase');
+
+    const elType = election.election_type as ElectionType;
+
+    // Dedup to AT MOST ONE row per candidate per voter (ballot-stuffing guard):
+    // tallySimpleMajority/Plurality/Approval/Proportional each count +1 PER ROW,
+    // so N rows for the same candidate = N votes from one ballot. Keep the first
+    // occurrence of each candidate id (preserving the order the voter supplied,
+    // which carries rank intent for preferential ballots).
+    const seenCandidates = new Set<number>();
+    const dedupedSelections: { candidateId: number; rankOrder?: number }[] = [];
+    for (const s of selections) {
+        if (typeof s?.candidateId !== 'number' || !Number.isInteger(s.candidateId)) continue;
+        if (seenCandidates.has(s.candidateId)) continue;
+        seenCandidates.add(s.candidateId);
+        dedupedSelections.push(s);
+    }
+    if (dedupedSelections.length === 0) throw new Error('No valid selections provided');
+
+    // Respect the election's selection-count semantics:
+    //  - SimpleMajority / Plurality / ProportionalRepresentation: a single choice
+    //    per voter — keep only the first distinct candidate.
+    //  - Approval: a voter may approve up to max_winners distinct candidates.
+    //  - Preferential: a ranked ballot — one row per distinct candidate (already
+    //    deduped above); rank ordering preserved.
+    const maxWinners = Math.max(1, election.max_winners ?? 1);
+    let scopedSelections: { candidateId: number; rankOrder?: number }[];
+    if (elType === ElectionType.Approval) {
+        scopedSelections = dedupedSelections.slice(0, maxWinners);
+    } else if (elType === ElectionType.Preferential) {
+        scopedSelections = dedupedSelections;
+    } else {
+        // Single-choice methods: exactly one vote row.
+        scopedSelections = dedupedSelections.slice(0, 1);
+    }
+
+    // Foreign-candidate scope check: selections[].candidateId only has a
+    // single-column FK to government_election_candidates, NOT bound to THIS
+    // election. Fetch the supplied candidate rows and reject if any belongs to a
+    // different election (fail closed) — otherwise a voter could cast a row for a
+    // candidate in election B while voting in A, polluting B's tally and getting
+    // that user wrongly auto-appointed to A's position at conclude.
+    const candidateIds = scopedSelections.map(s => s.candidateId);
+    const { data: candidateRows, error: candFetchErr } = await supabase
+        .from('government_election_candidates')
+        .select('id, election_id, withdrawn_at')
+        .in('id', candidateIds);
+    handleSupabaseError({ error: candFetchErr, message: 'Failed to validate candidates' });
+    const validById = new Map<number, { election_id: number; withdrawn_at: string | null }>(
+        (candidateRows || []).map((c: { id: number; election_id: number; withdrawn_at: string | null }) =>
+            [c.id, { election_id: c.election_id, withdrawn_at: c.withdrawn_at }])
+    );
+    for (const cid of candidateIds) {
+        const row = validById.get(cid);
+        if (!row || row.election_id !== electionId) {
+            throw new Error('Invalid candidate selection');
+        }
+        if (row.withdrawn_at) throw new Error('Cannot vote for a withdrawn candidate');
+    }
 
     // Check if already voted (registry check — the DB constraint is the real guard)
     const { count: alreadyVoted } = await supabase.from('government_election_voter_registry')
@@ -277,7 +368,8 @@ export async function castElectionVote(
     const voterHash = computeVoterHash(electionId, userId);
 
     // Insert ballots (reached only after participation is uniquely recorded above).
-    const voteRows = selections.map(s => ({
+    // At most one row per candidate (deduped + scoped above).
+    const voteRows = scopedSelections.map(s => ({
         election_id: electionId,
         voter_hash: voterHash,
         candidate_id: s.candidateId,
@@ -285,6 +377,12 @@ export async function castElectionVote(
     }));
 
     const { error: voteError } = await supabase.from('government_election_votes').insert(voteRows);
+    // 23505 = unique_violation: once the schema's UNIQUE(election_id,
+    // candidate_id, voter_hash) index lands it is the atomic per-candidate guard
+    // (defends against a concurrent double-cast slipping past the registry race).
+    if (voteError && (voteError as { code?: string }).code === '23505') {
+        throw new Error('Duplicate vote detected');
+    }
     handleSupabaseError({ error: voteError, message: 'Failed to cast vote' });
 
     broadcastGovernmentUpdate('elections');
@@ -398,10 +496,14 @@ export async function concludeElection(electionId: number) {
     // Auto-appoint winners to positions
     if (result.isConclusive && status === 'Concluded') {
         for (const winner of result.winners) {
-            // Get candidate's user_id
+            // Get candidate's user_id + election scope. Defense-in-depth:
+            // re-validate that the winning candidate row belongs to THIS election
+            // before appointing — a foreign candidate_id that polluted the tally
+            // (despite the castElectionVote scope check) must never be appointed
+            // to a position they never ran for.
             const { data: candidate } = await supabase.from('government_election_candidates')
-                .select('user_id').eq('id', winner.candidateId).single();
-            if (candidate) {
+                .select('user_id, election_id').eq('id', winner.candidateId).single();
+            if (candidate && candidate.election_id === electionId) {
                 try {
                     await appointPositionHolder({
                         positionId: election.position_id,

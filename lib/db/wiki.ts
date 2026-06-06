@@ -7,6 +7,7 @@ import { toWikiPage } from './mappers.js';
 import { stripHtmlSingleLine } from '../textSanitize.js';
 import { sanitizeTiptapJson } from '../tiptapValidate.js';
 import { updateWikiHomeConfig } from './system.js';
+import { assertCanClassify, passesClearance, type ClearanceUser } from '../clearance.js';
 import { log as baseLog } from '../log.js';
 
 const log = baseLog.child({ module: 'db.wiki' });
@@ -25,7 +26,7 @@ interface WikiPagePayload {
 /** Page CRUD carries the pageId so clients refetch ONE clearance-checked page
  *  (wiki_page_slice) instead of the whole body-bearing page list. Multi-row
  *  mutations (reorder/import) emit no id — clients fall back to the full
- *  refetch. Id-only payloads — the db-changes channel is anon-readable (H4). */
+ *  refetch. Id-only payloads, since the db-changes channel is anon-readable. */
 function broadcastWikiUpdate(pageId?: string) {
     broadcastToOrg('wiki_update', pageId ? { pageId } : {});
 }
@@ -57,9 +58,9 @@ export async function getWikiPages(): Promise<WikiPage[]> {
  * Single-page fetch in the list row shape. Backs the realtime
  * `wiki_page_slice` query subset — the caller (api/query.ts) re-applies the
  * SAME filterByClearance gate as the bulk wiki path before the page leaves
- * the server (H3). Returns null when absent (deleted → client removes the
- * row). THROWS on query errors (no safeFetch fallback) so a transient DB
- * blip can never masquerade as "page deleted".
+ * the server. Returns null when absent (deleted → client removes the row).
+ * THROWS on query errors (no safeFetch fallback) so a transient DB blip can
+ * never masquerade as "page deleted".
  */
 export async function getWikiPageById(pageId: string): Promise<WikiPage | null> {
     const { data, error } = await supabase.from('wiki_pages')
@@ -75,7 +76,11 @@ export async function getWikiPageById(pageId: string): Promise<WikiPage | null> 
     return data ? toWikiPage(data as Parameters<typeof toWikiPage>[0]) : null;
 }
 
-export async function createWikiPage(payload: WikiPagePayload, userId: number): Promise<WikiPage> {
+export async function createWikiPage(payload: WikiPagePayload, userId: number, actor?: ClearanceUser | null): Promise<WikiPage> {
+    // The author may not label a page above their own clearance or apply a marker
+    // they don't hold. Wiki has no clearance-bypass permission (read side filters
+    // with Admin-only bypass), so only Admins classify freely.
+    assertCanClassify(actor, payload.classificationLevel ?? 0, payload.markerIds);
     // Title is rendered in breadcrumbs/page tree as plain text. Sanitize as
     // defence-in-depth and to cap length before slug generation.
     const safeTitle = stripHtmlSingleLine(payload.title, 200);
@@ -104,10 +109,9 @@ export async function createWikiPage(payload: WikiPagePayload, userId: number): 
 
     const nextOrder = (siblings && siblings.length > 0) ? (siblings[0].sort_order + 1) : 0;
 
-    // #14: validate Tiptap JSON before insert. Drops disallowed nodes/marks
-    // and rejects javascript:/data: URLs in links/images. Defense in depth —
-    // the wiki render path doesn't use dangerouslySetInnerHTML today, but
-    // this closes the latent gap and matches the public-blurb safety story.
+    // Validate Tiptap JSON before insert. Drops disallowed nodes/marks and
+    // rejects javascript:/data: URLs in links/images. Defense in depth — the wiki
+    // render path doesn't use dangerouslySetInnerHTML today.
     const safeContent = payload.content
         ? sanitizeTiptapJson(payload.content, 'wiki')
         : { type: 'doc', content: [] };
@@ -135,7 +139,31 @@ export async function createWikiPage(payload: WikiPagePayload, userId: number): 
     return toWikiPage(page);
 }
 
-export async function updateWikiPage(id: string, payload: WikiPagePayload, userId: number) {
+export async function updateWikiPage(id: string, payload: WikiPagePayload, userId: number, actor?: ClearanceUser | null) {
+    // The editor must be cleared to SEE a page before mutating ANY of its fields.
+    // Otherwise a clearance-0 holder of wiki:edit_page who learns a classified
+    // page's id could overwrite/vandalize its body + title or relabel it — the
+    // dispatcher gate is only the edit permission, with no per-page clearance.
+    // Fetch the LIVE classification + markers once and require visibility; Admins
+    // bypass (canViewAllClassifications).
+    const { data: live } = await supabase.from('wiki_pages')
+        .select('classification_level, wiki_page_limiting_markers(marker:security_limiting_markers(id, name, code))')
+        .eq('id', id)
+        .maybeSingle();
+    if (live) {
+        const liveMarkers = ((live as { wiki_page_limiting_markers?: { marker?: unknown }[] }).wiki_page_limiting_markers || [])
+            .map((m) => m.marker).filter(Boolean);
+        if (!passesClearance(actor, live.classification_level ?? 0, liveMarkers)) {
+            throw new Error('You are not cleared to edit this page.');
+        }
+    }
+    // Changing the classification additionally requires the NEW label to be at
+    // or below the author's clearance and to use only markers they hold
+    // (mislabel-UP guard). Falls back to the live level for marker-only edits.
+    if (payload.classificationLevel !== undefined || payload.markerIds !== undefined) {
+        assertCanClassify(actor, payload.classificationLevel ?? live?.classification_level ?? 0, payload.markerIds);
+    }
+
     const updates: Partial<Tables<'wiki_pages'>> = {
         updated_by_id: userId,
         updated_at: new Date().toISOString()
@@ -151,11 +179,11 @@ export async function updateWikiPage(id: string, payload: WikiPagePayload, userI
     if (payload.classificationLevel !== undefined) updates.classification_level = payload.classificationLevel;
     if (payload.menuStructureLocked !== undefined) updates.menu_structure_locked = !!payload.menuStructureLocked;
 
-    // #16: Block parent re-assignment when the page's menu position is locked.
-    // Sibling reordering (sort_order changes) goes through reorderWikiPages
-    // and is intentionally unaffected — the lock guards menu STRUCTURE only.
-    // Soft-fail on PG 42703 (column missing) so DBs that haven't run
-    // migrations/add-wiki-page-menu-lock.sql still allow parent moves.
+    // Block parent re-assignment when the page's menu position is locked. Sibling
+    // reordering (sort_order changes) goes through reorderWikiPages and is
+    // intentionally unaffected — the lock guards menu STRUCTURE only. Soft-fail on
+    // PG 42703 (column missing) so DBs that haven't run the lock migration still
+    // allow parent moves.
     if (payload.parentPageId !== undefined) {
         const newParent = payload.parentPageId || null;
         const { data: existing, error: lookupErr } = await supabase
@@ -296,6 +324,7 @@ export async function importWikiPages(
     mode: WikiImportMode,
     importHomeConfig: boolean,
     userId: number,
+    actor?: ClearanceUser | null,
 ): Promise<WikiImportResult> {
     if (!bundle || bundle.version !== 1 || !Array.isArray(bundle.pages)) {
         throw new Error('Invalid wiki export bundle');
@@ -304,36 +333,83 @@ export async function importWikiPages(
         throw new Error(`Invalid import mode: ${mode}`);
     }
 
+    // The wiki:import_pages gate is admin:access, which the non-Admin Dispatcher
+    // role ALSO holds — so import must apply the SAME clearance integrity controls
+    // as createWikiPage/updateWikiPage, or it becomes a clamp-bypassing
+    // alternative. Load existing pages WITH their live classification + markers
+    // (for the overwrite visibility guard) and the org's markers (to reproduce
+    // compartmentation by name — the bundle ships markerNames, not ids).
     const { data: existingRows } = await supabase
         .from('wiki_pages')
-        .select('id, slug')
-        ;
-    const slugToExistingId = new Map<string, string>();
+        .select('id, slug, classification_level, wiki_page_limiting_markers(marker:security_limiting_markers(id, name, code))');
+    interface ExistingPage { id: string; classificationLevel: number; markers: unknown[] }
+    const slugToExisting = new Map<string, ExistingPage>();
     const takenSlugs = new Set<string>();
-    for (const row of existingRows || []) {
-        slugToExistingId.set(row.slug, row.id);
+    for (const row of (existingRows || []) as Array<{ id: string; slug: string; classification_level: number | null; wiki_page_limiting_markers?: { marker?: unknown }[] }>) {
+        slugToExisting.set(row.slug, {
+            id: row.id,
+            classificationLevel: row.classification_level ?? 0,
+            markers: (row.wiki_page_limiting_markers || []).map((m) => m.marker).filter(Boolean),
+        });
         takenSlugs.add(row.slug);
     }
 
+    const { data: markerRows } = await supabase.from('security_limiting_markers').select('id, name');
+    const markerNameToId = new Map<string, number>();
+    for (const m of (markerRows || []) as { id: number; name: string }[]) markerNameToId.set(String(m.name), m.id);
+
+    // Resolve a page's markerNames → local marker ids. Unmatched names mean the
+    // compartmentation can't be faithfully reproduced — fail closed (throw), so
+    // import never silently WIDENS access by dropping a marker.
+    const resolveMarkerIds = (page: WikiExportPage): number[] => {
+        const names = Array.isArray(page.markerNames) ? page.markerNames : [];
+        const ids: number[] = [];
+        for (const name of names) {
+            const id = markerNameToId.get(String(name));
+            if (id == null) {
+                throw new Error(`Wiki import: page "${page.title}" references limiting marker "${name}" which does not exist in this organization. Create it (or remove it from the export) and retry.`);
+            }
+            ids.push(id);
+        }
+        return ids;
+    };
+
     type Plan =
-        | { kind: 'insert'; targetId: string; slug: string; source: WikiExportPage }
-        | { kind: 'update'; targetId: string; source: WikiExportPage }
+        | { kind: 'insert'; targetId: string; slug: string; source: WikiExportPage; markerIds: number[] }
+        | { kind: 'update'; targetId: string; source: WikiExportPage; markerIds: number[] }
         | { kind: 'skip'; targetId: string };
 
     const plans = new Map<string, Plan>();
     for (const page of bundle.pages) {
-        const existingId = slugToExistingId.get(page.slug);
-        if (mode === 'skip' && existingId) {
-            plans.set(page.id, { kind: 'skip', targetId: existingId });
-        } else if (mode === 'overwrite' && existingId) {
-            plans.set(page.id, { kind: 'update', targetId: existingId, source: page });
+        const existing = slugToExisting.get(page.slug);
+        if (mode === 'skip' && existing) {
+            plans.set(page.id, { kind: 'skip', targetId: existing.id });
+            continue;
+        }
+        // PRE-FLIGHT — validate BEFORE any write so the import is rejected
+        // atomically (no partial write) if any page violates the importer's
+        // clearance:
+        //  (a) resolve markers (throws on an unknown marker — fail closed),
+        //  (b) assertCanClassify: the actor may not label a page above their own
+        //      clearance or apply a marker they don't hold (Admin bypasses) —
+        //      mirrors createWikiPage, so import isn't a clamp bypass,
+        //  (c) for OVERWRITE: the actor must be cleared to SEE the live page
+        //      before replacing its body (mirrors updateWikiPage's guard) — else
+        //      a Dispatcher could destroy a classified page they can't read.
+        const markerIds = resolveMarkerIds(page);
+        assertCanClassify(actor, page.classificationLevel ?? 0, markerIds);
+        if (mode === 'overwrite' && existing) {
+            if (!passesClearance(actor, existing.classificationLevel, existing.markers)) {
+                throw new Error(`Wiki import: not cleared to overwrite the existing page "${page.slug}".`);
+            }
+            plans.set(page.id, { kind: 'update', targetId: existing.id, source: page, markerIds });
         } else if (mode === 'new') {
             const slug = uniqueSlug(page.slug, takenSlugs);
             takenSlugs.add(slug);
-            plans.set(page.id, { kind: 'insert', targetId: randomUUID(), slug, source: page });
+            plans.set(page.id, { kind: 'insert', targetId: randomUUID(), slug, source: page, markerIds });
         } else {
             takenSlugs.add(page.slug);
-            plans.set(page.id, { kind: 'insert', targetId: randomUUID(), slug: page.slug, source: page });
+            plans.set(page.id, { kind: 'insert', targetId: randomUUID(), slug: page.slug, source: page, markerIds });
         }
     }
 
@@ -341,11 +417,19 @@ export async function importWikiPages(
     let updated = 0;
     let skipped = 0;
 
-    const insertRows: Array<Partial<Tables<'wiki_pages'>>> = [];
+    // Replace a page's limiting markers (clear-and-reinsert), reproducing the
+    // bundle's compartmentation from the resolved ids.
+    const writeMarkers = async (pageId: string, markerIds: number[], clearFirst: boolean) => {
+        if (clearFirst) await supabase.from('wiki_page_limiting_markers').delete().eq('page_id', pageId);
+        if (markerIds.length > 0) {
+            await supabase.from('wiki_page_limiting_markers').insert(markerIds.map((mid) => ({ page_id: pageId, marker_id: mid })));
+        }
+    };
+
     for (const plan of plans.values()) {
         if (plan.kind !== 'insert') continue;
         const safeTitle = stripHtmlSingleLine(plan.source.title, 200) || 'Untitled';
-        insertRows.push({
+        const { error } = await supabase.from('wiki_pages').insert({
             id: plan.targetId,
             parent_page_id: null,
             title: safeTitle,
@@ -356,11 +440,9 @@ export async function importWikiPages(
             created_by_id: userId,
             updated_by_id: userId,
         });
-    }
-    if (insertRows.length > 0) {
-        const { error } = await supabase.from('wiki_pages').insert(insertRows);
         handleSupabaseError({ error, message: 'Failed to import wiki pages' });
-        inserted = insertRows.length;
+        await writeMarkers(plan.targetId, plan.markerIds, false);
+        inserted += 1;
     }
 
     for (const plan of plans.values()) {
@@ -379,6 +461,7 @@ export async function importWikiPages(
             .eq('id', plan.targetId)
             ;
         handleSupabaseError({ error, message: 'Failed to overwrite wiki page during import' });
+        await writeMarkers(plan.targetId, plan.markerIds, true);
         updated += 1;
     }
 

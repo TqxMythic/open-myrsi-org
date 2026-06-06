@@ -3,6 +3,8 @@ import { Request, Response } from 'express';
 import { createClient } from '@supabase/supabase-js';
 import { getAnnouncementsState } from '../lib/db.js';
 import { tryParseTiptapJson, tiptapJsonToSafeHtml, isEmptyTiptapDoc } from '../lib/tiptapValidate.js';
+import { sanitizePublicLinkUrl } from '../lib/linkUrl.js';
+import { sanitizeImageUrl } from '../lib/imageUrl.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -35,21 +37,15 @@ function escapeHtml(str: string): string {
 
 export default async function handler(req: Request, res: Response) {
     try {
-        // 2. Determine meta values
         let title: string;
         let description: string;
         let image: string;
         let themeColor: string;
         let siteName: string;
-        // `linkIconUrl` is used for <link rel="icon"> / apple-touch-icon — the
-        // browser tab + PWA-install glyph. Admins may override it via the OG
-        // faviconUrl (typically a small square PNG sized for tabs).
-        //
-        // `splashIconUrl` is used for the boot splash <img> + window.__BRANDING__.
-        // The splash is a large hero treatment, so it should use the org's
-        // proper Logo URL (brandingConfig.iconUrl) and never the favicon
-        // override — even if an admin set a tiny tab-sized favicon, we still
-        // want the full org logo on the loading screen.
+        // `linkIconUrl` is the tab/PWA-install glyph (<link rel="icon"> /
+        // apple-touch-icon), overridable via the OG faviconUrl. `splashIconUrl`
+        // is the boot-splash hero (<img> + window.__BRANDING__) and always uses
+        // the org's proper Logo URL, never the small favicon override.
         let linkIconUrl: string;
         let splashIconUrl: string;
         let publicPageCfg: any = null;
@@ -79,15 +75,14 @@ export default async function handler(req: Request, res: Response) {
             splashIconUrl = branding.iconUrl || '/icon.svg';
         }
 
-        // 3. Read the static index.html from disk (avoids self-referential fetch through CDN
-        //    which caused stale-cache issues where Cloudflare served old HTML with outdated chunk hashes)
+        // Read static index.html from disk (avoids a self-referential fetch
+        // through the CDN, which served stale HTML with outdated chunk hashes).
         const protocol = req.headers['x-forwarded-proto'] || 'https';
         const host = req.headers['x-forwarded-host'] || req.headers.host;
 
         let html = getIndexHtml();
 
-        // 4. Inject Metadata via Regex Replacement
-
+        // Inject metadata via regex replacement.
         const replaceTag = (htmlContent: string, tagType: string, attrName: string, attrValue: string, contentValue: string) => {
             const regex = new RegExp(`<${tagType}[^>]*${attrName}=["']${attrValue}["'][^>]*>`, 'i');
             const replacement = `<${tagType} ${attrName}="${attrValue}" content="${escapeHtml(contentValue)}" />`;
@@ -98,32 +93,28 @@ export default async function handler(req: Request, res: Response) {
             return htmlContent.replace('</head>', `${replacement}\n</head>`);
         };
 
-        // Title
         html = html.replace(/<title>.*?<\/title>/i, `<title>${escapeHtml(title)}</title>`);
 
-        // Standard Meta
         html = replaceTag(html, 'meta', 'name', 'description', description);
         html = replaceTag(html, 'meta', 'name', 'theme-color', themeColor);
         html = replaceTag(html, 'meta', 'name', 'apple-mobile-web-app-title', siteName);
 
-        // Open Graph
         html = replaceTag(html, 'meta', 'property', 'og:title', title);
         html = replaceTag(html, 'meta', 'property', 'og:description', description);
         html = replaceTag(html, 'meta', 'property', 'og:image', image);
         html = replaceTag(html, 'meta', 'property', 'og:site_name', siteName);
         html = replaceTag(html, 'meta', 'property', 'og:url', `${protocol}://${host}`);
 
-        // Twitter Card
         html = replaceTag(html, 'meta', 'name', 'twitter:card', 'summary_large_image');
         html = replaceTag(html, 'meta', 'name', 'twitter:title', title);
         html = replaceTag(html, 'meta', 'name', 'twitter:description', description);
         html = replaceTag(html, 'meta', 'name', 'twitter:image', image);
 
-        // Force Dynamic Manifest: Replace any existing manifest link to point to the API directly
-        // This bypasses the static manifest.json file which often takes precedence over rewrites
+        // Remove any static manifest link so the dynamic /api/manifest wins
+        // (the static manifest.json often takes precedence over rewrites).
         html = html.replace(/<link[^>]*rel=["']manifest["'][^>]*>/gi, '');
 
-        // Icons: Hard-replace existing links to ensure correctness
+        // Hard-replace existing icon links to ensure correctness.
         html = html.replace(/<link[^>]*rel=["']icon["'][^>]*>/gi, '');
         html = html.replace(/<link[^>]*rel=["']apple-touch-icon["'][^>]*>/gi, '');
 
@@ -141,10 +132,10 @@ export default async function handler(req: Request, res: Response) {
         `;
         html = html.replace('</head>', `${headLinks}\n</head>`);
 
-        // 4b. For tenant subdomains, inject a pre-rendered boot splash so the
-        // browser paints a branded loading screen instantly — before any React
-        // chunks download. Also inject window.__BRANDING__ so the React
-        // BootSplash can render identical markup when it takes over.
+        // Inject a pre-rendered boot splash so the browser paints a branded
+        // loading screen instantly, before any React chunks download. Also
+        // inject window.__BRANDING__ so the React BootSplash renders identical
+        // markup when it takes over.
         {
             const safeName = escapeHtml(siteName);
             // The boot splash and window.__BRANDING__ should always show the
@@ -161,14 +152,19 @@ export default async function handler(req: Request, res: Response) {
             // receives the resolved anonymized testimonials via /api/public.
             let publicPageScript = '';
             if (publicPageCfg && publicPageCfg.enabled === true) {
+                // Re-validate link schemes/hosts on the SSR projection too
+                // (mirrors lib/db/public.ts) — the write gate is not the only
+                // line of defense for the unauthenticated page.
                 const allowedLinks = Array.isArray(publicPageCfg.links)
                     ? publicPageCfg.links
                         .filter((l: any) => l && typeof l.id === 'string' && typeof l.label === 'string' && typeof l.url === 'string')
+                        .map((l: any) => ({ l, safeUrl: sanitizePublicLinkUrl(l.url) }))
+                        .filter((x: { safeUrl: string | null }) => !!x.safeUrl)
                         .slice(0, 10)
-                        .map((l: any) => ({
+                        .map(({ l, safeUrl }: { l: any; safeUrl: string }) => ({
                             id: l.id,
                             label: l.label,
-                            url: l.url,
+                            url: safeUrl,
                             ...(typeof l.icon === 'string' && l.icon ? { icon: l.icon } : {}),
                         }))
                     : [];
@@ -203,12 +199,11 @@ export default async function handler(req: Request, res: Response) {
                     announcementsForPublic = [];
                 }
 
-                // #14: Convert Tiptap-JSON blurb to safe HTML server-side so the
+                // Convert Tiptap-JSON blurb to safe HTML server-side so the
                 // SSR-injected payload matches what /api/public?resource=page
-                // returns. Without this the client falls into the plain-text
-                // branch and renders the literal JSON. Empty docs (cleared
-                // editor) are suppressed so the "About" card hides cleanly via
-                // the client's `(blurb || blurbHtml)` truthy check.
+                // returns; otherwise the client renders the literal JSON. Empty
+                // docs (cleared editor) are suppressed so the "About" card hides
+                // cleanly via the client's `(blurb || blurbHtml)` truthy check.
                 const rawBlurb = typeof publicPageCfg.blurb === 'string' ? publicPageCfg.blurb : '';
                 const parsedBlurb = tryParseTiptapJson(rawBlurb);
                 const blurbIsEmpty = parsedBlurb
@@ -223,8 +218,8 @@ export default async function handler(req: Request, res: Response) {
                     motto: typeof publicPageCfg.motto === 'string' ? publicPageCfg.motto : '',
                     blurb: blurbText,
                     blurbHtml,
-                    heroImageUrl: typeof publicPageCfg.heroImageUrl === 'string' ? publicPageCfg.heroImageUrl : '',
-                    profileImageUrl: typeof publicPageCfg.profileImageUrl === 'string' ? publicPageCfg.profileImageUrl : '',
+                    heroImageUrl: sanitizeImageUrl(publicPageCfg.heroImageUrl) || '',
+                    profileImageUrl: sanitizeImageUrl(publicPageCfg.profileImageUrl) || '',
                     modules: {
                         stats: !!publicPageCfg.modules?.stats,
                         testimonials: !!publicPageCfg.modules?.testimonials,
@@ -260,7 +255,7 @@ export default async function handler(req: Request, res: Response) {
     </div>
     <p style="margin-top:1.5rem;font-size:0.625rem;color:#475569;font-family:ui-monospace,monospace;text-align:center">First time visits may take a moment.</p>
   </div>
-  <div style="position:absolute;bottom:2rem;font-size:0.625rem;color:#475569;font-family:ui-monospace,monospace;text-transform:uppercase;letter-spacing:0.3em;text-align:center;padding:0 1rem">${safeName} // Termlink v15.0.0-open</div>
+  <div style="position:absolute;bottom:2rem;font-size:0.625rem;color:#475569;font-family:ui-monospace,monospace;text-transform:uppercase;letter-spacing:0.3em;text-align:center;padding:0 1rem">${safeName} // Termlink v15.1.0-open</div>
   <style>@keyframes __bsSweep{0%{transform:translateX(-100%)}100%{transform:translateX(350%)}}@keyframes __bsPulse{0%,100%{opacity:1}50%{opacity:0.5}}</style>
 </div>
 <script>(function(){var i=document.getElementById('__bs_icon__');if(i){i.onerror=function(){this.style.display='none';};}})();window.__BRANDING__=${safeBrandingJson};window.__SETUP_COMPLETED__=${setupCompletedFlag}${publicPageScript}</script>`;
@@ -268,20 +263,15 @@ export default async function handler(req: Request, res: Response) {
             html = html.replace('<div id="root"></div>', `<div id="root"></div>${splashHtml}`);
         }
 
-        // 4c. Stamp the per-request CSP nonce (set by server.ts security
-        // middleware) onto every <script> tag. The injected inline branding
-        // script REQUIRES it now that script-src has dropped 'unsafe-inline';
-        // external 'self' scripts and the ld+json block receive it too —
-        // harmless. style="" attributes need no nonce (style-src is still
-        // 'unsafe-inline'). The base HTML has no other inline executable
-        // script, so the SSR-failure fallback that sendFiles raw index.html
-        // also stays CSP-clean.
+        // Stamp the per-request CSP nonce (set by server.ts) onto every <script>
+        // tag. The injected inline branding script requires it now that
+        // script-src dropped 'unsafe-inline'; other scripts receiving it is
+        // harmless. style="" needs no nonce (style-src is still 'unsafe-inline').
         const cspNonce: string = res.locals.cspNonce || '';
         if (cspNonce) {
             html = html.replace(/<script/g, `<script nonce="${cspNonce}"`);
         }
 
-        // 5. Send Response
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
         res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
         res.setHeader('CDN-Cache-Control', 'no-store');

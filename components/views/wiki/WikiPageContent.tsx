@@ -87,7 +87,6 @@ const WikiPageContent: React.FC<WikiPageContentProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional form-reset on page.id flip; adding the other page.* fields would clobber the user's in-progress edits on realtime row updates.
     }, [page.id]);
 
-    // EDIT MODE
     if (isEditing) {
         return (
             <div className="space-y-4">
@@ -145,7 +144,6 @@ const WikiPageContent: React.FC<WikiPageContentProps> = ({
         );
     }
 
-    // VIEW MODE
     return (
         <article className="space-y-4">
             {/* Desktop breadcrumb (mobile lives in WikiTopBar) */}
@@ -155,7 +153,6 @@ const WikiPageContent: React.FC<WikiPageContentProps> = ({
                 </div>
             )}
 
-            {/* Title + meta + actions */}
             <header className="flex flex-col md:flex-row md:items-end md:justify-between gap-3 pb-4 border-b border-slate-700/50">
                 <div className="flex-1 min-w-0">
                     <h1 className="text-2xl md:text-3xl font-black text-white tracking-tight">{page.title}</h1>
@@ -220,7 +217,6 @@ const WikiPageContent: React.FC<WikiPageContentProps> = ({
                 </div>
             )}
 
-            {/* Reader */}
             <div className="prose prose-invert prose-slate prose-base md:prose-lg max-w-none">
                 <WikiEditor content={page.content} editable={false} />
             </div>

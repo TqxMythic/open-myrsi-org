@@ -19,14 +19,11 @@ export default async function handler(req: Request, res: Response) {
     const appName = branding.name || 'Operations Terminal';
     const iconUrl = meta.pwaIconUrl || branding.iconUrl || '/icon.svg';
 
-    // SECURITY (H6): these admin-controlled strings are interpolated into the
-    // service-worker SOURCE. Hand-escaping only single quotes (the previous
-    // approach) let a trailing backslash escape the escape and break out of the
-    // JS string literal → arbitrary code execution in every visitor's SW context.
-    // JSON.stringify produces a complete, correctly-escaped JS string literal
-    // (quotes, backslashes, newlines, control chars), so it is substituted WITHOUT
-    // surrounding quotes. The CSP nonce does not cover /sw.js (served as JS), so
-    // this is the only defence at this sink.
+    // These admin-controlled strings are interpolated into the service-worker
+    // source. JSON.stringify produces a complete, correctly-escaped JS string
+    // literal (quotes, backslashes, newlines, control chars), so it is
+    // substituted WITHOUT surrounding quotes. The CSP nonce does not cover
+    // /sw.js (served as JS), so this is the only defence at this sink.
     const appNameJs = JSON.stringify(appName);
     const iconUrlJs = JSON.stringify(iconUrl);
 
@@ -76,23 +73,17 @@ self.addEventListener('fetch', event => {
   if (url.pathname.startsWith('/api/') || !url.origin.includes(self.location.hostname)) return;
 
   // NEVER intercept navigations — let the browser handle them directly.
-  // index.html and /sw.js are already served no-store and we cache no HTML, so
-  // there is nothing to gain by handling navigations and everything to lose: a
-  // transient fetch rejection during a SW swap (or the Discord OAuth ?code=
-  // return) was previously answered with a 200 "offline" HTML shell that has no
-  // app script, PERMANENTLY stranding the page (and the browser would keep it in
-  // bfcache). A registered SW with this fetch handler still satisfies PWA
-  // installability; the browser shows its native offline UI only on a genuine
-  // outage.
+  // index.html and /sw.js are served no-store and we cache no HTML, so handling
+  // a navigation could only strand the page on a transient fetch failure (e.g.
+  // during a SW swap or the Discord OAuth ?code= return). A registered SW with
+  // this fetch handler still satisfies PWA installability.
   if (event.request.mode === 'navigate') return;
 
-  // DO NOT cache JS/CSS chunks in the service worker.
-  // Vite chunks have content hashes in their filenames (e.g. index-fvEa46RL.js),
-  // so the browser HTTP cache handles them correctly via Cache-Control headers.
-  // SW-level caching of chunks creates stale version problems: after a deployment
-  // the old SW serves outdated chunks as fallback on network errors (e.g. 522),
-  // causing version mismatches that get the app stuck in suspense.
-  // Only cache static assets like icons/fonts that don't change between deploys.
+  // DO NOT cache JS/CSS chunks in the service worker. Vite chunks have content
+  // hashes in their filenames, so the browser HTTP cache handles them via
+  // Cache-Control. SW-level caching would serve outdated chunks as a fallback on
+  // network errors after a deploy, causing version mismatches. Only static
+  // assets like icons/fonts (which don't change between deploys) are cached.
   if (url.pathname.startsWith('/assets/')) return;
 
   // For other same-origin requests (icons, fonts, etc.) — network first, cache fallback
@@ -108,12 +99,9 @@ self.addEventListener('fetch', event => {
         return response;
       })
       .catch(async () => {
-        // Network failed. Try cache, but if there's no cached entry,
-        // return Response.error() — passing undefined to respondWith
-        // throws "Failed to convert value to 'Response'" (uncaught
-        // promise) and surfaces as a console error on every blocked
-        // request (ad-blocker, offline first-load, etc.).
-        // Response.error() is the SW equivalent of a NetworkError, so
+        // Network failed: try cache, else Response.error(). Passing undefined to
+        // respondWith throws and surfaces as a console error on every blocked
+        // request; Response.error() is the SW equivalent of a NetworkError, so
         // the page sees the same outcome as if we hadn't intercepted.
         const cached = await caches.match(event.request);
         return cached || Response.error();
@@ -179,10 +167,9 @@ self.addEventListener('notificationclick', function(event) {
 
     res.setHeader('Content-Type', 'application/javascript');
     res.setHeader('Service-Worker-Allowed', '/');
-    // CRITICAL: Prevent Cloudflare/browser from caching the SW script.
-    // The SW contains a DEPLOY_ID that must change on every deployment so old
-    // caches get purged. If Cloudflare caches this response, users get stuck
-    // with a stale SW that serves old JS chunks → suspense hang after deploys.
+    // Prevent Cloudflare/browser from caching the SW script. It contains a
+    // DEPLOY_ID that must change every deploy to purge old caches; a cached
+    // response would leave users on a stale SW serving old JS chunks.
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.status(200).send(swCode);
 }

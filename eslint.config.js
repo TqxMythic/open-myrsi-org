@@ -1,12 +1,7 @@
 // Flat ESLint config (ESLint v9). Project is "type": "module" so this file is ESM.
 //
-// Type-aware rules (typescript-eslint's `recommendedTypeChecked`) are deliberately
-// skipped to avoid the per-file cost of `parserOptions.project`. Revisit if/when we
-// want `no-floating-promises`, `no-misused-promises`, etc.
-//
-// `no-explicit-any` and `no-non-null-assertion` are off in this baseline pack —
-// the codebase has ~1,500 `: any` annotations concentrated in api/actions/* and
-// lib/db/*. A future pack should flip them on after a focused cleanup sweep.
+// Type-aware rules (recommendedTypeChecked) are skipped to avoid the per-file
+// cost of `parserOptions.project`.
 
 import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
@@ -17,9 +12,6 @@ import unusedImports from 'eslint-plugin-unused-imports';
 import globals from 'globals';
 
 export default [
-    // -------------------------------------------------------------------------
-    // Ignores
-    // -------------------------------------------------------------------------
     {
         ignores: [
             'dist/**',
@@ -30,15 +22,10 @@ export default [
             'coverage/**',
             '.vite/**',
             // Vite serves /public/ as static assets; not part of the TS compile.
-            // Includes pwa-init.js, generated SW, etc. — ESM/browser globals don't
-            // apply uniformly here.
             'public/**',
         ],
     },
 
-    // -------------------------------------------------------------------------
-    // Base layer — applies to all linted files
-    // -------------------------------------------------------------------------
     js.configs.recommended,
     {
         rules: {
@@ -51,9 +38,6 @@ export default [
         },
     },
 
-    // -------------------------------------------------------------------------
-    // TypeScript layer — non-type-checked recommended config
-    // -------------------------------------------------------------------------
     ...tseslint.configs.recommended.map((cfg) => ({
         ...cfg,
         files: ['**/*.{ts,tsx}'],
@@ -62,48 +46,26 @@ export default [
         files: ['**/*.{ts,tsx}'],
         plugins: { 'unused-imports': unusedImports },
         rules: {
-            // `no-explicit-any`: ~861 annotations + ~198 `as any` casts.
-            //
-            // Re-enabling means proper type authoring at three trust
-            // boundaries: per-action RPC payload interfaces (16 files,
-            // ~340 sites), Supabase row types for the 49 mappers in
-            // lib/db/mappers.ts, and lib/db function param types
-            // (~150-200 sites). That's a multi-week refactor project,
-            // not lint-config work.
-            //
-            // Until that project lands, the rule stays off. The
-            // `unused-imports/no-unused-imports` rule (Pack 10) still
-            // catches dead-import bugs even with `any` allowed.
+            // Off globally; enforced only on api/actions + lib/db (see ratchet
+            // override below). Enabling everywhere is a large typing refactor.
             '@typescript-eslint/no-explicit-any': 'off',
             '@typescript-eslint/no-non-null-assertion': 'error',
             'no-unused-vars': 'off',
-            // unused-imports plugin: gives us the autofix for unused IMPORTS
-            // (typescript-eslint's rule doesn't autofix). The autofix in this
-            // pack already swept ~88 unused imports out cleanly.
-            //
-            // The companion rule for unused vars/args (~86 residual sites: stale
-            // destructured locals from refactors, unused callback args, dead
-            // helper functions in DashboardView/UnifiedCaseFileView etc.) is
-            // OFF for now — those need individual judgment per site (delete
-            // dead code vs. prefix with _ vs. keep for readability) which is
-            // its own focused cleanup pass.
+            // unused-imports plugin provides the autofix for unused imports that
+            // typescript-eslint's rule lacks. The unused vars/args companion is
+            // off — those sites need per-site judgment.
             '@typescript-eslint/no-unused-vars': 'off',
             'unused-imports/no-unused-imports': 'error',
             'unused-imports/no-unused-vars': 'off',
-            // -- Other TS rule tweaks --
             // TS handles undeclared vars; the base rule false-positives on TS-only syntax.
             'no-undef': 'off',
-            // `@typescript-eslint/no-empty-object-type`: triggers on `{}` interfaces;
-            // allow for now (only 2 sites).
+            // Triggers on `{}` interfaces; allow for now.
             '@typescript-eslint/no-empty-object-type': 'off',
-            // `@typescript-eslint/no-unused-expressions`: 2 sites; allow void short-circuits.
+            // Allow void short-circuit expressions.
             '@typescript-eslint/no-unused-expressions': 'off',
         },
     },
 
-    // -------------------------------------------------------------------------
-    // React layer — JSX correctness (excluding rules TS already handles)
-    // -------------------------------------------------------------------------
     {
         files: ['**/*.tsx'],
         plugins: { react },
@@ -117,42 +79,21 @@ export default [
             ...react.configs.recommended.rules,
             'react/react-in-jsx-scope': 'off', // React 19 / new JSX transform
             'react/prop-types': 'off',         // TypeScript handles prop typing
-            // `no-unescaped-entities`: PERMANENTLY OFF.
-            // 365 sites of legitimate ' and " in JSX text. Modern React's JSX
-            // transform parses these unambiguously; the rule's protection
-            // (avoiding ambiguous parses) doesn't apply. Re-enabling would
-            // require ~365 cosmetic edits with no behavioural value.
+            // Off: legitimate ' and " in JSX text are parsed unambiguously by
+            // the modern JSX transform, so the rule adds only cosmetic churn.
             'react/no-unescaped-entities': 'off',
         },
     },
 
-    // -------------------------------------------------------------------------
-    // Non-null assertion overrides
-    // -------------------------------------------------------------------------
-    // Two cluster files use `!` structurally — FleetOrgChart's chart renderer
-    // discriminates LayoutNode by `type` field at runtime but the type isn't
-    // expressed as a discriminated union; OpExecutionTab does similar. Tests
-    // use `!` freely on test fixtures. File-level override avoids 49 inline
-    // suppressions and leaves the rule's signal on the rest of the codebase.
+    // Non-null-assertion overrides. The rule stays on for component code where
+    // sloppy `!` hides null cases; it is exempted for two categories where `!`
+    // is deliberate: (1) api/** + lib/** + tests/** + App.tsx, where `!` sits at
+    // trust boundaries (env asserted at boot, row narrows after select, test
+    // fixtures, SSR-injected globals); and (2) specific component files where
+    // `!` is structural (chart renderers narrowing by runtime type field,
+    // post-filter narrowing chains, modals that already guarded their prop).
+    // New files still get caught — do not grow this list.
     {
-        // The non-null-assertion rule is most useful on COMPONENT code where
-        // sloppy `!` usage hides legitimate null cases. The exemption list
-        // below covers two categories:
-        //
-        //   1. api/** + lib/** + tests/** + App.tsx — `!` here is at trust
-        //      boundaries (env vars asserted at boot, Supabase row narrows
-        //      after select, test fixtures, SSR-injected globals). These
-        //      assertions are deliberate.
-        //
-        //   2. Specific component files where `!` is structural — chart
-        //      renderers narrowing discriminated unions by runtime type
-        //      field, post-filter type-narrowing chains, modal wrappers
-        //      that have already guarded their input prop.
-        //
-        // The rule fires on any *new* file or any file not in this list, so
-        // sloppy `!` use in fresh code still gets caught at PR time. The
-        // exemption list should not grow — when adding new code, prefer
-        // proper narrowing.
         files: [
             'App.tsx',
             'api/**/*.{ts,tsx}',
@@ -189,43 +130,18 @@ export default [
         },
     },
 
-    // -------------------------------------------------------------------------
-    // React Hooks layer — keep strict; existing eslint-disable directives are honored
-    // -------------------------------------------------------------------------
     {
         files: ['**/*.{ts,tsx}'],
         plugins: { 'react-hooks': reactHooks },
         rules: {
             ...reactHooks.configs.recommended.rules,
-            // `exhaustive-deps`: ON at 'error' as of the audit completion
-            // (172 → 0 warnings across 13 commits). The audit added missing
-            // deps, wrapped producers in useCallback, and wrapped conditional
-            // `?:[]` fallbacks in useMemo to stabilise downstream identity.
-            // The remaining intentional omissions each carry an
-            // `// eslint-disable-next-line react-hooks/exhaustive-deps --
-            // <reason>` directive at the site documenting why the omission
-            // is safe. Common reason patterns:
-            //   - "intentional whole-object omission" — effects keyed on
-            //     specific subfields where a whole-object dep would
-            //     over-trigger.
-            //   - "form reset only on isOpen / id flip" — adding the prop
-            //     fields would clobber user input on realtime row updates.
-            //   - "loads once on mount" — producer fns defined inline that
-            //     close over current state at call time.
-            //   - "interval-driven tick re-eval" — memos where a tick state
-            //     drives Date.now()-based timer re-evaluation.
-            //   - "ref cleanup snapshot" — refs read in effect cleanup that
-            //     intentionally use the live ref at unmount.
-            // When a new violation appears, treat it as a real bug unless
-            // you can write the reason in one line at the call site.
+            // On at 'error'. The few intentional omissions each carry an
+            // inline `eslint-disable-next-line react-hooks/exhaustive-deps`
+            // with a one-line reason; treat any new violation as a real bug.
             'react-hooks/exhaustive-deps': 'error',
-            // `rules-of-hooks`: KEEP ON — real production-crash detector.
         },
     },
 
-    // -------------------------------------------------------------------------
-    // React Refresh layer — Vite HMR safety
-    // -------------------------------------------------------------------------
     {
         files: ['**/*.tsx'],
         plugins: { 'react-refresh': reactRefresh },
@@ -237,12 +153,9 @@ export default [
         },
     },
     {
-        // Context and hook modules legitimately export multiple things alongside
-        // their hook/provider — disable the HMR-only-components rule here.
-        // Also scoped off for a handful of view files that ship constants/utils
-        // alongside their component (BulletinCard threat-style helpers,
-        // BootSplash boot stages). These exports are stable; HMR
-        // incompatibility is theoretical.
+        // Context/hook modules and a few view files legitimately export
+        // constants/utils alongside their component — disable the
+        // HMR-only-components rule for them.
         files: [
             'contexts/**/*.tsx',
             'hooks/**/*.{ts,tsx}',
@@ -255,9 +168,7 @@ export default [
         },
     },
 
-    // -------------------------------------------------------------------------
-    // Globals — Node for server-side, browser for client-side
-    // -------------------------------------------------------------------------
+    // Globals — Node for server-side, browser for client-side.
     {
         files: [
             'api/**/*.{ts,tsx}',
@@ -285,9 +196,7 @@ export default [
         },
     },
 
-    // -------------------------------------------------------------------------
-    // Shared modules (run in both Node and browser contexts)
-    // -------------------------------------------------------------------------
+    // Shared modules (run in both Node and browser contexts).
     {
         files: ['types.ts', 'index.tsx'],
         languageOptions: {
@@ -295,9 +204,7 @@ export default [
         },
     },
 
-    // -------------------------------------------------------------------------
-    // Tests overlay — vitest globals
-    // -------------------------------------------------------------------------
+    // Tests overlay — vitest globals.
     {
         files: ['tests/**/*.{ts,tsx}'],
         languageOptions: {
@@ -317,16 +224,11 @@ export default [
         },
     },
 
-    // -------------------------------------------------------------------------
-    // no-console ratchet — server areas fully migrated to the lib/log.ts
-    // structured logger. Locking these globs prevents regression to raw
-    // console.*. Scope is deliberately limited to the fully-migrated,
-    // server-only directories: the RPC action handlers and the DB layer.
-    // Broader globs still hold intentional console.* — the service-worker emit
-    // (api/sw.ts ships console.* as browser code) and isomorphic/client modules
-    // (lib/ai.ts, lib/audioCache.ts) that must not import the Node logger.
-    // Expand this list as those areas migrate.
-    // -------------------------------------------------------------------------
+    // no-console ratchet, scoped to the server-only directories already migrated
+    // to the lib/log.ts structured logger (RPC action handlers + DB layer).
+    // Broader globs still hold intentional console.* (the api/sw.ts browser emit,
+    // isomorphic/client modules that must not import the Node logger). Expand as
+    // those areas migrate.
     {
         files: ['api/actions/**/*.ts', 'lib/db/**/*.ts'],
         rules: {
@@ -334,17 +236,10 @@ export default [
         },
     },
 
-    // -------------------------------------------------------------------------
-    // no-explicit-any ratchet. The auth boundary
-    // (api/actions/**) and the ENTIRE data layer (lib/db/**) are now typed:
-    // RPC payload interfaces, Supabase row types (lib/db/mappers.ts + rows.ts),
-    // function params, row mappers, and query results. any-freedom is enforced
-    // across both to prevent backsliding. There
-    // are zero remaining inline `// eslint-disable-next-line` exceptions in either
-    // tree — getAllSettings, the last holdout, now returns a typed SettingsBlob.
-    // The rule stays globally 'off' (see above) — the ~800 sites in
-    // components/contexts/hooks are a separate, larger effort.
-    // -------------------------------------------------------------------------
+    // no-explicit-any ratchet. The auth boundary (api/actions/**) and the data
+    // layer (lib/db/**) are fully typed, so any-freedom is enforced there to
+    // prevent backsliding. The rule stays globally 'off' (see above) — typing
+    // the ~800 component/context/hook sites is a separate, larger effort.
     {
         files: ['api/actions/**/*.ts', 'lib/db/**/*.ts'],
         rules: {

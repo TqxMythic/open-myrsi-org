@@ -37,7 +37,6 @@ const AddProspectModal: React.FC<AddProspectModalProps> = ({ isOpen, onClose }) 
         }
     }, [isOpen]);
 
-    // Handle input change for RSI Handle
     const handleRsiChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         setRsiHandle(e.target.value);
         // Unlock name field and clear link if user changes handle

@@ -156,8 +156,7 @@ const OpAARTab: React.FC<OpAARTabProps> = ({ operation, canManage, isParticipant
             );
         } catch (err: any) {
             const rawMsg: string = err?.message || '';
-            // Strip any raw JSON payload that may have leaked through; we
-            // surface only a friendly prose message to the operator.
+            // Strip any raw JSON payload that may have leaked through; surface only friendly prose.
             const cleanMsg = rawMsg.startsWith('{') || rawMsg.includes('"error"')
                 ? 'The AI service returned an unexpected error. Try again in a few minutes.'
                 : rawMsg;
@@ -173,9 +172,8 @@ const OpAARTab: React.FC<OpAARTabProps> = ({ operation, canManage, isParticipant
                 return;
             }
 
-            // Categorise the error for a tighter toast title + body. The
-            // message coming from lib/ai.ts is already operator-friendly;
-            // we just pick a matching title and split the action prompt
+            // Categorise the error for a tighter toast title + body. The message from lib/ai.ts
+            // is already operator-friendly; pick a matching title and split the action prompt
             // (after the em-dash, where present) into the description.
             let title = 'AI draft failed';
             let icon = <i className="fa-solid fa-xmark" />;
@@ -228,7 +226,6 @@ const OpAARTab: React.FC<OpAARTabProps> = ({ operation, canManage, isParticipant
 
     return (
         <div className="p-6 lg:p-8 space-y-6">
-            {/* ── ACTION BAR (top) ── */}
             <div className="flex flex-wrap items-center gap-3 p-4 bg-linear-to-r from-slate-800/60 to-slate-900/40 rounded-xl border border-slate-700/40">
                 <p className="text-[10px] text-slate-500 uppercase font-black tracking-[0.15em] flex items-center gap-2">
                     <i className="fa-solid fa-file-lines text-purple-400/70"></i> After Action Review
@@ -249,7 +246,6 @@ const OpAARTab: React.FC<OpAARTabProps> = ({ operation, canManage, isParticipant
                 )}
             </div>
 
-            {/* Submission banner */}
             {isSubmitted && (
                 <div className="bg-green-950/15 rounded-xl border border-green-500/15 overflow-hidden">
                     <div className="px-5 py-3 bg-green-950/20 border-b border-green-500/10">
@@ -277,7 +273,6 @@ const OpAARTab: React.FC<OpAARTabProps> = ({ operation, canManage, isParticipant
                 </div>
             )}
 
-            {/* Summary & Lessons Learned */}
             {(editingSummary || operation.aarSummary || operation.aarLessonsLearned) && (
                 <div className="bg-slate-900/60 rounded-xl border border-slate-700/30 overflow-hidden">
                     <div className="px-5 py-3 bg-slate-800/40 border-b border-slate-700/30">
@@ -351,7 +346,6 @@ const OpAARTab: React.FC<OpAARTabProps> = ({ operation, canManage, isParticipant
                 </div>
             )}
 
-            {/* Add entry form */}
             {showForm && (
                 <div className="bg-slate-900/60 rounded-xl border border-slate-700/30 overflow-hidden">
                     <div className="px-5 py-3 bg-slate-800/40 border-b border-slate-700/30">
@@ -387,7 +381,6 @@ const OpAARTab: React.FC<OpAARTabProps> = ({ operation, canManage, isParticipant
                 </div>
             )}
 
-            {/* Entries by category */}
             <div className="space-y-6">
                 {Object.entries(categoryConfig).map(([key, cfg]) => {
                     const catEntries = grouped[key] || [];

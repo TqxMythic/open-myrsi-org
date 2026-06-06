@@ -31,11 +31,9 @@ const OperationsCenterView: React.FC = () => {
     const { operations } = useOperations();
     const { viewMirroredOperation } = useNavigation();
 
-    // Self-heal: if we land on this view with an empty operations list AND no
-    // fetch is currently in flight, kick off a refresh. Covers the post-deploy
-    // case where the initial-state response missed the data, the realtime WS
-    // never disconnected (and so the `wasDisconnected` resync didn't fire),
-    // and the user otherwise has to CTRL+F5 to recover.
+    // Self-heal: if this view loads with an empty operations list and no fetch in flight,
+    // kick off a refresh. Covers the case where initial-state missed the data but the
+    // realtime WS never disconnected, so the wasDisconnected resync didn't fire.
     const selfHealAttemptedRef = useRef(false);
     useEffect(() => {
         if (selfHealAttemptedRef.current) return;
@@ -46,8 +44,8 @@ const OperationsCenterView: React.FC = () => {
     }, [operations.length, isFetching, refreshOperations]);
     const { openCreateOperationModal, openOperationTemplatesModal } = useModalRegistry();
 
-    // Allied joint operations mirrored from host instances (alliance P3). Members
-    // see accepted mirrors; alliance admins also see pending invites to accept.
+    // Allied joint operations mirrored from host instances. Members see accepted mirrors;
+    // alliance admins also see pending invites to accept.
     const canManageAlliance = hasPermission('alliance:manage');
     const [mirrors, setMirrors] = useState<MirroredOperation[]>([]);
     const [mirrorBusy, setMirrorBusy] = useState<string | null>(null);
@@ -71,7 +69,15 @@ const OperationsCenterView: React.FC = () => {
     const [filter, setFilter] = useState<OperationStatus | 'All' | 'My Concluded' | 'Current' | 'Scheduled'>('Current');
     const [searchTerm, setSearchTerm] = useState('');
     const debouncedSearchTerm = useDebouncedValue(searchTerm, 250);
-    const [itemHeight, setItemHeight] = useState(window.innerWidth < 1024 ? 340 : 285);
+    // Virtualized rows are fixed-height; size to the tallest card per breakpoint
+    // (the card stacks to one column on mobile) and re-measure on resize so cards
+    // don't overflow into the next row.
+    const [itemHeight, setItemHeight] = useState(() => { const w = window.innerWidth; return w < 768 ? 480 : w < 1024 ? 340 : 285; });
+    useEffect(() => {
+        const onResize = () => { const w = window.innerWidth; setItemHeight(w < 768 ? 480 : w < 1024 ? 340 : 285); };
+        window.addEventListener('resize', onResize);
+        return () => window.removeEventListener('resize', onResize);
+    }, []);
     const [viewMode, setViewMode] = useState<'list' | 'calendar'>('list');
 
     const userLevel = useMemo(() => currentUser?.clearanceLevel?.level || 0, [currentUser]);
@@ -87,7 +93,6 @@ const OperationsCenterView: React.FC = () => {
         return true;
     }, [currentUser, userLevel, userMarkers, hasPermission]);
 
-    // Stats
     const stats = useMemo(() => {
         const accessible = operations.filter(hasOperationAccess);
         const active = accessible.filter(op => op.status === OperationStatus.Active).length;
@@ -107,7 +112,6 @@ const OperationsCenterView: React.FC = () => {
         ).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     }, [operations, currentUser?.id]);
 
-    // Upcoming scheduled ops (all scheduled operations)
     const upcomingScheduledOps = useMemo(() => {
         return operations
             .filter(op =>
@@ -241,7 +245,6 @@ const OperationsCenterView: React.FC = () => {
                 )) : undefined}
             />
 
-            {/* ── CONTENT ── */}
             {viewMode === 'calendar' ? (
                 <div className="flex-1 overflow-y-auto p-4 sm:p-6">
                     <Suspense fallback={<div className="flex items-center justify-center h-64"><i className="fa-solid fa-circle-notch animate-spin text-purple-500 text-2xl"></i></div>}>
@@ -250,7 +253,6 @@ const OperationsCenterView: React.FC = () => {
                 </div>
             ) : (
             <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
-                {/* Search */}
                 <div className="relative max-w-2xl">
                     <i className="fa-solid fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-500"></i>
                     <input
@@ -262,7 +264,7 @@ const OperationsCenterView: React.FC = () => {
                     />
                 </div>
 
-                {/* ── ALLIED JOINT OPERATIONS (mirrored from host instances) ── */}
+                {/* Allied joint operations mirrored from host instances. */}
                 {(acceptedMirrors.length > 0 || pendingMirrors.length > 0) && !searchTerm && (
                     <section className="bg-cyan-950/10 rounded-xl border border-cyan-500/20 overflow-hidden animate-fade-in-up">
                         <div className="px-5 py-4 bg-cyan-950/20 border-b border-cyan-500/10 flex items-center gap-2">
@@ -315,7 +317,6 @@ const OperationsCenterView: React.FC = () => {
                     </section>
                 )}
 
-                {/* ── UPCOMING SCHEDULED ── */}
                 {upcomingScheduledOps.length > 0 && !searchTerm && filter !== 'My Concluded' && (
                     <section className="bg-slate-900/60 backdrop-blur-md rounded-xl border border-slate-700/50 overflow-hidden animate-fade-in">
                         <div className="px-5 py-4 bg-white/5 border-b border-white/5 flex items-center gap-3">
@@ -330,7 +331,6 @@ const OperationsCenterView: React.FC = () => {
                     </section>
                 )}
 
-                {/* ── MY ACTIVE DEPLOYMENTS ── */}
                 {myActiveOperations.length > 0 && !searchTerm && (
                     <section className="bg-slate-900/60 backdrop-blur-md rounded-xl border border-slate-700/50 overflow-hidden animate-fade-in">
                         <div className="px-5 py-4 bg-white/5 border-b border-white/5 flex items-center gap-3">
@@ -342,7 +342,7 @@ const OperationsCenterView: React.FC = () => {
                         </div>
                         <div className="p-5 grid grid-cols-1 gap-4">
                             {myActiveOperations.map(op => (
-                                <div key={op.id} className="h-[295px]">
+                                <div key={op.id} className="h-[480px] md:h-[340px] lg:h-[295px]">
                                     <OperationCard operation={op} />
                                 </div>
                             ))}
@@ -350,7 +350,6 @@ const OperationsCenterView: React.FC = () => {
                     </section>
                 )}
 
-                {/* ── MAIN BROWSER ── */}
                 <section className="flex-1 flex flex-col min-h-[400px]">
                     {filteredOperations.length > 0 ? (
                         <VirtualizedList

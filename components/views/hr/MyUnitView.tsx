@@ -240,11 +240,9 @@ const UnitCalendar: React.FC<{ unitId: number }> = ({ unitId }) => {
     );
 };
 
-// #1: When `unit` is omitted (HR Hub My Unit tab), the component renders the
-// current user's own unit — preserving the original behaviour. When passed
-// explicitly (e.g. UnitDetailView for browsing other units via the Org Chart),
-// it renders that unit's page. The "Edit Profile" button only appears when
-// the viewer is the unit's leader, which works naturally for both modes.
+// When `unit` is omitted (HR Hub My Unit tab), renders the current user's own
+// unit; when passed explicitly (e.g. browsing other units via the Org Chart),
+// renders that unit. The "Edit Profile" button only shows for the unit leader.
 interface MyUnitViewProps {
     unit?: OrganizationalUnit;
 }

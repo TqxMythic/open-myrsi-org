@@ -160,9 +160,7 @@ const ServiceRequestsView: React.FC<ServiceRequestsViewProps> = ({
                 ))}
             />
 
-            {/* Body — full-width */}
             <div className="flex-1 overflow-y-auto p-4 sm:p-6">
-                {/* Search */}
                 <div className="relative mb-4 max-w-2xl">
                     <i className="fa-solid fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-500"></i>
                     <input

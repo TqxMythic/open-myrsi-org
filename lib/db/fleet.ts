@@ -1,6 +1,7 @@
 
 import { supabase, handleSupabaseError, safeFetch, broadcastToOrg } from './common.js';
 import { toPlatformShip, toUserShip, toFleetGroup } from './mappers.js';
+import { stripHtml, stripHtmlSingleLine } from '../textSanitize.js';
 import { log as baseLog } from '../log.js';
 import type { PlatformShip, UserShip, FleetGroup, ShipStatus, FleetGroupType } from '../../types.js';
 import type { Tables } from './rows.js';
@@ -166,8 +167,9 @@ export async function syncShipCatalog() {
             name,
             manufacturer,
             manufacturer_code: v.manufacturer?.code || null,
-            role: locStr(v.foci?.[0]) || v.focus?.name || null,
-            career: locStr(v.type) || null,
+            // Strip markup from third-party (star-citizen.wiki) display text.
+            role: stripHtmlSingleLine(locStr(v.foci?.[0]) || v.focus?.name, 120) || null,
+            career: stripHtmlSingleLine(locStr(v.type), 120) || null,
             size: locStr(v.size) || null,
             crew_min: v.crew?.min || 1,
             crew_max: v.crew?.max || 1,
@@ -182,8 +184,8 @@ export async function syncShipCatalog() {
             wiki_url: `https://starcitizen.tools/${name.replace(/ /g, '_')}`,
             pledge_url: v.pledge_url || null,
             msrp: v.msrp ? parseFloat(String(v.msrp)) : null,
-            description: locStr(v.description) || null,
-            production_status: locStr(v.production_status) || null,
+            description: stripHtml(locStr(v.description), 8000) || null,
+            production_status: stripHtmlSingleLine(locStr(v.production_status), 80) || null,
             updated_at: new Date().toISOString()
         };
 
@@ -429,9 +431,9 @@ export async function addUserShips(userId: number, shipIds: number[]) {
 export async function updateUserShip(
     userShipId: number,
     updates: { customName?: string | null; loadoutNotes?: string | null; status?: ShipStatus; isPrimary?: boolean },
-    // SECURITY (M3 BOLA): when provided, the row must also belong to this user,
-    // so a member with only fleet:manage_own cannot edit another member's ship by
-    // id. Managers (fleet:manage) pass undefined to operate org-wide.
+    // When provided, the row must also belong to this user, so a member with only
+    // fleet:manage_own cannot edit another member's ship by id. Managers
+    // (fleet:manage) pass undefined to operate org-wide.
     actorUserId?: number,
 ) {
     const dbUpdates: Record<string, unknown> = {};

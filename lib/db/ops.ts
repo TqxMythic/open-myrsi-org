@@ -2,12 +2,12 @@
 
 import { HydratedOperation, User, UserRole, OperationTemplatePayload } from '../../types.js';
 import { supabase, handleSupabaseError, safeFetch, broadcastToOrg, broadcastToChannel } from './common.js';
-import { passesClearance } from '../clearance.js';
+import { passesClearance, assertCanClassify, type ClearanceUser } from '../clearance.js';
 import { sendPushToUsers } from '../push.js';
 import { toHydratedOperation } from './mappers.js';
 import { getUserById } from './users.js';
 import { bumpOperationVersion, pushOperationToAllies, scheduleAlliedPush } from './operations-federation.js';
-import { stripHtml } from '../textSanitize.js';
+import { stripHtml, stripHtmlSingleLine } from '../textSanitize.js';
 import { cache, TTL } from '../cache.js';
 import { log as baseLog } from '../log.js';
 
@@ -18,11 +18,11 @@ const opAccessKey = (operationId: string) =>
 
 function broadcastOperationUpdate(operationId: string) {
     broadcastToOrg('operation_update', { operationId });
-    // Alliance P3: bump the joint-op version so allied mirrors pick up the change
-    // on their next poll. No-ops for non-joint ops (self-gated on is_joint).
+    // Bump the joint-op version so allied mirrors pick up the change on their
+    // next poll. No-ops for non-joint ops (self-gated on is_joint).
     void bumpOperationVersion(operationId).catch(() => undefined);
-    // Alliance live-sync: debounced full-snapshot push to accepted allies — N
-    // rapid edits coalesce into ONE push. No-op for ops without allies.
+    // Debounced full-snapshot push to accepted allies — N rapid edits coalesce
+    // into ONE push. No-op for ops without allies.
     scheduleAlliedPush(operationId);
 }
 
@@ -32,11 +32,10 @@ function broadcastOperationUpdate(operationId: string) {
 export async function broadcastOperationAlert(operationId: string, message: string) {
     const timestamp = new Date().toISOString();
 
-    // SECURITY: the realtime emit is a TRIGGER ONLY ({operationId, timestamp}).
-    // The alert body + commander's real name previously rode the broadcast in
-    // cleartext; receivers now pull the content via the clearance-gated
-    // operation:get_latest_alert RPC. Push (encrypted, participant-targeted)
-    // still carries the body for notification UX.
+    // The realtime emit is a TRIGGER ONLY ({operationId, timestamp}). Receivers
+    // pull the alert body via the clearance-gated operation:get_latest_alert RPC.
+    // Push (encrypted, participant-targeted) still carries the body for
+    // notification UX.
     const broadcastPromise = broadcastToChannel('auth-alerts', 'operation_alert', { operationId, timestamp });
 
     // Get all participant user IDs for push notifications
@@ -74,7 +73,7 @@ export async function broadcastOperationAlert(operationId: string, message: stri
 export async function getLatestOperationAlert(operationId: string): Promise<{ message: string; senderName: string; timestamp: string } | null> {
     // Column names: operation_log_entries stores the text in `log_entry` and
     // the kind in `entry_type` (see logOperationEntry + toHydratedOperation's
-    // log mapping) — pinned by tests/deepDiveAuditFixes.test.ts.
+    // log mapping).
     const { data, error } = await supabase.from('operation_log_entries')
         .select('log_entry, created_at, author:users!operation_log_entries_author_id_fkey(name)')
         .eq('operation_id', operationId)
@@ -148,23 +147,35 @@ const OPS_SELECT = `
 /**
  * Visibility predicate for the operations LIST — shared by getOperations and
  * the single-row slice fetch (getOperationByIdLite) so the two paths can never
- * drift. Owners always see their own ops (an admin who created a
- * high-clearance op without holding the matching clearance still sees it);
- * everyone else goes through passesClearance, which enforces the clearance
- * LEVEL, every limiting MARKER on the op, and the operations:manage bypass —
- * the same gate operation:get_details applies (H3). Previously the list
- * checked only the level, so a member with sufficient clearance but missing a
- * compartment marker saw list rows they were denied from opening; the shared
- * predicate closes that asymmetry.
+ * drift. Owners always see their own ops (an admin who created a high-clearance
+ * op without holding the matching clearance still sees it); everyone else goes
+ * through passesClearance, which enforces the clearance LEVEL, every limiting
+ * MARKER on the op, and the operations:manage bypass — the same gate
+ * operation:get_details applies. Checking only the level would let a member with
+ * sufficient clearance but missing a compartment marker see list rows they're
+ * denied from opening; the shared predicate closes that asymmetry.
  *
- * Note: there is deliberately NO participant bypass — a participant added to
- * a compartmented op without holding its marker no longer sees it in their
- * personal lists (they could never open it via get_details anyway). If a
- * participant bypass is ever wanted, add it HERE and to the get_details gate
- * together — never let the two drift.
+ * There is deliberately NO participant bypass — a participant added to a
+ * compartmented op without holding its marker no longer sees it in their personal
+ * lists (they could never open it via get_details anyway). If a participant
+ * bypass is ever wanted, add it HERE and to the get_details gate together — never
+ * let the two drift.
+ *
+ * Accepts any op-shaped projection carrying the three gate fields so sibling read
+ * paths (e.g. the intel dossier ops list) reuse THIS predicate instead of
+ * re-implementing it and drifting.
  */
-export function canUserSeeOpInList(user: User, op: HydratedOperation): boolean {
-    return op.ownerId === user.id ||
+// Structural viewer type so non-ops modules (intel dossier, radio) can authorize
+// against the canonical predicates without importing the full hydrated User.
+// `id` is optional: a missing/string id simply never matches a numeric owner_id
+// (fail closed — clearance still applies).
+export type OpViewer = { id?: number | string } & ClearanceUser;
+
+export function canUserSeeOpInList(
+    user: OpViewer,
+    op: Pick<HydratedOperation, 'clearanceLevel'> & { ownerId?: number | null; limitingMarkers?: unknown[] },
+): boolean {
+    return (op.ownerId != null && op.ownerId === user.id) ||
         passesClearance(user, op.clearanceLevel, op.limitingMarkers, ['operations:manage']);
 }
 
@@ -182,14 +193,11 @@ export async function getOperations(user?: User | null): Promise<HydratedOperati
 
     let ops = (data || []).map(toHydratedOperation);
 
-    // SECURITY FILTER - clearance level. Owners and operations managers bypass
-    // the cap so an admin who created a high-clearance op without holding the
-    // matching clearance still sees it on the list. Without this bypass, an
-    // admin without an assigned clearance level (very common — clearance is a
-    // separate concept from role) effectively has level 0, which strips ALL
-    // ops with clearance > 0 even ones they own. That regressed visibility of
-    // legitimate operations and was the dominant cause of the "no ops loading"
-    // reports after the operations refactor landed.
+    // Clearance-level filter. Owners and operations managers bypass the cap so an
+    // admin who created a high-clearance op without holding the matching clearance
+    // still sees it on the list. Without this bypass, an admin without an assigned
+    // clearance level (clearance is a separate concept from role) is effectively
+    // level 0, which would strip ALL ops with clearance > 0 even ones they own.
     const before = ops.length;
     ops = ops.filter(op => canUserSeeOpInList(user, op));
     if (before > 0 && ops.length === 0) {
@@ -220,16 +228,15 @@ export async function getOperations(user?: User | null): Promise<HydratedOperati
  * full operations refetch instead of wrongly evicting a live op.
  */
 /**
- * SECURITY: clearance gate for op sub-resource actions that are
- * permission-gated only at operations:view (join / rsvp / toggle-ready /
- * timeline / AAR / logistics). verifyOperationAccess checks existence only,
- * so without this a member could act on operations the list/detail gates
- * hide from them (clearance bypass). Owner and operations:manage bypass —
- * the identical predicate the list (canUserSeeOpInList) and detail
- * (operation:get_details) reads apply. Light select: no participant/log
- * embeds.
+ * Clearance gate for op sub-resource actions that are permission-gated only at
+ * operations:view (join / rsvp / toggle-ready / timeline / AAR / logistics).
+ * verifyOperationAccess checks existence only, so without this a member could act
+ * on operations the list/detail gates hide from them (clearance bypass). Owner
+ * and operations:manage bypass — the identical predicate the list
+ * (canUserSeeOpInList) and detail (operation:get_details) reads apply. Light
+ * select: no participant/log embeds.
  */
-export async function assertOpVisibleToUser(operationId: string, user?: User | null): Promise<void> {
+export async function assertOpVisibleToUser(operationId: string, user?: OpViewer | null): Promise<void> {
     if (!user) throw new Error('Authentication required.');
     const { data, error } = await supabase.from('operations')
         .select('id, owner_id, clearance_level, limiting_markers:operation_limiting_markers(marker:security_limiting_markers(id, name, code))')
@@ -241,6 +248,19 @@ export async function assertOpVisibleToUser(operationId: string, user?: User | n
     const visible = data.owner_id === user.id
         || passesClearance(user, data.clearance_level || 0, markers, ['operations:manage']);
     if (!visible) throw new Error('Insufficient clearance to act on this operation.');
+}
+
+// The op's classification, read server-side. Used to stamp an extracted template
+// with its source op's clearance so the laundered plan can't be read below it.
+export async function getOperationClassification(operationId: string): Promise<{ classificationLevel: number; markerIds: number[] }> {
+    const { data } = await supabase.from('operations')
+        .select('clearance_level, limiting_markers:operation_limiting_markers(marker:security_limiting_markers(id))')
+        .eq('id', operationId)
+        .maybeSingle();
+    const markerIds = ((data?.limiting_markers || []) as Array<{ marker?: { id?: number } | null }>)
+        .map(m => m.marker?.id)
+        .filter((n): n is number => typeof n === 'number');
+    return { classificationLevel: data?.clearance_level ?? 0, markerIds };
 }
 
 export async function getOperationByIdLite(operationId: string, user?: User | null): Promise<HydratedOperation | null> {
@@ -294,12 +314,18 @@ export async function createOperation(opData: CreateOperationInput) {
         throw new Error("Cannot create operation: Missing Owner ID");
     }
 
+    // operations:create is NOT a clearance bypass. The creator may not set a
+    // clearance level above their own, nor attach a compartment marker they don't
+    // hold; operations:manage holders (read-side bypass) and Admins classify
+    // freely.
+    assertCanClassify(opData.user as ClearanceUser | undefined, opData.clearanceLevel ?? 0, opData.markerIds, ['operations:manage']);
+
     const dbPayload: Record<string, unknown> = {
         name: opData.name,
         type: opData.type,
-        // #14: strip HTML from free-text fields. Description renders as text
-        // today (no dangerouslySetInnerHTML) but stripping at the boundary
-        // prevents future surfaces from rendering injected markup as HTML.
+        // Strip HTML from free-text fields. Description renders as text today (no
+        // dangerouslySetInnerHTML) but stripping at the boundary prevents future
+        // surfaces from rendering injected markup as HTML.
         description: stripHtml(opData.description, 4000),
         tracks_uec: opData.tracksUec,
         owner_id: ownerId,
@@ -417,9 +443,8 @@ export async function createOperation(opData: CreateOperationInput) {
     }
 
     if (op && opData.markerIds && opData.markerIds.length > 0) {
-        // Verify the supplied marker IDs all belong to this org — without it,
-        // a caller could attach another tenant's marker definitions to their
-        // own operation.
+        // Verify the supplied marker IDs all exist before attaching them so a
+        // caller can't attach arbitrary marker definitions to their operation.
         const { data: validMarkers } = await supabase.from('security_limiting_markers')
             .select('id')
             .in('id', opData.markerIds)
@@ -478,7 +503,7 @@ export async function createOperation(opData: CreateOperationInput) {
                 const { instantiateTemplateOnOperation } = await import('./operation-templates.js');
                 await instantiateTemplateOnOperation(op.id, opData.templateId, {
                     scheduledStart: opData.scheduledStart || null,
-                });
+                }, (opData as { user?: ClearanceUser | null }).user ?? null);
             }
         } catch (e: unknown) {
             log.warn('createOperation phase seeding failed', { err: e });
@@ -609,16 +634,39 @@ export async function deleteOperation(operationId: string, userId: number) {
 
 interface UpdateOperationInput {
     markerIds?: number[];
+    clearanceLevel?: number;
     [key: string]: unknown;
 }
 
-export async function updateOperationDetails(operationId: string, updates: UpdateOperationInput, userId: number) {
-    const { count } = await supabase.from('operations').select('id', { count: 'exact', head: true }).eq('id', operationId);
-    if (!count) throw new Error("Operation not found or access denied.");
+export async function updateOperationDetails(operationId: string, updates: UpdateOperationInput, userId: number, actor?: ClearanceUser | null) {
+    // Editing an op must not let a caller relabel/downgrade an op they can't
+    // currently SEE:
+    //   (a) the editor must be cleared to see the LIVE op before mutating any
+    //       field (current-visibility guard — blocks downgrade-to-disclose), and
+    //   (b) any NEW clearance level / markers must be at/below the actor's own
+    //       clearance and use only markers they hold (mislabel-UP guard).
+    // operations:manage holders + Admins (the read-side bypass population) may
+    // classify freely — identical to createOperation's assertCanClassify gate.
+    const { data: live } = await supabase.from('operations')
+        .select('id, clearance_level, limiting_markers:operation_limiting_markers(marker:security_limiting_markers(id, name, code))')
+        .eq('id', operationId)
+        .maybeSingle();
+    if (!live) throw new Error("Operation not found or access denied.");
+    const liveMarkers = ((live as { limiting_markers?: { marker?: unknown }[] }).limiting_markers || [])
+        .map((m) => m.marker).filter(Boolean);
+    if (!passesClearance(actor, live.clearance_level ?? 0, liveMarkers, ['operations:manage'])) {
+        throw new Error('You are not cleared to edit this operation.');
+    }
+    // Changing the classification additionally requires the NEW label to be at
+    // or below the actor's clearance and to use only markers they hold. Falls
+    // back to the live level for marker-only edits.
+    if (updates.clearanceLevel !== undefined || updates.markerIds !== undefined) {
+        assertCanClassify(actor, updates.clearanceLevel ?? live.clearance_level ?? 0, updates.markerIds, ['operations:manage']);
+    }
 
     const dbUpdates: Record<string, unknown> = {};
     if (updates.name !== undefined) dbUpdates.name = updates.name;
-    // #14: strip HTML on description / AAR fields when edited via this path too
+    // Strip HTML on description / AAR fields when edited via this path too.
     if (updates.description !== undefined) dbUpdates.description = stripHtml(updates.description, 4000);
     if (updates.type !== undefined) dbUpdates.type = updates.type;
     if (updates.maxParticipants !== undefined) dbUpdates.max_participants = updates.maxParticipants;
@@ -876,9 +924,9 @@ export async function setOperationPayoutMode(
     }
     await verifyOperationAccess(operationId);
 
-    // Defense-in-depth: pin the UPDATE to the host org. verifyOperationAccess
-    // already gates by ally-or-owner; the DB write should also match the host
-    // so a future regression in the gate can't smuggle a cross-tenant write.
+    // verifyOperationAccess already gates by ally-or-owner; pin the UPDATE to the
+    // operation as well so a future regression in the gate can't smuggle a write
+    // to another op.
     const { error } = await supabase.from('operations')
         .update({ payout_mode: mode })
         .eq('id', operationId)
@@ -1012,13 +1060,18 @@ export async function toggleParticipantReady(operationId: string, userId: number
 export async function updateParticipantLiveStatus(operationId: string, userId: number, liveStatus: string) {
     await verifyOperationAccess(operationId);
 
+    // The free-text status is both persisted and embedded in a STATUS_CHANGE log
+    // entry. Strip HTML at the boundary so injected markup can't ride into a
+    // future surface that renders the status / log as HTML, and cap its length.
+    const safeStatus = stripHtmlSingleLine(liveStatus, 200);
+
     const { error } = await supabase.from('operation_participants')
-        .update({ live_status: liveStatus })
+        .update({ live_status: safeStatus })
         .eq('operation_id', operationId)
         .eq('user_id', userId);
     handleSupabaseError({ error, message: 'Failed to update participant live status' });
     const actor = await getUserById(userId);
-    await logOperationEntry(operationId, 'STATUS_CHANGE', `${actor?.name || 'Unknown'} set personal status to ${liveStatus}`, userId);
+    await logOperationEntry(operationId, 'STATUS_CHANGE', `${actor?.name || 'Unknown'} set personal status to ${safeStatus}`, userId);
     await broadcastOperationUpdate(operationId);
 }
 
@@ -1092,7 +1145,10 @@ export async function addOperationPhase(operationId: string, data: Record<string
     return result;
 }
 
-export async function updateOperationPhase(phaseId: number, data: Record<string, unknown>): Promise<{ cascadedTasks: number; cascadedMilestones: number }> {
+export async function updateOperationPhase(phaseId: number, data: Record<string, unknown>, operationId?: string): Promise<{ cascadedTasks: number; cascadedMilestones: number }> {
+    // Scope by the (already verified) operation so a foreign child id can't be
+    // mutated by passing your own operationId past verifyOperationAccess.
+    if (!operationId) throw new Error('updateOperationPhase: operationId is required');
     const updates: Record<string, unknown> = {};
     if (data.name !== undefined) updates.name = data.name;
     if (data.description !== undefined) updates.description = data.description;
@@ -1100,18 +1156,20 @@ export async function updateOperationPhase(phaseId: number, data: Record<string,
     if (data.sortOrder !== undefined) updates.sort_order = data.sortOrder;
     if (data.status !== undefined) updates.status = data.status;
     if (data.color !== undefined) updates.color = data.color;
-    const { error } = await supabase.from('operation_phases').update(updates).eq('id', phaseId);
+    const { error } = await supabase.from('operation_phases').update(updates).eq('id', phaseId).eq('operation_id', operationId);
     handleSupabaseError({ error, message: 'Failed to update phase' });
 
     // When a phase transitions to Completed, cascade child tasks and schedule
     // entries whose status is Pending/Active onto Completed. Failed and Skipped
     // children are intentionally left alone — their terminal state is meaningful.
     // Schedule entries default to a null status, which the UI treats as Pending,
-    // so null is included in the cascade-eligible set.
+    // so null is included in the cascade-eligible set. The cascade UPDATEs are
+    // scoped by operation_id too so a foreign phaseId can't cascade across ops.
     if (data.status === 'Completed') {
         const { data: cascadedTasks, error: taskErr } = await supabase
             .from('operation_tasks')
             .update({ status: 'Completed' })
+            .eq('operation_id', operationId)
             .eq('phase_id', phaseId)
             .in('status', ['Pending', 'Active'])
             .select('id');
@@ -1122,6 +1180,7 @@ export async function updateOperationPhase(phaseId: number, data: Record<string,
         const { data: cascadedActive, error: actErr } = await supabase
             .from('operation_schedule_entries')
             .update({ status: 'Completed' })
+            .eq('operation_id', operationId)
             .eq('phase_id', phaseId)
             .in('status', ['Pending', 'Active'])
             .select('id');
@@ -1130,6 +1189,7 @@ export async function updateOperationPhase(phaseId: number, data: Record<string,
         const { data: cascadedNull, error: nullErr } = await supabase
             .from('operation_schedule_entries')
             .update({ status: 'Completed' })
+            .eq('operation_id', operationId)
             .eq('phase_id', phaseId)
             .is('status', null)
             .select('id');
@@ -1145,7 +1205,7 @@ export async function updateOperationPhase(phaseId: number, data: Record<string,
 }
 
 export async function deleteOperationPhase(phaseId: number, operationId?: string) {
-    // Scope by the (already org-verified) operation so a foreign child id can't be
+    // Scope by the (already verified) operation so a foreign child id can't be
     // deleted by passing your own operationId past verifyOperationAccess.
     if (!operationId) throw new Error('deleteOperationPhase: operationId is required');
     const { error } = await supabase.from('operation_phases').delete()
@@ -1175,7 +1235,9 @@ export async function addScheduleEntry(operationId: string, data: Record<string,
     return result;
 }
 
-export async function updateScheduleEntry(entryId: number, data: Record<string, unknown>) {
+export async function updateScheduleEntry(entryId: number, data: Record<string, unknown>, operationId?: string) {
+    // Scope by the (already verified) operation.
+    if (!operationId) throw new Error('updateScheduleEntry: operationId is required');
     const updates: Record<string, unknown> = {};
     if (data.label !== undefined) updates.label = data.label;
     // Empty string → null lets the form clear a previously-set time.
@@ -1184,7 +1246,7 @@ export async function updateScheduleEntry(entryId: number, data: Record<string, 
     if (data.notes !== undefined) updates.notes = data.notes;
     if (data.status !== undefined) updates.status = data.status;
     if (data.sortOrder !== undefined) updates.sort_order = data.sortOrder;
-    const { error } = await supabase.from('operation_schedule_entries').update(updates).eq('id', entryId);
+    const { error } = await supabase.from('operation_schedule_entries').update(updates).eq('id', entryId).eq('operation_id', operationId);
     handleSupabaseError({ error, message: 'Failed to update schedule entry' });
 }
 
@@ -1216,7 +1278,9 @@ export async function addOperationTask(operationId: string, data: Record<string,
     return result;
 }
 
-export async function updateOperationTask(taskId: number, data: Record<string, unknown>) {
+export async function updateOperationTask(taskId: number, data: Record<string, unknown>, operationId?: string) {
+    // Scope by the (already verified) operation.
+    if (!operationId) throw new Error('updateOperationTask: operationId is required');
     const updates: Record<string, unknown> = {};
     if (data.title !== undefined) updates.title = data.title;
     if (data.description !== undefined) updates.description = data.description;
@@ -1227,7 +1291,7 @@ export async function updateOperationTask(taskId: number, data: Record<string, u
     if (data.status !== undefined) updates.status = data.status;
     if (data.priority !== undefined) updates.priority = data.priority;
     if (data.sortOrder !== undefined) updates.sort_order = data.sortOrder;
-    const { error } = await supabase.from('operation_tasks').update(updates).eq('id', taskId);
+    const { error } = await supabase.from('operation_tasks').update(updates).eq('id', taskId).eq('operation_id', operationId);
     handleSupabaseError({ error, message: 'Failed to update task' });
 }
 
@@ -1261,7 +1325,9 @@ export async function addCommandNode(operationId: string, data: Record<string, u
     return result;
 }
 
-export async function updateCommandNode(nodeId: number, data: Record<string, unknown>) {
+export async function updateCommandNode(nodeId: number, data: Record<string, unknown>, operationId?: string) {
+    // Scope by the (already verified) operation.
+    if (!operationId) throw new Error('updateCommandNode: operationId is required');
     const updates: Record<string, unknown> = {};
     if (data.parentId !== undefined) updates.parent_id = data.parentId || null;
     if (data.label !== undefined) updates.label = data.label;
@@ -1275,7 +1341,7 @@ export async function updateCommandNode(nodeId: number, data: Record<string, unk
     if (data.icon !== undefined) updates.icon = data.icon;
     if (data.sortOrder !== undefined) updates.sort_order = data.sortOrder;
     if (data.liveStatus !== undefined) updates.live_status = data.liveStatus || null;
-    const { error } = await supabase.from('operation_command_nodes').update(updates).eq('id', nodeId);
+    const { error } = await supabase.from('operation_command_nodes').update(updates).eq('id', nodeId).eq('operation_id', operationId);
     handleSupabaseError({ error, message: 'Failed to update command node' });
 }
 
@@ -1293,14 +1359,12 @@ export async function deleteCommandNode(nodeId: number, operationId?: string) {
 /**
  * Per-op realtime channel for tactical board deltas.
  *
- * Why a dedicated channel: every board mutation used to broadcast
- * `operation_update` on the org-wide `db-changes` channel, which fans
- * out to every connected user (N+1 billed messages on Supabase).
- * The board audience is much smaller — typically 1–5 users actively viewing a
- * given operation — so we narrow the fan-out to `op-board-{operationId}` and
- * skip the org-wide `operation_update` for board-only edits. Other detail
- * mutations (phases, tasks, command nodes, logistics, AAR) still go through
- * `broadcastOpChange()` so OperationDetailView refetches them.
+ * A dedicated channel narrows the fan-out: the board audience is small
+ * (typically 1–5 users actively viewing a given operation), so board mutations
+ * go to `op-board-{operationId}` instead of the org-wide `operation_update`
+ * (which fans out to every connected user). Other detail mutations (phases,
+ * tasks, command nodes, logistics, AAR) still go through `broadcastOpChange()`
+ * so OperationDetailView refetches them.
  */
 function boardChannelName(operationId: string) {
     return `op-board-${operationId}`;
@@ -1343,7 +1407,9 @@ export async function addBoardElement(operationId: string, data: Record<string, 
     return result;
 }
 
-export async function updateBoardElement(elementId: number, data: Record<string, unknown>) {
+export async function updateBoardElement(elementId: number, data: Record<string, unknown>, operationId?: string) {
+    // Scope by the (already verified) operation.
+    if (!operationId) throw new Error('updateBoardElement: operationId is required');
     const updates: Record<string, unknown> = {};
     if (data.elementType !== undefined) updates.element_type = data.elementType;
     if (data.label !== undefined) updates.label = data.label;
@@ -1356,7 +1422,7 @@ export async function updateBoardElement(elementId: number, data: Record<string,
     if (data.data !== undefined) updates.data = data.data;
     if (data.layer !== undefined) updates.layer = data.layer;
     if (data.sortOrder !== undefined) updates.sort_order = data.sortOrder;
-    const { error } = await supabase.from('operation_board_elements').update(updates).eq('id', elementId);
+    const { error } = await supabase.from('operation_board_elements').update(updates).eq('id', elementId).eq('operation_id', operationId);
     handleSupabaseError({ error, message: 'Failed to update board element' });
 }
 
@@ -1440,7 +1506,9 @@ export async function addLogisticsItem(operationId: string, data: Record<string,
     return result;
 }
 
-export async function updateLogisticsItem(itemId: number, data: Record<string, unknown>) {
+export async function updateLogisticsItem(itemId: number, data: Record<string, unknown>, operationId?: string) {
+    // Scope by the (already verified) operation.
+    if (!operationId) throw new Error('updateLogisticsItem: operationId is required');
     const updates: Record<string, unknown> = {};
     if (data.itemName !== undefined) updates.item_name = data.itemName;
     if (data.quantityNeeded !== undefined) updates.quantity_needed = data.quantityNeeded;
@@ -1449,7 +1517,7 @@ export async function updateLogisticsItem(itemId: number, data: Record<string, u
     if (data.category !== undefined) updates.category = data.category;
     if (data.status !== undefined) updates.status = data.status;
     if (data.notes !== undefined) updates.notes = data.notes;
-    const { error } = await supabase.from('operation_logistics').update(updates).eq('id', itemId);
+    const { error } = await supabase.from('operation_logistics').update(updates).eq('id', itemId).eq('operation_id', operationId);
     handleSupabaseError({ error, message: 'Failed to update logistics item' });
 }
 
@@ -1460,16 +1528,30 @@ export async function deleteLogisticsItem(itemId: number, operationId?: string) 
     handleSupabaseError({ error, message: 'Failed to delete logistics item' });
 }
 
-export async function fulfillLogisticsItem(itemId: number, quantity: number, userId: number) {
-    const { data: item } = await supabase.from('operation_logistics').select('quantity_fulfilled, quantity_needed').eq('id', itemId).single();
+// Largest single fulfilment increment accepted from a client. Defends the
+// integer accumulator (quantity_fulfilled) against an absurd/overflowing value
+// while staying well above any realistic logistics quantity.
+const MAX_FULFILL_QUANTITY = 1_000_000;
+
+export async function fulfillLogisticsItem(itemId: number, quantity: number, userId: number, operationId?: string) {
+    // Scope by the (already verified) operation so a foreign itemId can't be
+    // fulfilled by passing your own operationId past verifyOperationAccess.
+    if (!operationId) throw new Error('fulfillLogisticsItem: operationId is required');
+    // Clamp the increment to a non-negative bounded integer — a NaN/negative/
+    // fractional/huge client value must not corrupt the fulfilment accumulator.
+    const qty = Math.floor(Number(quantity));
+    if (!Number.isFinite(qty) || qty < 0 || qty > MAX_FULFILL_QUANTITY) {
+        throw new Error(`Fulfilment quantity must be between 0 and ${MAX_FULFILL_QUANTITY}.`);
+    }
+    const { data: item } = await supabase.from('operation_logistics').select('quantity_fulfilled, quantity_needed').eq('id', itemId).eq('operation_id', operationId).single();
     if (!item) throw new Error('Logistics item not found');
-    const newFulfilled = (item.quantity_fulfilled || 0) + quantity;
+    const newFulfilled = (item.quantity_fulfilled || 0) + qty;
     const newStatus = newFulfilled >= item.quantity_needed ? 'Fulfilled' : newFulfilled > 0 ? 'Partial' : 'Needed';
     const { error } = await supabase.from('operation_logistics').update({
         quantity_fulfilled: newFulfilled,
         fulfilled_by_user_id: userId,
         status: newStatus,
-    }).eq('id', itemId);
+    }).eq('id', itemId).eq('operation_id', operationId);
     handleSupabaseError({ error, message: 'Failed to fulfill logistics item' });
 }
 
@@ -1480,7 +1562,11 @@ export async function fulfillLogisticsItem(itemId: number, quantity: number, use
 export async function addAAREntry(operationId: string, data: Record<string, unknown>) {
     const { data: result, error } = await supabase.from('operation_aar_entries').insert({
         operation_id: operationId,
-        author_id: data.authorId || data.userId,
+        // Author is ALWAYS the dispatcher-injected actor (data.userId), never
+        // data.authorId. The dispatcher's actor-field overwrite is top-level only
+        // and does NOT recurse into payload.data, so honouring a nested `authorId`
+        // would let an attacker forge AAR attribution to another user.
+        author_id: data.userId,
         category: data.category || 'observation',
         content: data.content,
     }).select().single();
@@ -1559,7 +1645,7 @@ export async function generateAARDraftForOperation(operationId: string) {
 
 export async function submitAAR(operationId: string, userId: number, summary: string, lessonsLearned: string) {
     const { error } = await supabase.from('operations').update({
-        // #14: strip HTML from AAR free-text fields at the save boundary.
+        // Strip HTML from AAR free-text fields at the save boundary.
         aar_summary: stripHtml(summary, 8000),
         aar_lessons_learned: stripHtml(lessonsLearned, 8000),
         aar_submitted_at: new Date().toISOString(),

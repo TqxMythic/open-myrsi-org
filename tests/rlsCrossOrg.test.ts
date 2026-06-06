@@ -19,13 +19,11 @@ function tablesFromSchema(): string[] {
     }
 }
 
-// Cross-org RLS smoke test. The application layer enforces tenant isolation
-// at api/services.ts:740-755 (TENANT ISOLATION CHECK), but the database
-// itself should refuse cross-org reads even if that check is bypassed —
-// otherwise the multi-tenant story has no defense in depth. This test
-// connects as the ANON role (no authenticated user) and verifies that
-// reads against org-scoped tables either return zero rows or an
-// RLS-denial error.
+// Cross-org RLS smoke test. The application layer enforces tenant isolation in
+// api/services.ts, but the database itself should refuse cross-org reads even if
+// that check is bypassed, for defense in depth. This test connects as the anon
+// role (no authenticated user) and verifies that reads against org-scoped tables
+// either return zero rows or an RLS-denial error.
 //
 // SKIPPED by default — only runs when explicitly opted in via
 // RLS_TEST_LIVE=1, because it requires a reachable Supabase instance

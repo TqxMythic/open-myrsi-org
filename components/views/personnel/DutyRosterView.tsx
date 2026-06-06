@@ -39,8 +39,8 @@ const DutyRosterView: React.FC = () => {
     const [isLoading, setIsLoading] = useState(true);
     const [togglingId, setTogglingId] = useState<number | null>(null);
 
-    // #13: dual-mode rendering + cross-cutting filter chips. State persists
-    // across mode switches so the user's filter selections aren't lost.
+    // Dual-mode rendering + cross-cutting filter chips. State persists across
+    // mode switches so the user's filter selections aren't lost.
     const [rosterMode, setRosterMode] = useState<RosterMode>('hierarchy');
     const [unitFilter, setUnitFilter] = useState<Set<number>>(new Set());
     const [rankFilter, setRankFilter] = useState<Set<number>>(new Set());
@@ -276,9 +276,7 @@ const DutyRosterView: React.FC = () => {
                 ))}
             />
 
-            {/* Body */}
             <div className="flex-1 overflow-hidden p-4 sm:p-6 flex flex-col gap-4">
-                {/* Filter row: mode toggle + filter chips */}
                 <div className="flex flex-wrap items-center gap-2">
                     <div className="flex bg-slate-900/60 rounded-lg border border-slate-700 p-0.5">
                         {(['hierarchy', 'flat'] as RosterMode[]).map(m => (
@@ -319,7 +317,6 @@ const DutyRosterView: React.FC = () => {
                     )}
                 </div>
 
-                {/* Search */}
                 <div className="relative max-w-2xl">
                     <i className="fa-solid fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-500"></i>
                     <input
@@ -488,10 +485,7 @@ const DutyRosterView: React.FC = () => {
     );
 };
 
-// ---------------------------------------------------------------------------
 // Flat-mode helpers
-// ---------------------------------------------------------------------------
-
 const FlatColumnHeaders: React.FC<{
     sortKey: FlatSortKey;
     sortDir: SortDir;

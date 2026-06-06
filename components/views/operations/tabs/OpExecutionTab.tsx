@@ -55,7 +55,6 @@ const highestPriority = (tasks: OperationTask[]): string | null => {
 const inputClass = "w-full bg-slate-900/80 border border-slate-700/50 text-white text-sm rounded-lg px-3 py-2.5 outline-hidden focus:border-purple-500/50 focus:ring-1 focus:ring-purple-500/30 transition-all scheme-light";
 const labelClass = "text-[10px] text-slate-400 uppercase font-bold tracking-wider mb-1.5 block";
 
-// Countdown timer
 const CountdownTimer: React.FC<{ targetTime: number }> = ({ targetTime }) => {
     const [, setTick] = useState(0);
     React.useEffect(() => {
@@ -79,7 +78,6 @@ interface PhaseGroup {
     tasks: OperationTask[];
 }
 
-// ── Kebab Menu (portal-based popover) ──
 const KebabMenu: React.FC<{ children: React.ReactNode; onClose: () => void; triggerRef?: React.RefObject<HTMLButtonElement | null> }> = ({ children, onClose, triggerRef }) => {
     const ref = useRef<HTMLDivElement>(null);
     const [pos, setPos] = useState<{ top: number; left: number; flipUp: boolean }>({ top: 0, left: 0, flipUp: false });
@@ -116,7 +114,6 @@ const KebabMenu: React.FC<{ children: React.ReactNode; onClose: () => void; trig
     );
 };
 
-// ── Inline editable text ──
 const InlineEdit: React.FC<{
     value: string;
     onSave: (val: string) => void;
@@ -165,7 +162,6 @@ const OpExecutionTab: React.FC<OpExecutionTabProps> = ({ operation, canManage, o
     const activeParticipants = useMemo(() => (operation.participants || []).filter(p => p.timeLeft === null), [operation.participants]);
     const now = Date.now();
 
-    // ── Quick-add states ──
     const [addingPhase, setAddingPhase] = useState(false);
     const [newPhaseName, setNewPhaseName] = useState('');
     const [addingMilestoneFor, setAddingMilestoneFor] = useState<string | null>(null); // phase key
@@ -175,20 +171,16 @@ const OpExecutionTab: React.FC<OpExecutionTabProps> = ({ operation, canManage, o
     const [newTaskTitle, setNewTaskTitle] = useState('');
     const [saving, setSaving] = useState(false);
 
-    // ── Kebab menu state ──
     const [kebabOpen, setKebabOpen] = useState<string | null>(null); // e.g. "phase-3", "milestone-7", "task-12"
     const [kebabSaving, setKebabSaving] = useState(false);
     const kebabTriggerRef = useRef<HTMLButtonElement | null>(null);
 
-    // ── Kebab edit fields ──
     const [kebabFields, setKebabFields] = useState<Record<string, any>>({});
 
-    // ── Drag state ──
     const [dragItem, setDragItem] = useState<{ type: 'phase' | 'milestone' | 'task'; id: number } | null>(null);
     const [dropTarget, setDropTarget] = useState<{ type: 'phase' | 'milestone' | 'task'; id: number; position: 'before' | 'after' } | null>(null);
     const [dragOverPhase, setDragOverPhase] = useState<string | null>(null);
 
-    // ── Refs for quick-add auto-focus ──
     const phaseInputRef = useRef<HTMLInputElement>(null);
     const milestoneInputRef = useRef<HTMLInputElement>(null);
     const taskInputRef = useRef<HTMLInputElement>(null);
@@ -197,7 +189,6 @@ const OpExecutionTab: React.FC<OpExecutionTabProps> = ({ operation, canManage, o
     useEffect(() => { if (addingMilestoneFor) milestoneInputRef.current?.focus(); }, [addingMilestoneFor]);
     useEffect(() => { if (addingTaskFor) taskInputRef.current?.focus(); }, [addingTaskFor]);
 
-    // ── Phase groups ──
     const phaseGroups = useMemo(() => {
         const sortedPhases = [...phases].sort((a, b) => a.sortOrder - b.sortOrder);
         const groups: PhaseGroup[] = [];
@@ -214,13 +205,9 @@ const OpExecutionTab: React.FC<OpExecutionTabProps> = ({ operation, canManage, o
         return groups;
     }, [phases, entries, tasks]);
 
-    // Stats
     const completedTasks = tasks.filter(t => t.status === 'Completed').length;
     const activePhasesCount = phases.filter(p => p.status === 'Active').length;
 
-    // ════════════════════════════════════════════
-    // CRUD handlers
-    // ════════════════════════════════════════════
 
     const handleAddPhase = useCallback(async (name: string) => {
         if (!name.trim()) return;
@@ -356,9 +343,6 @@ const OpExecutionTab: React.FC<OpExecutionTabProps> = ({ operation, canManage, o
         } finally { setKebabSaving(false); }
     }, [rpcAction, operation.id, onRefresh, confirm, kebabSaving]);
 
-    // ════════════════════════════════════════════
-    // Drag & Drop
-    // ════════════════════════════════════════════
 
     const handleDragStart = useCallback((e: React.DragEvent, type: 'phase' | 'milestone' | 'task', id: number) => {
         setDragItem({ type, id });
@@ -466,9 +450,6 @@ const OpExecutionTab: React.FC<OpExecutionTabProps> = ({ operation, canManage, o
         setDragOverPhase(null);
     }, [dragItem, dropTarget, phases, entries, tasks, rpcAction, operation.id, onRefresh]);
 
-    // ════════════════════════════════════════════
-    // Kebab menu helpers
-    // ════════════════════════════════════════════
 
     const openKebab = useCallback((key: string, fields: Record<string, any>, triggerEl?: HTMLButtonElement | null) => {
         setKebabOpen(key);
@@ -526,9 +507,6 @@ const OpExecutionTab: React.FC<OpExecutionTabProps> = ({ operation, canManage, o
         return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
     };
 
-    // ════════════════════════════════════════════
-    // Render
-    // ════════════════════════════════════════════
 
     return (
         <div className="p-6 lg:p-8 space-y-4">

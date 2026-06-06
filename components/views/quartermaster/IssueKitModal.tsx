@@ -180,7 +180,6 @@ export default function IssueKitModal({
             width="max-w-xl"
         >
             <div className="p-5 space-y-4">
-                {/* Member selector */}
                 {member ? (
                     <div className="flex items-center gap-3 bg-slate-900/60 border border-white/10 rounded-lg p-3">
                         <img src={member.avatarUrl} alt="" className="w-10 h-10 rounded-full shrink-0 object-cover" />
@@ -226,7 +225,6 @@ export default function IssueKitModal({
                     </div>
                 )}
 
-                {/* Kit line items */}
                 <div>
                     <div className="flex items-center justify-between mb-1">
                         <span className="text-[10px] font-mono uppercase tracking-widest text-slate-400">Items in kit</span>
@@ -279,7 +277,6 @@ export default function IssueKitModal({
                         </div>
                     )}
 
-                    {/* Inventory picker */}
                     {pickerOpen && (
                         <div className="bg-slate-950/60 border border-white/5 rounded-lg p-2">
                             <input
@@ -327,7 +324,6 @@ export default function IssueKitModal({
                     )}
                 </div>
 
-                {/* Shared kit settings */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <label className="block">
                         <span className="text-[10px] font-mono uppercase tracking-widest text-slate-400">Due back (optional)</span>
@@ -352,7 +348,6 @@ export default function IssueKitModal({
                     </label>
                 </div>
 
-                {/* Actions */}
                 <div className="flex items-center justify-between gap-2 pt-2">
                     <div className="text-[10px] text-slate-500 font-mono uppercase tracking-widest">
                         {lines.length > 0 && `${lines.length} ${lines.length === 1 ? 'line' : 'lines'} · ${totalItems}× total`}

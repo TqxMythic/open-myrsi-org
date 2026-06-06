@@ -2,26 +2,121 @@
 import { AccessToken, RoomServiceClient } from 'livekit-server-sdk';
 import { getOrgSecret } from './secrets.js';
 import { supabase } from './db/common.js';
+import { assertOpVisibleToUser } from './db/ops.js';
 import { log as baseLog } from './log.js';
 
 const log = baseLog.child({ module: 'lib.radio' });
 
-// Authenticated actor passed in by the dispatcher. SECURITY (H5): the radio
-// actions are reachable by any authenticated user (user:manage:self), so the
-// LiveKit grant MUST be authorized here against the actor's identity — the
-// client-supplied room name / participant name are NOT trusted.
+// The radio token-minting + status actions proxy to the external LiveKit API (a
+// metered service) and are reachable by any authenticated user (user:manage:self).
+// Without a per-user throttle a single member could loop radio:auth /
+// radio:op_auth / radio:status to run up the org's LiveKit bill — a cost-DoS. This
+// adds a per-user minute + daily cap keyed on the authenticated (server-derived,
+// unspoofable) user id, independent of the global per-IP limiter.
+//
+// In-memory, single-instance — same caveat as authRateLimit.ts / aiRateLimit.ts:
+// move to a shared store if the server is ever replicated.
+
+const RADIO_MINUTE_MS = 60_000;
+const RADIO_DAY_MS = 86_400_000;
+const RADIO_PER_MINUTE = 20;
+const RADIO_PER_DAY = 500;
+const RADIO_MAX_BUCKETS = 10_000;
+
+interface RadioRateBucket {
+    minuteCount: number;
+    minuteStart: number;
+    dayCount: number;
+    dayStart: number;
+}
+
+const radioBuckets = new Map<string, RadioRateBucket>();
+
+export interface RadioRateLimitResult {
+    ok: boolean;
+    /** Seconds until the relevant window resets. 0 when ok. */
+    retryAfter: number;
+    /** Which window tripped, for the error message. */
+    scope?: 'minute' | 'day';
+}
+
+/**
+ * Record a radio-action attempt for `userId` and decide if it may proceed.
+ * Fails open for a missing user id (the actions are reached only after the
+ * dispatcher injects the authenticated user, so a real caller always has one).
+ * `now` is injectable for tests.
+ */
+export function checkRadioRateLimit(userId: number | string | undefined | null, now: number = Date.now()): RadioRateLimitResult {
+    if (userId === undefined || userId === null || userId === '') return { ok: true, retryAfter: 0 };
+    const key = String(userId);
+
+    let b = radioBuckets.get(key);
+    if (!b) {
+        if (radioBuckets.size >= RADIO_MAX_BUCKETS) return { ok: true, retryAfter: 0 }; // shed under spray; IP limiter still caps
+        b = { minuteCount: 0, minuteStart: now, dayCount: 0, dayStart: now };
+        radioBuckets.set(key, b);
+    }
+    if (now - b.minuteStart >= RADIO_MINUTE_MS) { b.minuteCount = 0; b.minuteStart = now; }
+    if (now - b.dayStart >= RADIO_DAY_MS) { b.dayCount = 0; b.dayStart = now; }
+
+    if (b.dayCount >= RADIO_PER_DAY) {
+        return { ok: false, retryAfter: Math.max(1, Math.ceil((b.dayStart + RADIO_DAY_MS - now) / 1000)), scope: 'day' };
+    }
+    if (b.minuteCount >= RADIO_PER_MINUTE) {
+        return { ok: false, retryAfter: Math.max(1, Math.ceil((b.minuteStart + RADIO_MINUTE_MS - now) / 1000)), scope: 'minute' };
+    }
+    b.minuteCount += 1;
+    b.dayCount += 1;
+    return { ok: true, retryAfter: 0 };
+}
+
+/** Throwing convenience wrapper used by the radio action handlers. */
+export function assertRadioRateLimit(userId: number | string | undefined | null, now: number = Date.now()): void {
+    const r = checkRadioRateLimit(userId, now);
+    if (!r.ok) {
+        const err = new Error(`Radio request limit reached (per ${r.scope}). Try again in ${r.retryAfter}s.`) as Error & { code?: string };
+        err.code = 'RADIO_RATE_LIMITED';
+        throw err;
+    }
+}
+
+/** Periodic cleanup of fully-expired buckets. Returns the number removed. */
+export function pruneRadioRateLimitBuckets(now: number = Date.now()): number {
+    let removed = 0;
+    for (const [k, b] of radioBuckets.entries()) {
+        if (now - b.dayStart >= RADIO_DAY_MS && now - b.minuteStart >= RADIO_MINUTE_MS) {
+            radioBuckets.delete(k);
+            removed++;
+        }
+    }
+    return removed;
+}
+
+/** Test-only: clear all bucket state. */
+export function _resetRadioRateLimit(): void {
+    radioBuckets.clear();
+}
+
+// Authenticated actor passed in by the dispatcher. The radio actions are
+// reachable by any authenticated user (user:manage:self), so the LiveKit grant
+// must be authorized here against the actor's identity — the client-supplied
+// room name / participant name are not trusted.
 export interface RadioUser {
     id: number | string;
     name?: string;
     role?: string;
     permissions?: string[];
     clearanceLevel?: { level?: number } | null;
+    // Compartment markers participate in op-voice authorization — the dispatcher
+    // injects the full authenticated user, so these are present at runtime and
+    // consumed by assertOpVisibleToUser.
+    limitingMarkers?: unknown[];
 }
 
 export async function generateRadioToken(user: RadioUser, room: string) {
-    // SECURITY (H5): the requested room must be a CONFIGURED radio channel
-    // (`radio-<channelId>`), not an arbitrary string. Without this a member could
-    // request `op-radio-<id>` or any room name and receive a join grant for it.
+    // The requested room must be a CONFIGURED radio channel (`radio-<channelId>`),
+    // not an arbitrary string. Without this a member could request
+    // `op-radio-<id>` or any room name and receive a join grant for it.
     const match = /^radio-(.+)$/.exec(String(room || ''));
     if (!match) throw new Error('Invalid radio channel');
     const channelId = match[1];
@@ -59,10 +154,10 @@ export async function generateRadioToken(user: RadioUser, room: string) {
     return { token: await at.toJwt(), url: wsUrl };
 }
 
-// SECURITY (L8/H5): participant identities + names of EVERY active room — incl.
-// private per-op comms — must not be handed to every authenticated member.
-// `includeParticipants` is set only for callers holding radio:manage; everyone
-// else receives room names + counts (presence) but no identities.
+// Participant identities + names of every active room — incl. private per-op
+// comms — must not be handed to every authenticated member. `includeParticipants`
+// is set only for callers holding radio:manage; everyone else receives room names
+// + counts (presence) but no identities.
 export async function getRadioStatus(opts?: { includeParticipants?: boolean }) {
     const includeParticipants = !!opts?.includeParticipants;
     const apiKey = await getOrgSecret('LIVEKIT_API_KEY');
@@ -110,26 +205,27 @@ export async function getRadioStatus(opts?: { includeParticipants?: boolean }) {
 }
 
 export async function generateOpRadioToken(user: RadioUser, operationId: string) {
-    // Confirm the operation exists + load the fields needed to authorize voice
-    // access.
+    // Confirm the operation exists + load the owner id for the bypass below.
     const { data: op, error: opErr } = await supabase
         .from('operations')
-        .select('id, owner_id, clearance_level')
+        .select('id, owner_id')
         .eq('id', operationId)
         .single();
     if (opErr || !op) throw new Error('Operation not found');
 
-    // SECURITY (H5): previously ANY authenticated user could mint a join token for
-    // ANY operation's voice room (eavesdrop/transmit on private op comms). Tie
-    // voice access to op visibility: owner / operations:manage bypass; otherwise
-    // the caller needs operations:view AND clearance at/above the op's level.
+    // Tie voice access to the canonical per-op visibility predicate. Owner /
+    // operations:manage bypass; everyone else needs operations:view (this action
+    // is reachable by any authenticated user via user:manage:self, so the view
+    // permission must be re-checked here) AND assertOpVisibleToUser, which
+    // enforces the clearance level and every limiting marker.
     const perms = user.permissions || [];
     const isOwner = op.owner_id === user.id;
     const canManage = user.role === 'Admin' || perms.includes('operations:manage');
-    const canView = perms.includes('operations:view');
-    const userClearance = user.clearanceLevel?.level ?? 0;
-    if (!isOwner && !canManage && !(canView && (op.clearance_level ?? 0) <= userClearance)) {
-        throw new Error('Insufficient clearance to join this operation channel.');
+    if (!isOwner && !canManage) {
+        if (!perms.includes('operations:view')) {
+            throw new Error('Insufficient clearance to join this operation channel.');
+        }
+        await assertOpVisibleToUser(operationId, user);
     }
 
     const apiKey = await getOrgSecret('LIVEKIT_API_KEY');

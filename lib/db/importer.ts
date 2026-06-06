@@ -472,7 +472,7 @@ export const IMPORTABLE_TABLES = new Set<string>([
     'operation_tasks', 'operation_schedule_entries', 'operation_participants',
     'operation_board_elements', 'operation_command_nodes', 'operation_log_entries',
     'operation_logistics', 'operation_aar_entries', 'operation_reminders',
-    'operation_limiting_markers', 'operation_locations', 'alliance_peers',
+    'operation_limiting_markers', 'operation_locations',
     'intel_reports', 'intel_report_limiting_markers', 'intel_bulletins',
     'intel_bulletin_limiting_markers', 'warrants', 'warrant_notes',
     'hr_interview_templates', 'hr_interview_questions', 'hr_applications',
@@ -517,6 +517,34 @@ const SEEDED_PRECLEAR: { table: string; col: string; val: unknown }[] = [
     { table: 'commendations', col: 'id', val: -1 },
     { table: 'radio_channels', col: 'id', val: '__never__' },
 ];
+
+// Settings keys that are DEPLOYMENT / integration config — they carry THIS
+// install's identity + credentials (Discord OAuth app, LiveKit, Gemini), NOT
+// portable org data. They are NEVER imported: an org export from another
+// deployment would otherwise overwrite the operator's local config, and because a
+// DB settings value WINS over process.env (api/query.ts), it would silently
+// shadow .env — e.g. importing the source org's discordConfig.clientId breaks
+// OAuth ("invalid redirect_uri") on the destination install. These are configured
+// per-install via .env / the admin console, so they are excluded from BOTH the
+// settings pre-clear and the insert, leaving the operator's local values intact.
+const SETTINGS_IMPORT_DENYLIST = new Set<string>([
+    // Secret-bearing config (the encrypted-at-rest set in lib/secrets.ts) — Discord
+    // OAuth app, LiveKit, Gemini. geminiKey is a SEPARATE row from aiConfig.
+    'discordConfig', 'radioConfig', 'aiConfig', 'geminiKey',
+    // Deployment bootstrap / runtime state — never portable. Importing these would
+    // shadow or falsely satisfy THIS install's first-boot + schema state (e.g. an
+    // imported admin_setup_code lets an export holder claim Admin; an imported
+    // setup_completed skips first-boot; schema_version is owned by schema.sql).
+    'admin_setup_code', 'setup_completed', 'schema_version',
+]);
+
+// Tables NEVER imported even though the export carries them: deployment-LOCAL
+// federation state. alliance_peers holds this install's crypto material
+// (outbound_key_enc, inbound_key_id → api_keys [not imported], entered_peer_code_enc,
+// handshake_*) and trust relationships — importing the SOURCE deployment's peer
+// credentials breaks federation auth and leaves dangling api_keys FKs. Federation is
+// re-established per-install via the handshake flow, so peer rows are not portable.
+const IMPORT_EXCLUDED_TABLES = new Set<string>(['alliance_peers']);
 
 // ---------------------------------------------------------------------------
 // Reset every sequence-backed table's id sequence to MAX(id) via the
@@ -712,7 +740,8 @@ export async function importOrgData(ndjson: string, onProgress?: ImportProgressF
         // settings: clear ONLY the keys the import re-inserts, so fork-only keys
         // (setup_completed, admin_setup_code) survive a re-import (admin-console path).
         const importedSettingsKeys = (parsed.rowsByTable.get('settings') || [])
-            .map((r) => r.key).filter((k): k is string => typeof k === 'string');
+            .map((r) => r.key).filter((k): k is string => typeof k === 'string')
+            .filter((k) => !SETTINGS_IMPORT_DENYLIST.has(k));   // never touch local deployment/integration config
         if (importedSettingsKeys.length > 0) {
             const { error } = await sb.from('settings').delete().in('key', importedSettingsKeys);
             if (error && error.code !== '42P01') {
@@ -740,8 +769,18 @@ export async function importOrgData(ndjson: string, onProgress?: ImportProgressF
 
         // Insert in header.tableOrder.
         for (const table of parsed.header.tableOrder) {
-            const rawRows = parsed.rowsByTable.get(table);
+            let rawRows = parsed.rowsByTable.get(table);
             if (!rawRows || rawRows.length === 0) continue;
+
+            // Deployment-local federation tables are never imported (peer crypto +
+            // dangling api_keys FKs would break federation auth). Re-pair on this install.
+            if (IMPORT_EXCLUDED_TABLES.has(table)) {
+                rowsSkipped += rawRows.length;
+                const msg = `${table}: deployment-local federation data (${rawRows.length} rows) — never imported; re-establish alliances via the handshake flow on this install.`;
+                warnings.push(msg);
+                await emit({ type: 'warning', message: msg });
+                continue;
+            }
 
             if (!IMPORTABLE_TABLES.has(table)) {
                 rowsSkipped += rawRows.length;
@@ -751,6 +790,23 @@ export async function importOrgData(ndjson: string, onProgress?: ImportProgressF
                 continue;
             }
 
+            // Deployment/integration settings (Discord OAuth app, LiveKit, Gemini)
+            // are never imported — they belong to THIS install (.env / local admin),
+            // and a DB value would shadow .env (api/query.ts). Drop them with a warning
+            // so the operator knows to configure them locally.
+            if (table === 'settings') {
+                const before = rawRows.length;
+                rawRows = rawRows.filter((r) => !SETTINGS_IMPORT_DENYLIST.has(String(r.key)));
+                const dropped = before - rawRows.length;
+                if (dropped > 0) {
+                    rowsSkipped += dropped;
+                    const msg = `settings: skipped ${dropped} deployment-config key(s) (${[...SETTINGS_IMPORT_DENYLIST].join(', ')}) — these stay local to this install; configure them via .env / the admin console.`;
+                    warnings.push(msg);
+                    await emit({ type: 'warning', message: msg });
+                }
+                if (rawRows.length === 0) continue;
+            }
+
             const warnStart = warnings.length;
             const prepared: Record<string, unknown>[] = [];
             const deferred: Record<string, unknown>[] = [];
@@ -758,7 +814,10 @@ export async function importOrgData(ndjson: string, onProgress?: ImportProgressF
             for (const raw of rawRows) {
                 const { row, selfRef, drop } = prepareRow(table, raw, catalogIndex, warnings);
                 if (drop) { rowsSkipped++; continue; } // unresolved required catalog FK → skip the row
-                if (table === 'users') row.auth_user_id = null; // re-link on first login
+                if (table === 'users') {
+                    row.auth_user_id = null;            // re-link on first login
+                    row.rsi_verification_code = null;   // transient per-install RSI token — never carry over
+                }
                 // Defer cross-table FKs that point to a not-yet-imported table; restore
                 // after the full import (e.g. units.leader_id → users).
                 if (deferredCols) {

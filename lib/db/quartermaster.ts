@@ -1,6 +1,7 @@
 import { supabase, handleSupabaseError, broadcastToOrg } from './common.js';
 import { toQmCatalogItem, toQmLocation, toQmInventoryItem, toQmIssuance, toQmPlatformItem, toQmPlatformCategory } from './mappers.js';
 import { sanitizeImageUrl } from '../imageUrl.js';
+import { safeSearchTerm } from '../pgrest.js';
 import { log as baseLog } from '../log.js';
 import {
     fetchAllUexItems,
@@ -28,9 +29,8 @@ const log = baseLog.child({ module: 'db.quartermaster' });
 
 export async function listCatalog(): Promise<QmCatalogItem[]> {
     // Org-custom rows only. Platform rows (UEX-sourced, ~5600+ items) are NOT
-    // eagerly loaded — tenants reach them via qm:search_catalog instead. This
-    // keeps tenant catalog payloads tiny and avoids rendering a giant card grid
-    // on every visit. See plan/glistening-knitting-canyon.md.
+    // eagerly loaded — tenants reach them via qm:search_catalog instead. Keeps
+    // tenant catalog payloads tiny and avoids rendering a giant card grid.
     const { data, error } = await supabase.from('quartermaster_catalog')
         .select('*')
         .eq('source', 'custom')
@@ -372,11 +372,8 @@ export async function listInventory(opts: ListInventoryOptions = {}): Promise<Qm
     if (opts.catalogId != null) q = q.eq('catalog_id', opts.catalogId);
     if (opts.search && opts.search.trim()) {
         const safe = opts.search.trim().replace(/[\\%_]/g, (m) => '\\' + m);
-        // Search across custom_name OR catalog name via joined table.
-        // PostgREST doesn't support cross-table OR, so we fetch by either path
-        // separately — but for now, custom_name is the cheap match; catalog
-        // name search is handled client-side on the visible page (keeps the
-        // SQL simple). Document for future work if needed.
+        // PostgREST can't cross-table OR, so we match only custom_name here;
+        // catalog-name search is handled client-side on the visible page.
         q = q.ilike('custom_name', `%${safe}%`);
     }
     q = q.order('created_at', { ascending: false }).range(offset, offset + limit - 1);
@@ -686,6 +683,14 @@ export async function issueDirect(
     return Number(data);
 }
 
+// Defensive upper bound on a single bulk issue/return call. A kit / return
+// batch this large is never a legitimate UI flow; reject outright (rather than
+// truncate, which would silently drop lines) as a circuit breaker against
+// write amplification from a runaway / hostile direct API consumer.
+// Mirrors the bulk-action caps in lib/db/users.ts (BULK_ACTION_MAX) and the
+// import/template caps (MAX_IMPORT_BATCH_SIZE, MAX_PHASES, ...).
+const MAX_BULK_LINES = 200;
+
 export interface IssueBulkInput {
     issuedToUserId: number;
     lines: { inventoryId: number; quantity: number }[];
@@ -699,6 +704,9 @@ export async function issueDirectBulk(
     input: IssueBulkInput,
 ): Promise<number[]> {
     if (!input.lines?.length) throw new Error('Kit must contain at least one item.');
+    if (input.lines.length > MAX_BULK_LINES) {
+        throw new Error(`qm:issue_bulk: kit capped at ${MAX_BULK_LINES} lines per call (got ${input.lines.length}).`);
+    }
 
     // Verify every inventory row belongs to this org before handing off to the
     // transaction-wrapped stored proc. The proc doesn't re-check tenant scope
@@ -809,6 +817,9 @@ export async function returnIssuanceBulk(
     input: ReturnBulkInput,
 ): Promise<number> {
     if (!input.lines?.length) throw new Error('No issuances selected for return.');
+    if (input.lines.length > MAX_BULK_LINES) {
+        throw new Error(`qm:return_bulk: return capped at ${MAX_BULK_LINES} lines per call (got ${input.lines.length}).`);
+    }
 
     // Tenant scope: every issuance must live in this org. The stored proc
     // trusts this has been checked. inventory_id rides the select so the
@@ -1138,8 +1149,8 @@ export async function getPlatformItemCatalog(opts: ListPlatformItemsOptions = {}
     const offset = Math.max(opts.offset ?? 0, 0);
     let qb = supabase.from('quartermaster_catalog').select('*').eq('source', 'platform');
     if (opts.search && opts.search.trim()) {
-        const safe = opts.search.trim().replace(/[\\%_]/g, (m) => '\\' + m);
-        qb = qb.or(`name.ilike.%${safe}%,subcategory.ilike.%${safe}%,company_name.ilike.%${safe}%`);
+        const safe = safeSearchTerm(opts.search); // allow-list before .or()
+        if (safe) qb = qb.or(`name.ilike.%${safe}%,subcategory.ilike.%${safe}%,company_name.ilike.%${safe}%`);
     }
     if (opts.platformCategoryId != null) qb = qb.eq('platform_category_id', opts.platformCategoryId);
     if (opts.hideVehicleItems) qb = qb.eq('is_vehicle_item', false);
@@ -1177,8 +1188,8 @@ export async function getPlatformItemCatalogWithUsage(opts: ListPlatformItemsOpt
 export async function getPlatformItemCatalogCount(opts: ListPlatformItemsOptions = {}): Promise<number> {
     let qb = supabase.from('quartermaster_catalog').select('*', { count: 'exact', head: true }).eq('source', 'platform');
     if (opts.search && opts.search.trim()) {
-        const safe = opts.search.trim().replace(/[\\%_]/g, (m) => '\\' + m);
-        qb = qb.or(`name.ilike.%${safe}%,subcategory.ilike.%${safe}%,company_name.ilike.%${safe}%`);
+        const safe = safeSearchTerm(opts.search); // allow-list before .or()
+        if (safe) qb = qb.or(`name.ilike.%${safe}%,subcategory.ilike.%${safe}%,company_name.ilike.%${safe}%`);
     }
     if (opts.platformCategoryId != null) qb = qb.eq('platform_category_id', opts.platformCategoryId);
     if (opts.hideVehicleItems) qb = qb.eq('is_vehicle_item', false);

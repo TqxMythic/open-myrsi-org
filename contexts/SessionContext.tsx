@@ -9,16 +9,12 @@
 //     user_update detail re-hydration). The supabase channel is org-scoped:
 //     `auth-alerts-<organizationId>`.
 //
-// As a TEMPORARY HOME, this file also holds the remaining
-// simpleAction-wrapper CRUD methods that used to live in AuthContext. They
-// move to their proper domain contexts (Requests, Warrants, Members, Intel)
-// in subsequent Phase 4 sweeps. Operations CRUD already moved (Phase 4a/b).
+// This file also holds the remaining session-scoped simpleAction-wrapper CRUD
+// methods (user self-service, admin claim, duty toggle).
 //
-// Provider tree position: SessionProvider mounts INSIDE DataProvider (it
-// reads slice state via useData()) and is the OUTERMOST of the three
-// providers that replaced AuthProvider — so PushNotification and Activity
-// can read from it. The AuthProvider shim in AuthContext.tsx wires the
-// nesting in the right order.
+// Provider tree position: SessionProvider mounts INSIDE DataProvider (it reads
+// slice state via useData()) and is the OUTERMOST of the three providers behind
+// the AuthProvider shim, so PushNotification and Activity can read from it.
 //
 // Force-logout enforcement is checked at two points:
 //   1. Initial page-load — inside refreshUser, comparing
@@ -31,6 +27,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import apiService from '../services/apiService';
 import { debugLog } from '../lib/debugLog';
+import { isValidOAuthState } from '../lib/oauthState';
 import { User, UserRole } from '../types';
 import { useData } from './DataContext';
 import { useDataCore } from './DataCoreContext';
@@ -46,11 +43,9 @@ import {
     type DateFormatPreset,
 } from '../lib/time';
 
-// The full set of fields/methods Session exposes. Mirrors the original
-// AuthContextType from contexts/AuthContext.tsx minus the push fields
-// (PushNotificationContext) and idleTime (ActivityContext). The shim in
-// AuthContext re-merges them so consumers of useAuth() see the original
-// shape.
+// The fields/methods Session exposes — the AuthContextType surface minus the
+// push fields (PushNotificationContext) and idleTime (ActivityContext), which
+// the AuthContext shim re-merges so useAuth() consumers see the full shape.
 export interface SessionContextValue {
     currentUser: User | null;
     pendingUser: any | null;
@@ -87,8 +82,7 @@ export interface SessionContextValue {
      *  timestamp Session uses on init. */
     sessionStartTime: React.MutableRefObject<string>;
 
-    // CRUD wrappers — Phase 2 temporary home, the remaining ones are
-    // session-scoped (user-self-service + admin claim + duty toggle).
+    // Session-scoped CRUD wrappers (user self-service, admin claim, duty toggle).
     toggleDutyStatus: (userId: number) => Promise<void>;
 
     updateUserSpecializations: (specIds: number[]) => Promise<void>;
@@ -109,9 +103,8 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const { hydrateFullState, discordConfig, brandingConfig, allUsers, fetchUserDetail } = useData();
     const { setIsTogglingDuty, addToast, playSound, setEamMessage, setOperationAlert } = useUI();
     const { simpleAction: coreSimpleAction, registerRealtimeAuth } = useDataCore();
-    // RequestsContext (Phase 4g) exposes a registerRefreshUser hook so its
-    // deleteRequest method can trigger a full session refresh after the RPC —
-    // preserves the original simpleAction(..., true) behaviour.
+    // RequestsContext exposes registerRefreshUser so its deleteRequest can
+    // trigger a full session refresh after the RPC.
     const { registerRefreshUser: registerReqsRefreshUser } = useRequests();
 
     const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -229,9 +222,7 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }, [hydrateFullState, enforceForceLogout]);
 
     // Register refreshUser with RequestsContext so deleteRequest can trigger
-    // a full session refresh after its RPC — preserves the original
-    // simpleAction('request:delete', ..., true) behaviour from before
-    // Phase 4g.
+    // a full session refresh after its RPC.
     useEffect(() => {
         const unreg = registerReqsRefreshUser(refreshUser);
         return unreg;
@@ -312,17 +303,19 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
                 const storedNonce = sessionStorage.getItem('oauth_csrf_nonce');
                 sessionStorage.removeItem('oauth_csrf_nonce');
 
-                if (rawState) {
-                    const stateParts = rawState.split(':');
-                    const receivedNonce = stateParts[stateParts.length - 1];
-                    if (!storedNonce || storedNonce !== receivedNonce) {
-                        console.error("OAuth CSRF validation failed — possible CSRF attack or stale session");
-                        window.history.replaceState({}, document.title, window.location.pathname);
-                        setAuthError('Sign-in could not be verified — your session may have expired or the page reloaded mid-login. Please try signing in again.');
-                        setIsLoadingAuth(false);
-                        setIsInitialized(true);
-                        return;
-                    }
+                // Fail closed: a legitimate login always carries
+                // state=`login:<nonce>` (or `admin_setup:<key>:<nonce>`). Absent
+                // state, a missing stored nonce, or a mismatch is treated as a
+                // login-CSRF / session-fixation attempt — abort BEFORE exchanging
+                // the code. The decision lives in the unit-tested isValidOAuthState
+                // so a refactor can't silently re-open it.
+                if (!isValidOAuthState(rawState, storedNonce)) {
+                    console.error("OAuth CSRF validation failed — missing/invalid state nonce");
+                    window.history.replaceState({}, document.title, window.location.pathname);
+                    setAuthError('Sign-in could not be verified — your session may have expired or the page reloaded mid-login. Please try signing in again.');
+                    setIsLoadingAuth(false);
+                    setIsInitialized(true);
+                    return;
                 }
 
                 // Strip nonce from state before sending to server (server only needs the claim key part)
@@ -334,11 +327,13 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
                 try {
                     const redirectUri = window.location.origin;
-                    const { user, isNewUser, adminSetupToken } = await apiService.discordCallback(code, state, redirectUri);
-                    // Carry the server-signed admin-setup grant (if any) into the
-                    // pending-user blob so finalize_setup can present it. The Admin
-                    // role is decided server-side from this grant, not from a flag.
-                    if (isNewUser) setPendingUser(adminSetupToken ? { ...user, adminSetupToken } : user);
+                    const { user, isNewUser, adminSetupToken, identityToken } = await apiService.discordCallback(code, state, redirectUri);
+                    // Carry the server-signed grants into the pending-user blob so
+                    // finalize_setup can present them: identityToken binds the new
+                    // account to this Discord id; adminSetupToken (if any) authorizes
+                    // the Admin role. Both decisions are made server-side from the
+                    // grants, not from any client flag.
+                    if (isNewUser) setPendingUser({ ...user, ...(adminSetupToken ? { adminSetupToken } : {}), ...(identityToken ? { identityToken } : {}) });
                     else {
                         setCurrentUser(user);
                         if (user.role === 'Admin') setNeedsSetup(false);
@@ -460,20 +455,17 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
         };
 
         const supabase = getSupabase();
-        // SECURITY: auth-alerts is a PRIVATE channel — subscribing requires
-        // the per-user realtime token (no token → no subscription; realtime
-        // alerts off, fail-closed). setAuth is idempotent on the shared
-        // client.
+        // auth-alerts is a PRIVATE channel — subscribing requires the per-user
+        // realtime token (no token → no subscription; alerts off, fail-closed).
+        // setAuth is idempotent on the shared client.
         if (!realtimeToken) return;
         void supabase.realtime.setAuth(realtimeToken);
         // Subscribe to real-time events for sounds (org-scoped channel)
         const channel = supabase.channel(`auth-alerts`, { config: { private: true } })
             .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'service_requests' }, (payload: any) => {
                 const req = payload.new;
-                // NOTIFICATION LOGIC:
-                // Staff (Members, Admin, Dispatcher) should ALWAYS hear about new requests.
-                // We rely on simple role checks here.
-                // Note: If RLS hides the row, this event won't fire anyway.
+                // Staff (Member/Dispatcher/Admin) hear about all new requests. If
+                // RLS hides the row, this event won't fire anyway.
                 const isStaff = currentUser.role === UserRole.Member || currentUser.role === UserRole.Dispatcher || currentUser.role === UserRole.Admin;
 
                 if (isStaff) {
@@ -676,9 +668,10 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
                 avatarUrl: pendingUser.avatarUrl,
                 rsiHandle,
                 verificationCode,
-                // Server ignores isAdmin; the grant token is the real authority.
+                // Server ignores isAdmin; the grant tokens are the real authority.
                 isAdmin: pendingUser.isAdminSetup,
                 adminSetupToken: pendingUser.adminSetupToken,
+                identityToken: pendingUser.identityToken,
                 skipVerification,
             });
             setCurrentUser(user);
@@ -691,19 +684,21 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }, [pendingUser, refreshUser]);
 
     const handleFinalizeAdminSetup = useCallback((claimKey?: string) => {
-        const clientId = discordConfig?.clientId || '1215421098650046524';
+        const clientId = discordConfig?.clientId;
+        if (!clientId) {
+            addToast("Discord Not Configured", <i className="fa-solid fa-triangle-exclamation"></i>, "bg-red-500/10 text-red-400 border-red-500/50", { description: "Discord OAuth has not been set up. Contact your administrator." });
+            return;
+        }
         const redirectUri = encodeURIComponent(window.location.origin);
         const nonce = generateOAuthNonce();
         // Pass claimKey and CSRF nonce in state
         const state = claimKey ? `admin_setup:${claimKey}:${nonce}` : `admin_setup::${nonce}`;
         window.location.href = `https://discord.com/api/oauth2/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&scope=identify&state=${state}`;
-    }, [discordConfig]);
+    }, [discordConfig, addToast]);
 
-    // Adapter for the legacy `(action, payload, refresh: boolean)` shape that
-    // AuthContext's simpleAction used. We translate `refresh === true` into
-    // a call to refreshUser, and forward everything else to DataCore's
-    // simpleAction. This keeps the ~40 wrapper methods below verbatim so
-    // they're easy to grep and move into domain contexts in Phase 3.
+    // Adapter for the `(action, payload, refresh: boolean)` shape: translate
+    // `refresh === true` into a refreshUser call and forward the rest to
+    // DataCore's simpleAction.
     const simpleAction = useCallback((action: string, payload: any = {}, refresh: boolean = false) => {
         return coreSimpleAction(action, payload, refresh ? refreshUser : false);
     }, [coreSimpleAction, refreshUser]);
@@ -728,13 +723,8 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
         }
     }, [currentUser, refreshUser, setIsTogglingDuty, simpleAction]);
 
-    // Wrappers — what's left after Phase 4 sweeps are the session-scoped
-    // methods (user-self-service, claimAdminAccount, toggleDutyStatus,
-    // announcements). Members admin methods moved to MembersContext (Phase
-    // 4d); Warrant CRUD moved to OperationsContext (Phase 4e);
-    // deleteIntelReport moved to IntelContext (Phase 4f); Operation CRUD
-    // moved to OperationsContext (Phase 4a); Request CRUD (17 methods)
-    // moved to RequestsContext (Phase 4g).
+    // Session-scoped wrappers (user self-service, admin claim, duty toggle).
+    // Members/Warrant/Intel/Operation/Request CRUD live in their domain contexts.
 
     const updateUserSpecializations = (specIds: number[]) => simpleAction('user:update_specializations', { specializationIds: specIds }, true);
     const updateDisplayName = (displayName: string | null) => simpleAction('user:update_display_name', { displayName }, true);
@@ -781,13 +771,11 @@ export const useSession = (): SessionContextValue => {
 
 /**
  * Hook returning a formatter that respects the current user's `timezone` and
- * `dateFormat` preferences. Exposed here (used to live in AuthContext) so the
- * AuthContext shim can keep re-exporting it without an extra hop.
+ * `dateFormat` preferences. Re-exported by the AuthContext shim.
  *
- * The returned function accepts an optional `presetOverride` for one-off
- * renders that should ignore the user's preset (e.g. an admin debug screen
- * forcing ISO). The reference is stable as long as the underlying prefs
- * don't change, so passing it down through props is safe.
+ * The returned function accepts an optional `presetOverride` for one-off renders
+ * that should ignore the user's preset. The reference is stable as long as the
+ * underlying prefs don't change, so passing it down through props is safe.
  */
 export const useFormatDate = () => {
     const { currentUser } = useSession();

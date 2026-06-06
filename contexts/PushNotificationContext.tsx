@@ -1,15 +1,8 @@
 // Push-notification context — owns the browser-side push subscription
 // lifecycle (permission prompt, VAPID key fetch, ServiceWorker register/
-// subscribe). Carved out of AuthContext in Phase 2 because the push lifecycle
-// has nothing to do with auth state — the only reason it lived there was
-// historical co-location. Tiny by design (~70 LOC).
-//
-// Public shape preserved on the `useAuth()` shim:
-//   - isPushActive
-//   - subscribeToPush
-//   - checkPushSubscription
-// Consumers: DashboardApp.tsx (PushNotificationBanner) and
-// components/views/personnel/ProfileView.tsx (diagnostics card).
+// subscribe). Exposed on the useAuth() shim as isPushActive, subscribeToPush,
+// checkPushSubscription. Consumers: DashboardApp.tsx (PushNotificationBanner)
+// and components/views/personnel/ProfileView.tsx (diagnostics card).
 
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import apiService from '../services/apiService';
@@ -77,11 +70,7 @@ export const PushNotificationProvider: React.FC<{ children: React.ReactNode }> =
         }
     }, []);
 
-    // Initial check on mount. Mirrors the previous AuthContext init() which
-    // called checkPushSubscription() once OAuth/refresh settled. Running it
-    // here at mount is equivalent because the provider mounts inside
-    // AuthProvider, which mounts inside DataProvider — i.e. after the same
-    // initial DOM/SW availability.
+    // Initial check on mount.
     useEffect(() => {
         void checkPushSubscription();
     }, [checkPushSubscription]);

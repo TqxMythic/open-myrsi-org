@@ -11,6 +11,7 @@
 import { supabase, handleSupabaseError, safeFetch, broadcastToOrg } from './common.js';
 import { getFullOperationDetails } from './ops.js';
 import { callAlliancePeer } from './alliances.js';
+import { sanitizeImageUrl } from '../imageUrl.js';
 import { toMirroredOperation } from './mappers.js';
 import {
     scheduleDebounced, cancelDebounced, tryConsumeToken,
@@ -37,7 +38,7 @@ function displayUser(u: Partial<User> | undefined, synthId: number): User {
  * already-computed flag). NEVER spread `op` — every shared field is explicit, and
  * financial / payout / join_code / log / raw-id fields are neutralised, not copied.
  */
-export function projectOperationSnapshot(op: HydratedOperation, hasRestrictedMarker: boolean): HydratedOperation | null {
+export function projectOperationSnapshot(op: HydratedOperation, hasRestrictedMarker: boolean, recipientPeerId?: string): HydratedOperation | null {
     if (hasRestrictedMarker) return null;
     return {
         id: op.id,
@@ -88,9 +89,17 @@ export function projectOperationSnapshot(op: HydratedOperation, hasRestrictedMar
         boardElements: op.boardElements,
         logistics: (op.logistics || []).map((l) => ({ ...l, fulfilledByUserId: undefined })),
 
-        // Allied peers + their members (names only) — useful and safe.
-        alliedOrgs: op.alliedOrgs,
-        alliedParticipants: op.alliedParticipants,
+        // Recipient-aware. Each peer sees only the HOST + its OWN allied
+        // org/members — never another ally's roster — and the host's INTERNAL
+        // alliance_peers UUID (peerId) is neutralised (mirrors the ownerId:0
+        // pattern). When recipientPeerId is absent, peerId is still stripped but
+        // no per-peer filter is applied.
+        alliedOrgs: (op.alliedOrgs || [])
+            .filter((o) => !recipientPeerId || o.peerId === recipientPeerId)
+            .map((o) => ({ ...o, peerId: '' })),
+        alliedParticipants: (op.alliedParticipants || [])
+            .filter((p) => !recipientPeerId || p.peerId === recipientPeerId)
+            .map((p) => ({ ...p, peerId: '' })),
 
         // Financials / internals: type requires the keys, so neutralise (never copy).
         tracksUec: false,
@@ -118,6 +127,19 @@ export function shouldApplyVersion(incoming: number, stored: number | null | und
 // HOST side
 // =============================================================================
 
+/**
+ * Is the joint-operations channel currently enabled for this peer? Re-checked at
+ * EVERY operations serve path (snapshot / manifest / accept), not just at invite
+ * time — so toggling "Joint Ops" off immediately stops serving op content for
+ * already-invited ops. Fails closed: a missing/inactive peer or a non-true
+ * channel flag → false.
+ */
+async function peerOperationsChannelEnabled(peerId: string): Promise<boolean> {
+    const { data: peer } = await supabase.from('alliance_peers')
+        .select('channels').eq('id', peerId).eq('status', 'Active').maybeSingle();
+    return (peer?.channels as { operations?: boolean } | null)?.operations === true;
+}
+
 async function operationHasSyncRestrictedMarker(opId: string): Promise<boolean> {
     const { data } = await supabase
         .from('operation_limiting_markers')
@@ -131,12 +153,13 @@ async function operationHasSyncRestrictedMarker(opId: string): Promise<boolean> 
     });
 }
 
-/** Build the projected snapshot for a host-owned operation (null if classified). */
-export async function buildOperationSnapshot(opId: string): Promise<HydratedOperation | null> {
+/** Build the projected snapshot for a host-owned operation (null if classified).
+ *  Pass recipientPeerId so the snapshot is scoped to that ally. */
+export async function buildOperationSnapshot(opId: string, recipientPeerId?: string): Promise<HydratedOperation | null> {
     const op = await getFullOperationDetails(opId);
     if (!op) return null;
     const restricted = await operationHasSyncRestrictedMarker(opId);
-    return projectOperationSnapshot(op as HydratedOperation, restricted);
+    return projectOperationSnapshot(op as HydratedOperation, restricted, recipientPeerId);
 }
 
 /** Monotonic version bump — version-gates snapshots on the guest side. */
@@ -166,7 +189,7 @@ export async function inviteAllyToOperation(opId: string, peerId: string): Promi
     handleSupabaseError({ error, message: 'Failed to invite ally' });
     await bumpOperationVersion(opId);
     const env = await opEnvelope(opId);
-    const summary = await buildOperationSnapshot(opId);
+    const summary = await buildOperationSnapshot(opId, peerId); // scope to this ally
     await callAlliancePeer(peerId, '/api/alliance/op-mirror/invite', { method: 'POST', body: { ...env, snapshot: summary } })
         .catch((e) => log.warn('invite push failed', { opId, peerId, err: e }));
     broadcastToOrg('operation_update', { operationId: opId });
@@ -204,11 +227,16 @@ export async function pushOperationToAllies(opId: string, event: 'status_change'
     const downPeers = new Set(((healthRows ?? []) as { id: string; sync_health: string | null }[])
         .filter((p) => p.sync_health === 'down').map((p) => p.id));
     const env = await opEnvelope(opId);
-    const snapshot = event === 'cancel' ? null : await buildOperationSnapshot(opId);
+    // Fetch the op ONCE, then project a RECIPIENT-SCOPED snapshot per peer (each
+    // ally sees only the host + its own members; no cross-peer PII / internal
+    // peer ids). 'cancel' carries no snapshot.
+    const fullOp = event === 'cancel' ? null : await getFullOperationDetails(opId);
+    const restricted = fullOp ? await operationHasSyncRestrictedMarker(opId) : false;
     let budgetDeferred = false;
     await Promise.all(peerIds.map((peerId) => {
         if (downPeers.has(peerId)) return Promise.resolve();
         if (!tryConsumeToken(peerId, { force: immediate })) { budgetDeferred = true; return Promise.resolve(); }
+        const snapshot = fullOp ? projectOperationSnapshot(fullOp as HydratedOperation, restricted, peerId) : null;
         return callAlliancePeer(peerId, '/api/alliance/op-mirror/push', { method: 'POST', body: { ...env, event, snapshot } })
             .then((res) => { if (res) void recordPeerSuccess(peerId).catch(() => undefined); })
             .catch((e) => {
@@ -243,9 +271,13 @@ export function scheduleAlliedPush(opId: string, delayMs?: number): void {
 export async function getOperationSnapshotForPeer(opId: string, peerId: string, sinceVersion?: number): Promise<{ unchanged: true } | { v: number; op_id: string; version: number; snapshot: HydratedOperation | null }> {
     const { data: ally } = await supabase.from('operation_allied_orgs').select('accepted').eq('operation_id', opId).eq('peer_id', peerId).maybeSingle();
     if (!ally) throw new Error('forbidden');
+    // Re-check the peer's channels.operations at serve time — an invite row alone
+    // is NOT enough. Disabling "Joint Ops" for a peer must immediately stop
+    // serving op content even for already-invited ops.
+    if (!(await peerOperationsChannelEnabled(peerId))) throw new Error('forbidden');
     const env = await opEnvelope(opId);
     if (sinceVersion !== undefined && env.version <= sinceVersion) return { unchanged: true };
-    const snapshot = await buildOperationSnapshot(opId);
+    const snapshot = await buildOperationSnapshot(opId, peerId); // scope to the requesting ally
     return { ...env, snapshot };
 }
 
@@ -254,15 +286,20 @@ export async function getOperationSnapshotForPeer(opId: string, peerId: string, 
  * invited to, with the host's current joint_version for accepted ones, in ONE
  * call (replaces N per-op polls; doubles as the health probe).
  *
- * SECURITY (L6/I2): built EXCLUSIVELY from the calling peer's own
- * operation_allied_orgs rows — no other peer's invites, no counts of anything
- * else, no existence disclosure beyond what the peer's own invites already
- * told it. sync_restricted ops appear as id+version only, exactly the poll
- * envelope they already receive (the snapshot itself stays null for them).
+ * Built EXCLUSIVELY from the calling peer's own operation_allied_orgs rows — no
+ * other peer's invites, no existence disclosure beyond what the peer's own
+ * invites already told it. sync_restricted ops appear as id+version only, exactly
+ * the poll envelope they already receive (the snapshot itself stays null).
  */
 export interface OperationManifest { v: 1; fetchedAt: string; accepted: Record<string, number>; invited: string[] }
 export async function getOperationManifestForPeer(peerId: string): Promise<OperationManifest> {
     const fetchedAt = nowIso();
+    // If the peer's operations channel is disabled, serve an EMPTY manifest —
+    // never disclose op ids/versions for already-invited ops. Returning empty
+    // (rather than throwing) keeps the guest's reconcile loop working: an empty
+    // manifest is treated as "no information / mass shrink", never a mass
+    // false-revoke.
+    if (!(await peerOperationsChannelEnabled(peerId))) return { v: 1, fetchedAt, accepted: {}, invited: [] };
     const { data } = await supabase.from('operation_allied_orgs')
         .select('operation_id, accepted, operation:operations!inner(joint_version)')
         .eq('peer_id', peerId);
@@ -280,19 +317,25 @@ export async function getOperationManifestForPeer(peerId: string): Promise<Opera
 
 /** Inbound (guest admin accepts): mark the ally accepted, return the first snapshot. */
 export async function acceptInviteForPeer(opId: string, peerId: string): Promise<{ v: number; op_id: string; version: number; snapshot: HydratedOperation | null }> {
-    // SECURITY: an Active peer must not be able to "accept" an op it was never
-    // invited to and walk away with a snapshot — require the invite row to
-    // exist before updating/returning (mirrors getOperationSnapshotForPeer's
-    // accepted guard).
+    // An Active peer must not be able to "accept" an op it was never invited to
+    // and walk away with a snapshot — require the invite row to exist before
+    // updating/returning.
     const { data: invite } = await supabase.from('operation_allied_orgs')
         .select('peer_id').eq('operation_id', opId).eq('peer_id', peerId).maybeSingle();
     if (!invite) throw new Error('forbidden');
+    // Re-check the operations channel here too — the accept response is one of the
+    // snapshot egress paths; a peer whose Joint Ops was disabled must not accept +
+    // walk away with a fresh snapshot.
+    if (!(await peerOperationsChannelEnabled(peerId))) throw new Error('forbidden');
     const { error } = await supabase.from('operation_allied_orgs')
         .update({ accepted: true, accepted_at: nowIso() }).eq('operation_id', opId).eq('peer_id', peerId);
     handleSupabaseError({ error, message: 'Failed to accept invite' });
     broadcastToOrg('operation_update', { operationId: opId });
     const env = await opEnvelope(opId);
-    return { ...env, snapshot: await buildOperationSnapshot(opId) };
+    // Scope the returned snapshot to the accepting peer — the accept response is a
+    // snapshot egress (alongside invite/poll/push) and must not relay another
+    // ally's member roster to this peer.
+    return { ...env, snapshot: await buildOperationSnapshot(opId, peerId) };
 }
 
 export async function declineInviteForPeer(opId: string, peerId: string): Promise<void> {
@@ -307,11 +350,16 @@ export async function upsertAlliedParticipant(opId: string, peerId: string, p: A
     if (!ally?.accepted) throw new Error('forbidden');
     const handle = String(p.remoteUserHandle || '').slice(0, 120);
     if (!handle) throw new Error('malformed_request');
+    // Peer-supplied participant fields are stored AND re-rendered in the host's op
+    // detail (and re-forwarded in the snapshot). Clamp the avatar to a safe https
+    // image URL (reject javascript:/data:/http: → null) and length-cap the free
+    // text.
+    const cap = (v: unknown, n: number) => (typeof v === 'string' && v ? v.slice(0, n) : null);
     const { error } = await supabase.from('operation_allied_participants').upsert({
         operation_id: opId, peer_id: peerId, remote_user_handle: handle,
-        display_name: p.displayName ?? null, avatar_url: p.avatarUrl ?? null,
-        role: p.role ?? null, ship_text: p.shipText ?? null,
-        rsvp_status: p.rsvpStatus || 'Pending', is_ready: !!p.isReady, updated_at: nowIso(),
+        display_name: cap(p.displayName, 120), avatar_url: sanitizeImageUrl(p.avatarUrl) ?? null,
+        role: cap(p.role, 120), ship_text: cap(p.shipText, 200),
+        rsvp_status: cap(p.rsvpStatus, 40) || 'Pending', is_ready: !!p.isReady, updated_at: nowIso(),
     }, { onConflict: 'operation_id,peer_id,remote_user_handle' });
     handleSupabaseError({ error, message: 'Failed to record allied RSVP' });
     await bumpOperationVersion(opId);
@@ -320,10 +368,9 @@ export async function upsertAlliedParticipant(opId: string, peerId: string, p: A
 
 /**
  * Inbound (guest RSVP withdrawal): delete an allied member's participation row.
- * SECURITY: the DELETE is scoped EXACTLY like the upsert key —
- * (operation_id, peer_id, remote_user_handle) behind the same accepted-ally
- * gate — so a peer can only ever delete its OWN participant rows, never
- * another peer's (pinned by test). Kills ghost-RSVP accumulation.
+ * The DELETE is scoped EXACTLY like the upsert key — (operation_id, peer_id,
+ * remote_user_handle) behind the same accepted-ally gate — so a peer can only
+ * ever delete its OWN participant rows. Kills ghost-RSVP accumulation.
  */
 export async function removeAlliedParticipant(opId: string, peerId: string, remoteUserHandle: string): Promise<void> {
     const { data: ally } = await supabase.from('operation_allied_orgs').select('accepted').eq('operation_id', opId).eq('peer_id', peerId).maybeSingle();
@@ -358,12 +405,11 @@ function boundedInboundSnapshot(snapshot: HydratedOperation | null | undefined):
 /** Inbound (host invites us): store a pending mirror, visible only to admins. */
 export async function receiveMirrorInvite(peer: { id: string }, body: MirrorPayload): Promise<void> {
     if (!body?.op_id || typeof body.op_id !== 'string') throw new Error('malformed_request');
-    // SECURITY: refuse to clobber a mirror hosted by a DIFFERENT peer. Without
-    // this, any Active peer could upsert over a victim-hosted mirror (id is the
-    // host's operation_id, known to co-allies) — redirecting the guest's RSVP
-    // pushes (member PII) to the attacker, spoofing op content, and resetting
-    // accepted=false (DoS). Mirrors the host_peer_id guard receiveMirrorPush /
-    // receiveMirrorRevoke already enforce.
+    // Refuse to clobber a mirror hosted by a DIFFERENT peer. Otherwise any Active
+    // peer could upsert over a victim-hosted mirror (id is the host's
+    // operation_id, known to co-allies) — redirecting the guest's RSVP pushes
+    // (member PII) to the attacker, spoofing op content, and resetting
+    // accepted=false. Mirrors the host_peer_id guard on push/revoke.
     const { data: existing } = await supabase.from('mirrored_operations').select('host_peer_id').eq('id', body.op_id).maybeSingle();
     if (existing && existing.host_peer_id !== peer.id) return;           // not ours — refuse
     const snapshot = boundedInboundSnapshot(body.snapshot);
@@ -430,9 +476,13 @@ export async function acceptMirroredOperation(id: string): Promise<void> {
     const res = await callAlliancePeer(mirror.host_peer_id, `/api/alliance/op/${id}/accept`, { method: 'POST', body: { v: 1, op_id: id } });
     if (!res || !res.ok) throw new Error('Host did not confirm the invite.');
     const payload = await res.json() as MirrorPayload;
+    // The guest-INITIATED pull paths must apply the same inbound size cap as the
+    // host-pushed paths — a paired-but-hostile host could otherwise park a
+    // multi-MB blob in our mirrored_operations table via accept/poll/reconcile.
+    const snapshot = boundedInboundSnapshot(payload.snapshot);
     const { error } = await supabase.from('mirrored_operations').update({
         accepted: true, accepted_at: nowIso(),
-        snapshot: payload.snapshot ?? null, version: payload.version ?? 0, snapshot_updated_at: nowIso(),
+        snapshot, version: payload.version ?? 0, snapshot_updated_at: nowIso(),
     }).eq('id', id);
     handleSupabaseError({ error, message: 'Failed to accept operation' });
     broadcastToOrg('operation_update', { operationId: id });
@@ -459,8 +509,10 @@ export async function pollMirroredOperation(id: string): Promise<void> {
     await supabase.from('mirrored_operations').update({ last_polled_at: nowIso() }).eq('id', id);
     if ('unchanged' in payload) return;
     if (!shouldApplyVersion(payload.version, mirror.version)) return;
+    // Cap the host-controlled snapshot on this guest-pull path.
+    const snapshot = boundedInboundSnapshot(payload.snapshot);
     await supabase.from('mirrored_operations').update({
-        snapshot: payload.snapshot ?? null, version: payload.version, snapshot_updated_at: nowIso(),
+        snapshot, version: payload.version, snapshot_updated_at: nowIso(),
     }).eq('id', id);
     broadcastToOrg('operation_update', { operationId: id });
 }
@@ -702,12 +754,16 @@ async function pullMirrorFromHost(
     const payload = await res.json() as MirrorPayload | { unchanged: true };
     if ('unchanged' in payload) return 'skipped';
     if (typeof payload.version !== 'number' || payload.op_id !== opId) return 'skipped';
+    // Every reconcile-pull branch persists this host-controlled snapshot — cap it
+    // here (one call covers all branches) so a hostile host can't park a multi-MB
+    // blob in our mirrored_operations table via the unattended reconcile cron.
+    const snapshot = boundedInboundSnapshot(payload.snapshot);
 
     if (kind === 'missing-accepted' || kind === 'missing-invite') {
         const accepted = kind === 'missing-accepted';
         const { error } = await supabase.from('mirrored_operations').upsert({
             id: opId, host_peer_id: peerId,
-            snapshot: payload.snapshot ?? null, version: payload.version, snapshot_updated_at: nowIso(),
+            snapshot, version: payload.version, snapshot_updated_at: nowIso(),
             accepted, invited_at: nowIso(), accepted_at: accepted ? nowIso() : null, revoked_at: null,
         }, { onConflict: 'id' });
         handleSupabaseError({ error, message: 'Failed to heal missing mirror' });
@@ -716,7 +772,7 @@ async function pullMirrorFromHost(
         // this reconcile pull of a fresh authoritative manifest, NEVER from an
         // inbound push (receiveMirrorPush stays strictly version-gated).
         await supabase.from('mirrored_operations').update({
-            snapshot: payload.snapshot ?? null, version: payload.version, snapshot_updated_at: nowIso(),
+            snapshot, version: payload.version, snapshot_updated_at: nowIso(),
         }).eq('id', opId).eq('host_peer_id', peerId);
         broadcastToOrg('operation_update', { operationId: opId });
         return 'regression-healed';
@@ -726,13 +782,13 @@ async function pullMirrorFromHost(
         // host's accepted flag is authoritative — only our own /accept sets it —
         // so restore fully as accepted.
         await supabase.from('mirrored_operations').update({
-            snapshot: payload.snapshot ?? null, version: payload.version, snapshot_updated_at: nowIso(),
+            snapshot, version: payload.version, snapshot_updated_at: nowIso(),
             accepted: true, accepted_at: nowIso(), revoked_at: null,
         }).eq('id', opId).eq('host_peer_id', peerId);
     } else if (kind === 'reinvite') {
         // Missed re-invite after a revoke: back to a pending invite for admins.
         await supabase.from('mirrored_operations').update({
-            snapshot: payload.snapshot ?? null, version: payload.version, snapshot_updated_at: nowIso(),
+            snapshot, version: payload.version, snapshot_updated_at: nowIso(),
             accepted: false, accepted_at: null, invited_at: nowIso(), revoked_at: null,
         }).eq('id', opId).eq('host_peer_id', peerId);
     } else {
@@ -741,7 +797,7 @@ async function pullMirrorFromHost(
             .select('version').eq('id', opId).eq('host_peer_id', peerId).maybeSingle();
         if (!existing || !shouldApplyVersion(payload.version, existing.version)) return 'skipped';
         await supabase.from('mirrored_operations').update({
-            snapshot: payload.snapshot ?? null, version: payload.version, snapshot_updated_at: nowIso(),
+            snapshot, version: payload.version, snapshot_updated_at: nowIso(),
         }).eq('id', opId).eq('host_peer_id', peerId);
     }
     broadcastToOrg('operation_update', { operationId: opId });

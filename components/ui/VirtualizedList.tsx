@@ -59,13 +59,8 @@ export const VirtualizedList = <T extends { id: string | number }>({
       const { top: containerTop } = containerRef.current.getBoundingClientRect();
       const { top: scrollContainerTop, height: scrollContainerHeight } = scrollContainer.getBoundingClientRect();
       
-      // Calculate scroll relative to the container's viewport
-      // If containerTop is 200 and scrollContainerTop is 100, we are 100px down from the top of the content? 
-      // No.
-      // Logic: The distance the top of the list is from the top of the viewport/scroller.
-      // We want the negative offset.
-      // When list is at top of scroller: containerTop == scrollContainerTop (approx). scrollTop = 0.
-      // When scrolled down 100px: containerTop is (scrollContainerTop - 100). scrollTop = 100.
+      // How far the list's top has scrolled past the scroller's top: 0 when the
+      // list sits at the top of the scroller, 100 once scrolled down 100px.
       const scrollTop = scrollContainerTop - containerTop;
 
       const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - OVERSCAN);

@@ -12,8 +12,8 @@ interface WikiPageSettingsProps {
     setSelectedMarkerIds: (ids: number[]) => void;
     parentPageId: string | null;
     setParentPageId: (id: string | null) => void;
-    // #16 menu position lock. Optional so callers that haven't migrated to the
-    // new prop can still mount the settings panel.
+    // Menu position lock. Optional so callers that haven't migrated to the new
+    // prop can still mount the settings panel.
     menuStructureLocked?: boolean;
     setMenuStructureLocked?: (locked: boolean) => void;
     allPages: WikiPage[];

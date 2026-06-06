@@ -458,11 +458,8 @@ export default function AdminCommodityCatalogTab() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Shared category editor — used by both the commodities tab and the items tab.
-// Rewired off the deleted portal deps: takes rpcAction + dashboard toast/confirm
-// as props (the items tab passes its own bound copies down).
-// ---------------------------------------------------------------------------
+// Takes rpcAction + toast/confirm as props so each tab can pass bound copies.
 
 interface CategoryEditorProps<T extends { id: number; displayName: string; sortOrder: number; isHidden: boolean }> {
     categories: T[];

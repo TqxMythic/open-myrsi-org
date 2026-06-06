@@ -64,7 +64,6 @@ export const useSearchKeyboardNav = ({
             const target = e.target as HTMLElement | null;
             const tag = target?.tagName;
             if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable) {
-                // Only react to Enter/Esc inside inputs if user explicitly used arrows here? Skip entirely.
                 return;
             }
             if (e.key === 'ArrowDown') {

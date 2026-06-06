@@ -1,23 +1,17 @@
-// DataCoreContext owns the dispatcher + realtime subscription infrastructure
-// that was previously embedded inside DataContext. Splitting these out is the
-// first step in carving DataContext into domain sub-contexts (Operations,
-// Intel, HR, etc.) — each future domain will plug in via the
-// registerFetchDataSubset registration so DataCore's broadcast handlers can
-// dispatch to the right slice without DataCore knowing the slice shapes.
+// DataCoreContext owns the RPC dispatcher + realtime subscription
+// infrastructure. Domain contexts plug in via the registration API below so
+// DataCore's broadcast handlers can dispatch to the right slice without knowing
+// the slice shapes.
 //
-// In this Phase 0a cut, DataCore owns:
-//   - rpcAction
+// DataCore owns:
+//   - rpcAction / simpleAction
 //   - the supabase realtime channel lifecycle (build, teardown, rebuild on
 //     settings/features updates, tab-visibility resync, idle disconnect)
 //   - realtimeConnected state
 //
-// DataContext still owns:
-//   - fetchDataSubset (the actual fetcher implementation)
-//   - isFetching map
-//   - optimisticUpdate
-//   - setStateFromData and every domain's useState slice
-// DataContext registers its fetchDataSubset (and current feature-flag values)
-// with DataCore at mount via the registration API below.
+// DataContext owns the fetchDataSubset implementation, the isFetching map,
+// optimisticUpdate, and every domain's state slice; it registers its
+// fetchDataSubset (and current feature-flag values) with DataCore at mount.
 
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import apiService from '../services/apiService';
@@ -46,6 +40,7 @@ type SliceSetter = (data: any) => void;
 interface DataCoreFeatureFlags {
     warehouseEnabled: boolean;
     governmentsEnabled: boolean;
+    marketplaceEnabled: boolean;
 }
 
 export interface DataCoreContextValue {
@@ -54,8 +49,7 @@ export interface DataCoreContextValue {
     /** Thin wrapper around `apiService.rpc` with optional post-call refresh.
      *  Returns the response `.data` payload. Errors are logged then re-thrown
      *  so callers can chain `.then(refresh)` for the happy path while modal
-     *  forms catch and surface failure. Moved out of AuthContext in Phase 2 so
-     *  CRUD wrappers across the app can call it without depending on auth state. */
+     *  forms catch and surface failure. */
     simpleAction: (action: string, payload?: any, refresh?: (() => void | Promise<void>) | boolean) => Promise<any>;
     /** True once the supabase realtime channel has subscribed; flips false on CLOSED/TIMED_OUT/CHANNEL_ERROR. */
     realtimeConnected: boolean;
@@ -64,7 +58,7 @@ export interface DataCoreContextValue {
     /** DataContext registers its fetchDataSubset here; realtime handlers read
      *  fetcherRef.current at event-time, so the registration can land after
      *  the channel is built without losing events. Re-registration is safe.
-     *  Treated as a fallback once per-subset fetchers are registered (Phase 0b). */
+     *  Treated as a fallback once per-subset fetchers are registered. */
     registerFetchDataSubset: (fn: FetchDataSubset | null) => void;
     /** DataContext registers current feature-flag values here so the channel
      *  builder can decide whether to attach warehouse:* / government_update
@@ -75,26 +69,24 @@ export interface DataCoreContextValue {
      *  auth) + permission set; changes trigger a channel rebuild so handler
      *  gating tracks the current identity. (null, [], '') on logout. */
     registerRealtimeAuth: (token: string | null, permissions: string[], role: string) => void;
-    /** Phase 0b: per-subset fetcher registry. Domain contexts call this at
-     *  mount to claim ownership of their subset; DataCore's dispatcher
-     *  prefers a specific fetcher over the single fallback registered via
-     *  registerFetchDataSubset. Returns an unregister function. */
+    /** Per-subset fetcher registry. Domain contexts call this at mount to claim
+     *  ownership of their subset; DataCore's dispatcher prefers a specific
+     *  fetcher over the single fallback registered via registerFetchDataSubset.
+     *  Returns an unregister function. */
     registerSubsetFetcher: (subset: string, fetcher: FetchDataSubset) => () => void;
-    /** Phase 0b: slice-setter registry. Domain contexts register a setter
-     *  that applies their slice of a bulk state payload (e.g. the response
-     *  from a 'main' fetch). `applyStateData(data)` iterates all registered
-     *  setters. Migration path for the giant setStateFromData switch.
+    /** Slice-setter registry. Domain contexts register a setter that applies
+     *  their slice of a bulk state payload (e.g. the response from a 'main'
+     *  fetch). `applyStateData(data)` iterates all registered setters.
      *  Returns an unregister function. */
     registerSliceSetter: (key: string, setter: SliceSetter) => () => void;
-    /** Phase 0b: dispatch a bulk state payload through every registered slice
-     *  setter. Called by DataContext's fetchDataSubset(\'main\') and the
-     *  initial-state hydrate path. Order of dispatch follows registration
-     *  insertion (Map iteration order). */
+    /** Dispatch a bulk state payload through every registered slice setter.
+     *  Called by DataContext's fetchDataSubset('main') and the initial-state
+     *  hydrate path. Order of dispatch follows registration insertion. */
     applyStateData: (data: any) => void;
-    /** Phase 0b: per-table postgres_changes mapping registry. Domain contexts
-     *  call this at mount to add table → subset dispatch rules beyond the
-     *  hardcoded list inside notifyDbConnected. The rebuild on
-     *  settings_update / features_update picks up new registrations.
+    /** Per-table postgres_changes mapping registry. Domain contexts call this
+     *  at mount to add table → subset dispatch rules beyond the hardcoded list
+     *  inside notifyDbConnected. The rebuild on settings_update /
+     *  features_update picks up new registrations.
      *  CONTRACT: do NOT re-register tables already in the hardcoded list —
      *  it would cause double-fires. Returns an unregister function. */
     registerTableHandler: (table: string, subset: string) => () => void;
@@ -160,25 +152,25 @@ export const DataCoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const fetcherRef = useRef<FetchDataSubset | null>(null);
     const warehouseEnabledRef = useRef<boolean>(false);
     const governmentsEnabledRef = useRef<boolean>(false);
+    const marketplaceEnabledRef = useRef<boolean>(false);
 
-    // Realtime auth (SECURITY): every broadcast channel is PRIVATE (Supabase
-    // Realtime Authorization) — subscribing requires the per-user JWT the
-    // server mints into the boot payload (realtimeToken). Without it there is
-    // NO channel (fail-closed: no realtime, no metadata exposure). The
-    // permission set gates which event handlers are even ATTACHED, mirroring
-    // the warehouse/government feature-flag pattern: a member without
-    // hr:view must not fire (and 403 on) an hr refetch for every HR mutation
-    // in the org. SessionContext registers these after boot/login and on any
-    // permission change; registration triggers a channel rebuild.
+    // Realtime auth: every broadcast channel is PRIVATE (Supabase Realtime
+    // Authorization) — subscribing requires the per-user JWT the server mints
+    // into the boot payload (realtimeToken). Without it there is NO channel
+    // (fail-closed: no realtime, no metadata exposure). The permission set gates
+    // which event handlers are even ATTACHED, so a member without hr:view never
+    // fires (and 403s on) an hr refetch for every HR mutation in the org.
+    // SessionContext registers these after boot/login and on any permission
+    // change; registration triggers a channel rebuild.
     const realtimeTokenRef = useRef<string | null>(null);
     const permissionsRef = useRef<Set<string>>(new Set());
     const isAdminRef = useRef(false);
     const realtimeAuthKeyRef = useRef('');
 
-    // Phase 0b registries. Domain contexts (Phase 3) register here at mount
-    // so DataCore can dispatch to specific fetchers/setters/tables without
-    // knowing the slice shapes. Stored in refs so registrations are visible
-    // to realtime handlers immediately without forcing a channel rebuild.
+    // Domain contexts register here at mount so DataCore can dispatch to
+    // specific fetchers/setters/tables without knowing the slice shapes. Stored
+    // in refs so registrations are visible to realtime handlers immediately
+    // without forcing a channel rebuild.
     const subsetFetchersRef = useRef<Map<string, FetchDataSubset>>(new Map());
     const sliceSettersRef = useRef<Map<string, SliceSetter>>(new Map());
     const tableHandlersRef = useRef<Array<[string, string]>>([]);
@@ -197,12 +189,9 @@ export const DataCoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
     }, []);
 
-    // Phase-2 home for what used to be AuthContext.simpleAction. The third
-    // parameter retains the legacy `true` shorthand (which historically meant
-    // "refresh the current user after success") while also accepting a custom
-    // refresh callback — Session passes `refreshUser` for the `true` case so
-    // the original behaviour is preserved without DataCore needing to know
-    // about Session state.
+    // The third parameter accepts a refresh callback (or the legacy `true`
+    // shorthand for "refresh the current user after success"); Session passes
+    // its refreshUser for the `true` case so DataCore needn't know Session state.
     const simpleAction = useCallback(async (
         action: string,
         payload: any = {},
@@ -219,9 +208,8 @@ export const DataCoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }, []);
 
     const callFetcher = useCallback((subset: string, options?: FetchDataSubsetOptions) => {
-        // Phase 0b: prefer a per-subset registered fetcher (domain context)
-        // over the single fallback fetcher (DataContext's giant switch).
-        // Once every subset has a domain owner, the fallback can be removed.
+        // Prefer a per-subset registered fetcher (domain context) over the
+        // single fallback fetcher.
         const specific = subsetFetchersRef.current.get(subset);
         if (specific) {
             void specific(subset, options);
@@ -262,9 +250,9 @@ export const DataCoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             return;
         }
 
-        // SECURITY: private channels require the per-user realtime token.
-        // No token (logged out, or SUPABASE_JWT_SECRET unset server-side) →
-        // no channel at all — fail-closed.
+        // Private channels require the per-user realtime token. No token
+        // (logged out, or SUPABASE_JWT_SECRET unset server-side) → no channel
+        // at all — fail-closed.
         const realtimeToken = realtimeTokenRef.current;
         if (!realtimeToken) {
             debugLog('[DataCore] No realtime token — private channels unavailable; realtime disabled (fail-closed).');
@@ -294,6 +282,7 @@ export const DataCoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         // reload.
         const warehouseEnabled = warehouseEnabledRef.current;
         const governmentsEnabled = governmentsEnabledRef.current;
+        const marketplaceEnabled = marketplaceEnabledRef.current;
 
         // Permission gate for handler ATTACHMENT (same idea as the feature
         // flags): events whose refetch path is permission-gated server-side
@@ -582,6 +571,18 @@ export const DataCoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                     callFetcher('warehouse_requests');
                 });
         }
+        if (marketplaceEnabled && hasPerm('marketplace:view')) {
+            // No query subset owns the marketplace board in DataContext; the
+            // self-contained MarketplaceView fetches its own subsets. Relay the
+            // id-only nudge as a window event so a mounted view refetches the
+            // affected slice. Gated on the feature flag + permission so
+            // unprivileged members never attach the listener.
+            channel = channel
+                .on('broadcast', { event: 'marketplace:update' }, (payload) => {
+                    debugLog('[Realtime] Marketplace Update Broadcast Received');
+                    window.dispatchEvent(new CustomEvent('app:realtime:marketplace-update', { detail: payload.payload }));
+                });
+        }
         if (governmentsEnabled && hasPerm('gov:view')) {
             channel = channel
                 .on('broadcast', { event: 'government_update' }, (payload) => {
@@ -597,41 +598,20 @@ export const DataCoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                 });
         }
 
-        // --- POSTGRES_CHANGES LISTENERS ---
-        // Each listener is scoped to a single table AND filtered by the
-        // current org's organization_id. The previous implementation used a
-        // single wildcard '{ schema: "public" }' subscription, which delivered
-        // every public-schema change from every org to every connected client
-        // (the channel name only scopes broadcast events, not postgres_changes).
-        // That fanout was the dominant driver of realtime-message volume and
-        // the cascading egress from the resulting fetchDataSubset() refetches.
+        // postgres_changes listeners, one per table. Single-org: there is no
+        // organization_id column to bind a filter to.
         //
-        // Junction tables that lack an organization_id column
-        // (request_responders, status_history, operation_participants,
-        // operation_log_entries, fleet_group_ships) have been removed from the
-        // supabase_realtime publication in migrations/add-user-presence.sql.
-        // The action handlers already emit org-scoped broadcasts
-        // (request_update, operation_update, fleet_update) that cover those
-        // mutations.
-        // Single-org: no organization_id column to bind a postgres_changes filter to.
-        // Egress optimization: tables that have a dedicated broadcast handler
-        // above are INTENTIONALLY excluded from this list. The broadcast
-        // triggers the same fetchDataSubset() call, and the 2-second dedup
-        // window suppresses any second fetch — but the postgres_changes
-        // payload itself (full row data) is still pushed over the websocket
-        // to every connected client, costing realtime bytes and message-quota
-        // for no gain.
+        // Tables that have a dedicated broadcast handler above are intentionally
+        // excluded: the broadcast triggers the same fetchDataSubset() and the
+        // 2-second dedupe suppresses a second fetch, but a postgres_changes
+        // subscription would still push the full row payload over the websocket
+        // for no gain. Excluded (covered by broadcast): users, service_requests,
+        // operations, warrants, intel_bulletins, user_ships, fleet_groups,
+        // wiki_pages.
         //
-        // Excluded (covered by broadcast): users (user_update),
-        // service_requests (new_request/request_update/request_delete),
-        // operations (operation_update), warrants (warrant_update),
-        // intel_bulletins (intel_update/bulletin_update), user_ships
-        // (fleet_update), fleet_groups (fleet_update), wiki_pages (wiki_update).
-        //
-        // CONTRACT: any future server-side mutation to these tables must
-        // emit the corresponding broadcast via broadcastToOrg() — otherwise
-        // remote clients won't see the change. This contract is enforced by
-        // the existing call sites in lib/db/*.ts (verified in the egress audit).
+        // CONTRACT: any future server-side mutation to these tables must emit
+        // the corresponding broadcast via broadcastToOrg() — otherwise remote
+        // clients won't see the change.
         const tableSubsets: Array<[string, string]> = [
             ['ranks', 'main'],
             ['units', 'main'],
@@ -684,12 +664,9 @@ export const DataCoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             );
         }
 
-        // Phase 0b: domain-registered table handlers (in addition to the
-        // hardcoded list above). Domains call registerTableHandler at mount
-        // to add their own table → subset mappings without modifying this
-        // file. The CONTRACT is: do NOT re-register tables already in
-        // tableSubsets above — supabase would deliver each change twice,
-        // doubling realtime egress on those rows.
+        // Domain-registered table handlers (in addition to the hardcoded list
+        // above). CONTRACT: do NOT re-register tables already in tableSubsets —
+        // supabase would deliver each change twice.
         for (const [table, subset] of tableHandlersRef.current) {
             channel.on(
                 'postgres_changes' as any,
@@ -858,6 +835,7 @@ export const DataCoreProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const registerFeatureFlags = useCallback((flags: DataCoreFeatureFlags) => {
         warehouseEnabledRef.current = flags.warehouseEnabled;
         governmentsEnabledRef.current = flags.governmentsEnabled;
+        marketplaceEnabledRef.current = flags.marketplaceEnabled;
     }, []);
 
     const registerSubsetFetcher = useCallback((subset: string, fetcher: FetchDataSubset) => {

@@ -49,7 +49,6 @@ export const ShipCard: React.FC<{
 
     return (
         <div onClick={onClick} className="bg-slate-900/80 backdrop-blur-md border border-slate-700/50 hover:border-orange-500/30 rounded-xl overflow-hidden cursor-pointer transition-all duration-300 shadow-lg hover:shadow-orange-900/20 hover:-translate-y-0.5 group flex flex-col">
-            {/* Ship Image */}
             <div className="relative h-36 bg-slate-950 overflow-hidden">
                 {ship.imageUrl ? (
                     <img src={ship.imageUrl} alt={ship.name} className="w-full h-full object-cover opacity-80 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500" onError={(e) => { (e.target as HTMLImageElement).src = ''; }} />
@@ -58,7 +57,6 @@ export const ShipCard: React.FC<{
                         <i className="fa-solid fa-rocket text-3xl text-slate-700"></i>
                     </div>
                 )}
-                {/* Status Badge */}
                 {userShip && (
                     <span className={`absolute top-2 right-2 text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-sm border backdrop-blur-xs ${getStatusColor(userShip.status)}`}>
                         {userShip.status}
@@ -69,7 +67,6 @@ export const ShipCard: React.FC<{
                         <i className="fa-solid fa-star text-[8px]"></i>Primary
                     </span>
                 )}
-                {/* Size indicator */}
                 {ship.size && (
                     <span className={`absolute bottom-2 left-2 text-[10px] font-black uppercase tracking-widest ${getSizeColor(ship.size)}`}>
                         {ship.size}
@@ -77,7 +74,6 @@ export const ShipCard: React.FC<{
                 )}
             </div>
 
-            {/* Info */}
             <div className="p-4 flex-1 flex flex-col">
                 <p className="text-sm font-black text-white truncate uppercase tracking-tight group-hover:text-orange-200 transition-colors">
                     {userShip?.customName || ship.name}

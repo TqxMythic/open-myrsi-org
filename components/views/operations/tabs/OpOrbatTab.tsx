@@ -21,14 +21,11 @@ const OpOrbatTab: React.FC<OpOrbatTabProps> = ({ operation, canManage, onRefresh
     const { confirm } = useNotification();
     const nodes = operation.commandNodes || [];
 
-    // Sub-view toggle
     const [subView, setSubView] = useState<'roster' | 'structure'>('roster');
 
-    // Roster state
     const [rosterSearch, setRosterSearch] = useState('');
     const [rosterSort, setRosterSort] = useState<'name' | 'role' | 'ready' | 'joined'>('ready');
 
-    // Node form state
     const [showForm, setShowForm] = useState(false);
     const [editingNode, setEditingNode] = useState<OperationCommandNode | null>(null);
     const [label, setLabel] = useState('');
@@ -73,7 +70,6 @@ const OpOrbatTab: React.FC<OpOrbatTabProps> = ({ operation, canManage, onRefresh
         return { ready, total, accepted, tentative, declined, pending };
     }, [activeParticipants]);
 
-    // Node form handlers
     const openAddForm = (defaultParentId?: number) => {
         setEditingNode(null);
         setLabel('');

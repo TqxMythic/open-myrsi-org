@@ -3,6 +3,7 @@ import * as db from '../../lib/db.js';
 import * as ai from '../../lib/ai.js';
 import * as discord from '../../lib/discord.js';
 import { sendPushToStaff } from '../../lib/push.js';
+import { assertAiRateLimit } from '../../lib/aiRateLimit.js';
 import { IntelThreatLevel } from '../../types.js';
 import type {
     IntelBulletin,
@@ -43,8 +44,20 @@ interface DiscordEmbed {
 // --- Payload interfaces (dispatcher types handlers as (payload: any, ...)) ---
 
 // The dispatcher injects the authenticated user onto every payload. Intel reads
-// use it for server-side clearance/limiting-marker filtering (SECURITY H3/M4).
-type ActorUser = { user?: { clearanceLevel?: { level?: number } | null; limitingMarkers?: unknown[]; role?: string; permissions?: string[] } };
+// use it for server-side clearance/limiting-marker filtering.
+type ActorUser = { user?: { id?: number; clearanceLevel?: { level?: number } | null; limitingMarkers?: unknown[]; role?: string; permissions?: string[] } };
+
+// The request-BOLA predicate, replicated from lib/db.ts canSeeAllRequests
+// (private there, not cleanly importable). Holders of a request-duty permission
+// (the dispatch-board audience) — and Admins — may see service-request bodies;
+// everyone else may not. Keep in lock-step with the lib/db.ts original; if it
+// gains/loses a duty permission, mirror it.
+function canSeeAllRequests(user?: ActorUser['user'] | null): boolean {
+    if (!user) return false;
+    if (user.role === 'Admin') return true;
+    const perms = Array.isArray(user.permissions) ? user.permissions : [];
+    return perms.includes('request:dispatch') || perms.includes('request:triage') || perms.includes('request:accept');
+}
 
 interface WarrantCreatePayload {
     userId?: number;
@@ -185,7 +198,7 @@ async function notifyDiscordIntelBulletin(
             return str.length > maxLength ? str.substring(0, maxLength - 3) + '...' : str;
         };
 
-        // SECURITY (L4): a Discord channel can be visible to members who lack the
+        // A Discord channel can be visible to members who lack the
         // clearance/markers required to read a CLASSIFIED bulletin in-app. Never
         // post the title/body/location of a classified bulletin to Discord — only
         // a generic "view it in the terminal" notice. Unclassified bulletins
@@ -233,8 +246,11 @@ export const intelActions = {
     'warrant:create': (payload: WarrantCreatePayload) => db.createWarrant(payload, payload.userId),
     'warrant:update': (payload: WarrantUpdatePayload) => db.updateWarrant(payload.warrantId, payload),
     'warrant:delete': ({ warrantId }: WarrantIdPayload) => db.deleteWarrant(warrantId),
-    'warrant:generate_report': ({ warrantId, userId }: WarrantGenerateReportPayload) => db.generateReportFromWarrant(warrantId, userId),
-    // #11: append-only notes thread with author attribution.
+    'warrant:generate_report': ({ warrantId, userId }: WarrantGenerateReportPayload) => {
+        assertAiRateLimit(userId); // per-user Gemini throttle
+        return db.generateReportFromWarrant(warrantId, userId);
+    },
+    // Append-only notes thread with author attribution.
     'warrant:add_note': ({ warrantId, content, userId }: WarrantAddNotePayload) => db.addWarrantNote(warrantId, content, userId),
     'warrant:get_notes': ({ warrantId }: WarrantIdPayload) => db.getWarrantNotes(warrantId),
 
@@ -245,14 +261,24 @@ export const intelActions = {
     'intel:get_reports': ({ targetId, user }: IntelTargetPayload & ActorUser) =>
         db.getIntelReportsForTarget(targetId).then((r) => db.filterIntelByClearance(r, user)),
     'intel:get_dossier': async ({ targetId, user }: IntelTargetPayload & ActorUser) => {
-        const dossier = await db.getDossier(targetId);
-        // M4: warrant/KOS records require warrant:view — they must NOT ride the
-        // dossier under intel:view alone. H3: reports filtered by clearance.
+        // getDossier filters its derived surfaces (affiliates, operations,
+        // cached AI summary) against the viewer server-side — never call it
+        // without the authenticated user.
+        const dossier = await db.getDossier(targetId, user);
+        // Warrant/KOS records require warrant:view — they must NOT ride the
+        // dossier under intel:view alone. Reports are filtered by clearance.
         const canViewWarrants = user?.role === 'Admin' || (Array.isArray(user?.permissions) && user.permissions.includes('warrant:view'));
+        // dossier.requests are service_requests bodies (description/location/
+        // threat/PII) matched by the subject's RSI handle. They MUST honour the
+        // same request-BOLA gate the requests read-path enforces (lib/db.ts
+        // canSeeAllRequests) — intel:view alone is NOT request-duty. Replicated
+        // inline (canSeeAllRequests is private to lib/db.ts and not cleanly
+        // importable); keep these predicates in sync.
         return {
             ...dossier,
             reports: db.filterIntelByClearance(dossier.reports, user),
             warrants: canViewWarrants ? dossier.warrants : [],
+            requests: canSeeAllRequests(user) ? dossier.requests : [],
         };
     },
     'intel:get_recent': (payload: IntelRecentPayload & ActorUser) =>
@@ -266,6 +292,7 @@ export const intelActions = {
             tag: payload.tag,
             warrantsOnly: payload.warrantsOnly,
             q: payload.q,
+            viewer: payload?.user, // SQL clearance-level ceiling (markers still filtered below)
         });
         return { ...result, items: db.filterIntelByClearance(result.items, payload?.user) };
     },
@@ -279,20 +306,36 @@ export const intelActions = {
     'intel:bulk_update_affiliation': ({ reportIds, affiliatedOrg }: IntelBulkUpdateAffiliationPayload) => db.bulkUpdateIntelAffiliation(reportIds, affiliatedOrg),
     'intel:bulk_add_tags': ({ reportIds, tags }: IntelBulkAddTagsPayload) => db.bulkAddIntelTags(reportIds, tags),
     'intel:bulk_delete_reports': ({ reportIds }: IntelBulkDeletePayload) => db.bulkDeleteIntelReports(reportIds),
-    'intel:get_stats': () => db.getIntelStats(),
+    // Pass the viewer so report counts / threat breakdown / warrant aggregation
+    // are clearance-ceilinged server-side (mirrors intel:hub_stats →
+    // getIntelHubStats). Dropping the user here leaks classified-activity volume
+    // to any intel:view member.
+    'intel:get_stats': ({ user }: ActorUser) => db.getIntelStats(user),
     'intel:sync_feeds': (payload: IntelSyncFeedsPayload) => db.syncTrustedFeeds(payload?.force),
-    'intel:generate_summary': async ({ dossier }: IntelGenerateSummaryPayload) => {
-        return ai.generateDossierSummary(dossier);
+    'intel:generate_summary': async ({ dossier, user }: IntelGenerateSummaryPayload & ActorUser) => {
+        // Per-user throttle on the metered Gemini key.
+        assertAiRateLimit(user?.id);
+        // The client-supplied dossier is NOT trusted. generateDossierSummary
+        // caches its result globally per target (dossier_summaries, keyed only by
+        // target_id) and managers read it back — so an unprivileged caller could
+        // forge the "official" AI synthesis. Refetch the clearance-filtered
+        // dossier server-side from the target id, so the AI only ever sees data
+        // the requester is cleared for and the cache cannot be poisoned. Gated at
+        // intel:manage (the only population that can read the cached summary back).
+        const targetId = typeof dossier?.targetId === 'string' ? dossier.targetId.trim() : '';
+        if (!targetId) throw new Error('A target is required to generate a summary.');
+        const fresh = await db.getDossier(targetId, user);
+        return ai.generateDossierSummary(fresh);
     },
 
     // --- BULLETIN ACTIONS ---
     'intel:create_bulletin': async (payload: IntelCreateBulletinPayload) => {
         const bulletin = await db.createIntelBulletin(payload);
         try {
-            // SECURITY (L4): sendPushToStaff fans out to ALL staff with no clearance
-            // filter, and push payloads surface on lock screens. Never put a
-            // classified bulletin's title/body in the push — send a generic notice
-            // and let the recipient open the clearance-gated terminal.
+            // sendPushToStaff fans out to ALL staff with no clearance filter, and
+            // push payloads surface on lock screens. Never put a classified
+            // bulletin's title/body in the push — send a generic notice and let
+            // the recipient open the clearance-gated terminal.
             const isClassified = (bulletin.classificationLevel ?? 0) > 0;
             await sendPushToStaff({
                 title: isClassified ? 'New Classified Intel Bulletin' : `Intel Bulletin: ${bulletin.title}`,

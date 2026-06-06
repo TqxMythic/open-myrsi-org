@@ -23,6 +23,8 @@
 
 import { supabase, handleSupabaseError } from './common.js';
 import { toPlatformLocation } from './mappers.js';
+import { safeSearchTerm } from '../pgrest.js';
+import { stripHtmlSingleLine } from '../textSanitize.js';
 import {
     fetchUexStarSystems, fetchUexOrbits, fetchUexPlanets, fetchUexMoons,
     fetchUexSpaceStations, fetchUexCities, fetchUexOutposts, fetchUexPois,
@@ -70,8 +72,9 @@ export async function getPlatformLocations(opts: ListLocationsOptions = {}): Pro
     if (!opts.includeHidden) qb = qb.eq('is_hidden', false);
     if (!opts.includeDecommissioned) qb = qb.or('is_decommissioned.is.null,is_decommissioned.eq.false');
     if (opts.search && opts.search.trim()) {
-        const safe = opts.search.trim().replace(/[\\%_]/g, (m) => '\\' + m);
-        qb = qb.or(`name.ilike.%${safe}%,path.ilike.%${safe}%,nickname.ilike.%${safe}%`);
+        // Allow-list the term before it enters the .or() grammar.
+        const safe = safeSearchTerm(opts.search);
+        if (safe) qb = qb.or(`name.ilike.%${safe}%,path.ilike.%${safe}%,nickname.ilike.%${safe}%`);
     }
     qb = qb.order('kind').order('name').range(offset, offset + limit - 1);
 
@@ -116,7 +119,9 @@ export async function searchPlatformLocations(
 ): Promise<PlatformLocation[]> {
     const q = (query || '').trim();
     if (!q) return [];
-    const safe = q.replace(/[\\%_]/g, (m) => '\\' + m);
+    // Allow-list before interpolating into the .or() grammar.
+    const safe = safeSearchTerm(query);
+    if (!safe) return [];
     const cap = Math.min(Math.max(limit, 1), 200);
 
     let qb = supabase.from('platform_locations').select('*')
@@ -295,7 +300,7 @@ function makeRow(
         external_id: externalId,
         parent_id: parentDbId,
         star_system_id: starSystemDbId,
-        name,
+        name: stripHtmlSingleLine(name, 200) || name,   // strip markup from UEX display name
         code: extras.code ?? null,
         is_available_live: extras.is_available_live ?? null,
         is_visible: extras.is_visible ?? null,
@@ -304,8 +309,8 @@ function makeRow(
         is_decommissioned: extras.is_decommissioned ?? null,
         pad_types: extras.pad_types ?? null,
         amenities: extras.amenities ?? {},
-        faction_name: extras.faction_name ?? null,
-        jurisdiction_name: extras.jurisdiction_name ?? null,
+        faction_name: stripHtmlSingleLine(extras.faction_name, 120) || null,
+        jurisdiction_name: stripHtmlSingleLine(extras.jurisdiction_name, 120) || null,
         uex_date_added: extras.uex_date_added ?? null,
         uex_date_modified: extras.uex_date_modified ?? null,
         last_synced_at: new Date().toISOString(),
@@ -537,13 +542,9 @@ export async function syncPlatformLocations(): Promise<SyncLocationsResult> {
         await refreshLookupForKind('moon', lookup);
     }
 
-    // --- Pass 5: space_stations (parent: city > moon > planet > orbit > system) ---
-    // Note: cities aren't synced yet at this point. UEX doesn't have a strict
-    // ordering (a station can sit "in" a city), but cities depend on planets/moons
-    // which are already loaded. So we sync cities in pass 6 and then any
-    // station -> city parents just fall back to moon/planet on first sync;
-    // a second sync run would fix them up. To handle this in one pass we
-    // sync cities BEFORE stations. Reordering done below.
+    // --- Pass 5: cities (synced before stations so station→city parents resolve) ---
+    // A station can sit "in" a city, so cities must load first for the station
+    // parent lookup to find them on the first sync.
     const cities: UexCity[] = await fetchUexCities();
     perKind.city.fetched = cities.length;
     {

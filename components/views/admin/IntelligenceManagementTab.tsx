@@ -126,7 +126,6 @@ const IntelligenceManagementTab: React.FC = () => {
         try {
             const result = await rpcAction('intel:sync_feeds', { force: true });
 
-            // Display per-feed results
             if (result?.feedResults && Array.isArray(result.feedResults)) {
                 for (const fr of result.feedResults) {
                     const prefix = fr.label ? `[${fr.label}]` : '';
@@ -134,7 +133,6 @@ const IntelligenceManagementTab: React.FC = () => {
                 }
             }
 
-            // Display totals summary
             const newReports = result?.totalReports || 0;
             const newWarrants = result?.totalWarrants || 0;
             const newBulletins = result?.totalBulletins || 0;

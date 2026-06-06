@@ -11,8 +11,9 @@ import { verifyApiKey, getPublicFeedData } from './system.js';
 import { log as baseLog } from '../log.js';
 import { sanitizePublicLinkUrl } from '../linkUrl.js';
 import { decryptSecret } from '../crypto.js';
-import { filterByClearance, canViewAllClassifications, passesClearance, type ClearanceUser } from '../clearance.js';
-import { assertResolvesToPublicHost } from '../ssrf.js';
+import { filterByClearance, canViewAllClassifications, passesClearance, assertCanClassify, type ClearanceUser } from '../clearance.js';
+import { canUserSeeOpInList, type OpViewer } from './ops.js';
+import { ssrfSafeFetch } from '../ssrf.js';
 import { getCachedAllianceSyncConfig, recordPeerFailure, recordPeerSuccess, setSyncAlert } from './allianceSyncState.js';
 import type { Tables } from './rows.js';
 export { toHydratedWarrant, toHydratedIntelReport, toIntelBulletin };
@@ -23,12 +24,9 @@ type WarrantNoteRow = Tables<'warrant_notes'> & { author?: Parameters<typeof toM
 
 const log = baseLog.child({ module: 'db.intel' });
 
-// --- CLEARANCE / LIMITING-MARKER FILTER (SECURITY H3) ----------------------
-// Intel report/bulletin bodies carry a classificationLevel + limitingMarkers.
-// Previously filtering was deferred to the client (cosmetic), so any intel:view
-// holder received above-clearance / marker-restricted bodies in the HTTP
-// response. Enforce it server-side via the shared clearance util. intel:manage
-// holders (and Admins) see all classifications.
+// Clearance / limiting-marker filter for intel report/bulletin bodies, enforced
+// server-side via the shared clearance util. intel:manage holders (and Admins)
+// see all classifications.
 export function filterIntelByClearance<T extends { classificationLevel?: number | null; limitingMarkers?: unknown[] }>(
     items: T[],
     user?: ClearanceUser | null,
@@ -38,7 +36,7 @@ export function filterIntelByClearance<T extends { classificationLevel?: number 
 
 /** Warrant emits carry the affected id(s) so clients refetch one row
  *  (warrant_slice) instead of the whole 200-row list. Id-only payloads —
- *  the db-changes channel is anon-readable (H4). */
+ *  the db-changes channel is anon-readable. */
 function broadcastWarrantUpdate(payload?: { warrantId?: string; warrantIds?: string[] }) {
     broadcastToOrg('warrant_update', payload ?? {});
 }
@@ -59,7 +57,6 @@ export async function createWarrant(payload: Record<string, unknown>, userId?: n
     const targetRsiHandle = payload.targetRsiHandle as string;
     const reason = payload.reason as string;
     const issuer = userId || (payload.issuedById as number | undefined);
-    // .select('id') captures the new row id for the slice broadcast below.
     const { data: created, error } = await supabase.from('warrants').insert({
         target_rsi_handle: targetRsiHandle,
         reason: reason,
@@ -146,7 +143,7 @@ export async function getWarrantByIdHydrated(warrantId: string) {
     return data ? toHydratedWarrant(data) : null;
 }
 
-// --- WARRANT NOTES (#11: append-only thread) ---
+// --- WARRANT NOTES (append-only thread) ---
 // Each call appends a new row to warrant_notes and mirrors the latest content
 // onto warrants.notes so existing list-view callers (which only read the
 // cached column) continue to work without changes. PG 42P01 (table missing)
@@ -239,6 +236,10 @@ export async function generateReportFromWarrant(warrantId: string, userId: numbe
 
 export async function createIntelReport(reportData: Record<string, unknown>) {
     const markerIds = reportData.markerIds as number[] | undefined;
+    // intel:create (default Member) is NOT a clearance bypass. The author may not
+    // label a report above their own clearance or apply a marker they don't hold;
+    // intel:manage holders (read-side bypass) classify freely.
+    assertCanClassify(reportData.user as ClearanceUser | undefined, (reportData.classificationLevel as number | undefined) ?? 0, markerIds, ['intel:manage']);
     const { data, error } = await supabase.from('intel_reports').insert({
         target_id: stripHtmlSingleLine(reportData.targetId as string, 200),
         subject_type: reportData.subjectType as string | undefined,
@@ -309,7 +310,18 @@ export async function getIntelReportsForTarget(targetId: string): Promise<Hydrat
     return data.map(toHydratedIntelReport);
 }
 
-export async function getDossier(targetId: string): Promise<DossierData> {
+// Project the PostgREST marker-junction embed ([{ marker: {id,name,code} }]) to
+// the scalar marker list passesClearance expects — the same shape
+// assertOpVisibleToUser uses.
+function embeddedMarkers(rows?: { marker?: unknown }[] | null): unknown[] {
+    return (rows || []).map((m) => m.marker).filter(Boolean);
+}
+
+// `viewer` is the authenticated caller; every derived surface in the dossier
+// (affiliates, operations, cached AI summary) is clearance-filtered server-side
+// against it. A missing viewer fails closed (treated as clearance 0, no markers,
+// no bypass).
+export async function getDossier(targetId: string, viewer?: OpViewer | null): Promise<DossierData> {
     const userQuery = supabase.from('users').select('id').ilike('rsi_handle', targetId);
     const { data: targetUser } = await userQuery.maybeSingle();
     const targetUserId = targetUser?.id;
@@ -340,13 +352,17 @@ export async function getDossier(targetId: string): Promise<DossierData> {
 
         // Populate affiliates with unique people in this org
         const membersQuery = supabase.from('intel_reports')
-            .select('target_id, threat_level, created_at')
+            .select('target_id, threat_level, created_at, classification_level, intel_report_limiting_markers(marker:security_limiting_markers(id, name, code))')
             .ilike('affiliated_org', targetId)
             .order('created_at', { ascending: false });
         const { data: members } = await membersQuery;
 
         const memberMap = new Map<string, { targetId: string; threatLevel: IntelThreatLevel; lastReportedAt: string }>();
         members?.forEach(m => {
+            // Affiliates are synthesized from intel_reports rows — apply the same
+            // clearance/marker predicate as the report bodies so a level-0 viewer
+            // doesn't learn compartmented affiliations + threat levels.
+            if (!passesClearance(viewer, m.classification_level, embeddedMarkers(m.intel_report_limiting_markers), ['intel:manage'])) return;
             const handle = m.target_id.toLowerCase();
             if (!memberMap.has(handle)) {
                 memberMap.set(handle, {
@@ -362,13 +378,17 @@ export async function getDossier(targetId: string): Promise<DossierData> {
         // --- PERSON DOSSIER ---
         // Identify organization affiliation from their reports
         const primaryQuery = supabase.from('intel_reports')
-            .select('affiliated_org, threat_level, created_at')
+            .select('affiliated_org, threat_level, created_at, classification_level, intel_report_limiting_markers(marker:security_limiting_markers(id, name, code))')
             .ilike('target_id', targetId);
         const { data: primaryReports } = await primaryQuery;
 
         const orgMetaMap = new Map<string, { level: IntelThreatLevel, date: string }>();
 
         primaryReports?.forEach(r => {
+            // Same clearance/marker predicate as the report bodies (see org branch).
+            // Also scopes orgSet — and therefore the org-report merge below — to
+            // orgs the viewer may legitimately learn about.
+            if (!passesClearance(viewer, r.classification_level, embeddedMarkers(r.intel_report_limiting_markers), ['intel:manage'])) return;
             if (r.affiliated_org) {
                 const org = r.affiliated_org.toUpperCase();
                 orgSet.add(org);
@@ -407,9 +427,12 @@ export async function getDossier(targetId: string): Promise<DossierData> {
         }
     }
 
+    // owner_id + clearance_level + limiting markers are selected solely to feed
+    // canUserSeeOpInList below — they are NOT part of the mapped projection
+    // returned to the browser.
     const opsQuery = targetUserId
         ? safeFetch((() => {
-            const q = supabase.from('operations').select('id, name, status, type, description, created_at, participants:operation_participants!inner(user_id)').eq('participants.user_id', targetUserId);
+            const q = supabase.from('operations').select('id, name, status, type, description, created_at, owner_id, clearance_level, limiting_markers:operation_limiting_markers(marker:security_limiting_markers(id, name, code)), participants:operation_participants!inner(user_id)').eq('participants.user_id', targetUserId);
             return q;
         })(), [], 'Failed to get operations')
         : Promise.resolve([]);
@@ -420,15 +443,24 @@ export async function getDossier(targetId: string): Promise<DossierData> {
     // Build org-scoped requests query
     const requestsQuery = supabase.from('service_requests').select('id, client_id, unregistered_client_rsi_handle, service_type, location, description, status, urgency, threat_level, created_at, updated_at').ilike('unregistered_client_rsi_handle', targetId);
 
-    // Build org-scoped summary query
-    const summaryQuery = supabase.from('dossier_summaries').select('summary, generated_at').eq('target_id', targetId);
+    // The cached AI summary is synthesized from the FULL dossier (including
+    // above-clearance reports/ops/affiliates) and cached globally per target —
+    // opaque prose no field-level filter can redact. Serve it only to the
+    // population that could regenerate it at full fidelity; everyone else gets no
+    // summary (fail closed, query skipped entirely).
+    const canSeeCachedSummary = canViewAllClassifications(viewer, ['intel:manage']);
+    const summaryPromise = canSeeCachedSummary
+        ? safeFetch<{ summary: string, generated_at: string } | null>(
+            supabase.from('dossier_summaries').select('summary, generated_at').eq('target_id', targetId).maybeSingle(),
+            null, 'Failed to get summary')
+        : Promise.resolve(null);
 
     const [reports, warrants, requests, opsData, summary, orgReportArrays] = await Promise.all([
         safeFetch(reportsQuery, [], 'Failed to get reports'),
         isOrg ? Promise.resolve([]) : safeFetch(warrantQuery, [], 'Failed to get warrants'),
         isOrg ? Promise.resolve([]) : safeFetch(requestsQuery, [], 'Failed to get requests'),
         isOrg ? Promise.resolve([]) : opsQuery,
-        safeFetch<{ summary: string, generated_at: string } | null>(summaryQuery.maybeSingle(), null, 'Failed to get summary'),
+        summaryPromise,
         Promise.all(orgReportPromises),
     ]);
 
@@ -463,15 +495,26 @@ export async function getDossier(targetId: string): Promise<DossierData> {
         statusHistory: []
     }));
 
-    // Map operations from the query result
-    const mappedOperations = ((opsData || []) as unknown as Tables<'operations'>[]).map((op) => ({
-        id: op.id,
-        name: op.name,
-        status: op.status,
-        type: op.type,
-        description: op.description,
-        createdAt: op.created_at
-    }));
+    // Mirror the ops list/detail gate (canUserSeeOpInList) before mapping so the
+    // dossier doesn't leak compartmented op existence, status and tactical
+    // description to any intel:view holder. The gate fields
+    // (owner_id/clearance_level/markers) are consumed here and dropped from the
+    // mapped projection.
+    type DossierOpRow = Tables<'operations'> & { limiting_markers?: { marker?: unknown }[] };
+    const mappedOperations = ((opsData || []) as unknown as DossierOpRow[])
+        .filter((op) => !!viewer && canUserSeeOpInList(viewer, {
+            ownerId: op.owner_id,
+            clearanceLevel: op.clearance_level ?? 0,
+            limitingMarkers: embeddedMarkers(op.limiting_markers),
+        }))
+        .map((op) => ({
+            id: op.id,
+            name: op.name,
+            status: op.status,
+            type: op.type,
+            description: op.description,
+            createdAt: op.created_at
+        }));
 
     return {
         targetId,
@@ -520,6 +563,11 @@ export interface ListIntelReportsArgs {
     tag?: string;
     warrantsOnly?: boolean;
     q?: string;
+    // The viewer, so the SQL query can apply a clearance-LEVEL ceiling — keeps
+    // page counts / cursors from reflecting above-level rows (volume inference).
+    // Per-row MARKER filtering still happens in the caller (filterIntelByClearance).
+    // intel:manage / Admin see all (no ceiling).
+    viewer?: ClearanceUser | null;
 }
 
 export interface ListIntelReportsResult {
@@ -554,9 +602,12 @@ function decodeIntelCursor(cursor: string | null | undefined): { createdAt: stri
  * keyset pagination on (created_at DESC, id DESC) — backed by
  * idx_intel_reports_org_created_id (migrations/add-intel-pagination-index.sql).
  *
- * Clearance filtering is intentionally NOT applied here — the caller (UI)
- * filters page-by-page using each user's clearance/markers. Stripping
- * server-side would require per-user join logic and complicate the cursor.
+ * A clearance-LEVEL ceiling is applied in SQL when `viewer` is supplied
+ * (non-manager), so hasMore/nextCursor reflect only rows at/below the viewer's
+ * level (no volume inference of higher-classified rows). The caller (intel:list)
+ * STILL re-applies filterIntelByClearance for the per-row limiting MARKERS (a
+ * junction the keyset query can't cheaply filter). Do NOT remove the caller's
+ * filter — and never expose this function's rows directly without it.
  */
 export async function listIntelReports(args: ListIntelReportsArgs): Promise<ListIntelReportsResult> {
     const limit = Math.min(Math.max(1, args.limit ?? 50), 100);
@@ -593,6 +644,11 @@ export async function listIntelReports(args: ListIntelReportsArgs): Promise<List
     if (args.subjectType) query = query.eq('subject_type', args.subjectType);
     if (args.tag) query = query.contains('tags', [args.tag]);
     if (warrantTargets) query = query.in('target_id', warrantTargets);
+    // Clearance-LEVEL ceiling so pagination doesn't leak the existence/volume of
+    // higher-classified reports. Managers/Admins see all.
+    if (args.viewer && !canViewAllClassifications(args.viewer, ['intel:manage'])) {
+        query = query.lte('classification_level', args.viewer.clearanceLevel?.level ?? 0);
+    }
 
     // --- Search disjunction (re-uses safe regex from searchIntelReports) ---
     if (hasSearch) {
@@ -663,9 +719,9 @@ export interface IntelHubStats {
  * require a per-user join over every report — too expensive on the hot read path).
  */
 export async function getIntelHubStats(user?: ClearanceUser | null): Promise<IntelHubStats> {
-    // SECURITY: counts are clearance-ceilinged — a low-clearance viewer's
-    // stats must not include reports they cannot read (the count itself
-    // reveals classified activity volume). Admin / intel:manage see all.
+    // Counts are clearance-ceilinged — a low-clearance viewer's stats must not
+    // include reports they cannot read (the count itself reveals classified
+    // activity volume). Admin / intel:manage see all.
     const maxLevel = canViewAllClassifications(user, ['intel:manage'])
         ? null
         : (user?.clearanceLevel?.level ?? 0);
@@ -702,11 +758,11 @@ export interface IntelTargetIndexEntry {
  * an RPC. Result deduped + capped at 5000 entries (warns if truncated).
  */
 export async function getIntelTargetIndex(user?: ClearanceUser | null): Promise<IntelTargetIndexEntry[]> {
-    // SECURITY: the index reveals WHICH targets are under surveillance and at
-    // what threat level — the exact metadata the clearance system
-    // compartmentalises. A viewer must only see index entries derived from
-    // reports they could read: classification ceiling in SQL, limiting-marker
-    // exclusion per row below. Admin / intel:manage see the full index.
+    // The index reveals WHICH targets are under surveillance and at what threat
+    // level — the exact metadata the clearance system compartmentalises. A viewer
+    // must only see index entries derived from reports they could read:
+    // classification ceiling in SQL, limiting-marker exclusion per row below.
+    // Admin / intel:manage see the full index.
     const seeAll = canViewAllClassifications(user, ['intel:manage']);
     let query = supabase.from('intel_reports')
         .select('target_id, threat_level, classification_level, intel_report_limiting_markers(marker:security_limiting_markers(id, name, code))')
@@ -742,10 +798,10 @@ export async function getIntelTargetIndex(user?: ClearanceUser | null): Promise<
     return entries;
 }
 
-// NOTE: getIntelAnalytics / the 'intel:get_top_entities' action were removed —
-// they called a Postgres RPC (get_intel_analytics) that does not exist in
-// schema.sql and had no client caller (schema↔app drift cleanup). Re-add the
-// action AND the function together if an intel-analytics widget is built.
+// getIntelAnalytics / the 'intel:get_top_entities' action were removed — they
+// called a Postgres RPC (get_intel_analytics) that does not exist in schema.sql
+// and had no client caller. Re-add the action AND the function together if an
+// intel-analytics widget is built.
 
 export async function updateIntelAffiliation(targetId: string, affiliatedOrg: string) {
     const { error } = await supabase.from('intel_reports').update({ affiliated_org: affiliatedOrg })
@@ -755,7 +811,22 @@ export async function updateIntelAffiliation(targetId: string, affiliatedOrg: st
     await broadcastIntelUpdate({ kind: 'report' });
 }
 
+// Intel bulk mutations accept a client-supplied reportIds array. Cap it so a
+// single RPC can't fan out an unbounded write/realtime amplification (oversized
+// `.in()` predicates, N parallel per-row writes in bulkAddIntelTags). Reject
+// (fail closed) rather than silently truncate — a truncated bulk op would
+// partially apply with no signal to the caller. The selection UI operates on
+// screenfuls of rows, so this ceiling is well above any legitimate batch.
+const MAX_BULK_REPORT_IDS = 1000;
+function assertBulkReportIds(reportIds: unknown): asserts reportIds is string[] {
+    if (!Array.isArray(reportIds)) throw new Error('reportIds must be an array');
+    if (reportIds.length > MAX_BULK_REPORT_IDS) {
+        throw new Error(`Too many reports in bulk operation (${reportIds.length}; max ${MAX_BULK_REPORT_IDS}).`);
+    }
+}
+
 export async function bulkUpdateIntelAffiliation(reportIds: string[], affiliatedOrg: string) {
+    assertBulkReportIds(reportIds);
     const { error = null } = await supabase.from('intel_reports').update({ affiliated_org: affiliatedOrg })
         .in('id', reportIds)
         ;
@@ -764,6 +835,7 @@ export async function bulkUpdateIntelAffiliation(reportIds: string[], affiliated
 }
 
 export async function bulkAddIntelTags(reportIds: string[], tags: string[]) {
+    assertBulkReportIds(reportIds);
     if (!reportIds.length) return;
     // Batched: one read of all rows' current tags, then concurrent per-row writes.
     // Tags differ per row (merge+dedupe against each row's existing set) so a single
@@ -779,6 +851,7 @@ export async function bulkAddIntelTags(reportIds: string[], tags: string[]) {
 }
 
 export async function bulkDeleteIntelReports(reportIds: string[]) {
+    assertBulkReportIds(reportIds);
     await supabase.from('intel_reports').delete()
         .in('id', reportIds)
         ;
@@ -809,9 +882,27 @@ export async function searchIntelReports(query: string, subjectType?: string): P
     return (data || []).map(toHydratedIntelReport);
 }
 
-export async function getIntelStats() {
-    const reportsQuery = supabase.from('intel_reports').select('threat_level');
-    const warrantsQuery = supabase.from('warrants').select('id').eq('status', 'Active');
+export async function getIntelStats(user?: ClearanceUser | null) {
+    // Mirror getIntelHubStats — a low-clearance viewer's report count + threat
+    // breakdown must NOT include reports above their level (the
+    // counts/distribution themselves reveal classified-activity volume). Apply
+    // the same classification-level ceiling in SQL. Admin / intel:manage holders
+    // (read-side bypass) see everything (maxLevel = null). The warrant
+    // aggregation is ceilinged via warrant:view: warrants are a separate
+    // compartment gated by warrant:view in the dossier/read paths, so a viewer
+    // without it sees an activeWarrants count of 0 here too.
+    const maxLevel = canViewAllClassifications(user, ['intel:manage'])
+        ? null
+        : (user?.clearanceLevel?.level ?? 0);
+
+    let reportsQuery = supabase.from('intel_reports').select('threat_level, classification_level');
+    if (maxLevel !== null) reportsQuery = reportsQuery.lte('classification_level', maxLevel);
+
+    const canSeeWarrants = user?.role === 'Admin'
+        || (Array.isArray(user?.permissions) && user.permissions.includes('warrant:view'));
+    const warrantsQuery = canSeeWarrants
+        ? supabase.from('warrants').select('id').eq('status', 'Active')
+        : Promise.resolve({ data: [] as { id: string }[] });
     const [{ data: reports }, { data: warrants }] = await Promise.all([reportsQuery, warrantsQuery]);
 
     return {
@@ -826,6 +917,48 @@ export async function getIntelStats() {
 
 const normalizeString = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
 
+// An approved-but-hostile ally feed's response is fully peer-controlled. Bound
+// it: a byte ceiling on the parsed body (mirrors operations-federation
+// MAX_INBOUND_SNAPSHOT_BYTES), a per-channel item cap, a tag cap, and per-field
+// stripHtml/length clamps at insert (the same hygiene
+// createIntelReport/createIntelBulletin apply to own-org content). Without these,
+// one feed pull could insert 50k markup-laden rows → DB bloat, realtime
+// hammering, admin-browser DoS, and latent stored markup.
+const MAX_FEED_RESPONSE_BYTES = 8 * 1024 * 1024;
+const MAX_FEED_ITEMS = 1000;
+const MAX_FEED_TAGS = 20;
+const sanitizeFeedTags = (tags: unknown): string[] =>
+    Array.isArray(tags) ? tags.slice(0, MAX_FEED_TAGS).map((t) => stripHtmlSingleLine(String(t), 40)).filter(Boolean) : [];
+
+/**
+ * Resolve a feed item's requested limiting-marker CODES to local marker IDs,
+ * failing CLOSED on any unknown code.
+ *
+ * Independent instances use free-text marker codes, so vocabulary divergence
+ * between a peer and us is the normal case — a code the peer compartmented under
+ * may not exist locally. If ANY requested code fails to resolve, return `null` so
+ * the caller SKIPS the item entirely (never inserts it markerless, which would be
+ * a compartment fail-open readable by every member at/below that level). An
+ * empty/absent marker list returns `[]` (nothing to attach — insert proceeds).
+ */
+function resolveFeedMarkerIds(
+    rawMarkers: unknown,
+    localMarkers: { id: number; code: string }[] | null | undefined,
+): { ids: number[] } | null {
+    if (!Array.isArray(rawMarkers) || rawMarkers.length === 0) return { ids: [] };
+    const requestedCodes = new Set(
+        rawMarkers.slice(0, MAX_FEED_TAGS).map((c: unknown) => String(c).slice(0, 60)),
+    );
+    const byCode = new Map((localMarkers || []).map((m) => [m.code, m.id] as const));
+    const ids: number[] = [];
+    for (const code of requestedCodes) {
+        const id = byCode.get(code);
+        if (id === undefined) return null; // unknown compartment → fail closed
+        ids.push(id);
+    }
+    return { ids };
+}
+
 // Loose shape of a remote/local trusted-feed sync payload. Fields are best-effort
 // — feeds come from external servers, so everything is optional and validated
 // at the point of use before being persisted.
@@ -836,7 +969,7 @@ interface FeedSyncMeta {
     maxShareableLevel?: number;
     // Peer-clock timestamp captured BEFORE the peer ran its queries — the next
     // sync cursor. Same clock domain as the items' created_at, so cross-server
-    // clock skew can never skip intel (live-sync cursor fix).
+    // clock skew can never skip intel.
     fetchedAt?: string;
 }
 interface FeedReportItem {
@@ -870,6 +1003,7 @@ interface FeedBulletinItem {
     duration_minutes?: number;
     classification_level?: number;
     created_at?: string;
+    limiting_markers?: string[];
 }
 interface FeedSyncData {
     countReports?: number;
@@ -888,13 +1022,12 @@ interface FeedSyncData {
  * (intel:sync_feeds) AND per-peer by the live-sync cron (lib/db/allianceSync.ts
  * passes `onlyPeerIds` so cadence/health gating stays in the engine).
  *
- * Cursor (live-sync fix): the delta cursor is the dedicated
- * alliance_peers.intel_synced_at, written from the PEER's _meta.fetchedAt
- * (peer-clock domain — immune to cross-server skew), minus a configurable
- * overlap on use (replays are free: dedup absorbs them; under-fetching loses
- * intel forever). NULL cursor (fresh pairing / upgraded row) falls back to the
- * legacy last_contact_at once, then this column owns the cursor. last_contact_at
- * itself reverts to pure contact/health semantics.
+ * The delta cursor is the dedicated alliance_peers.intel_synced_at, written from
+ * the PEER's _meta.fetchedAt (peer-clock domain — immune to cross-server skew),
+ * minus a configurable overlap on use (replays are free: dedup absorbs them;
+ * under-fetching loses intel forever). NULL cursor (fresh pairing / upgraded row)
+ * falls back to the legacy last_contact_at once, then this column owns the cursor.
+ * last_contact_at itself reverts to pure contact/health semantics.
  *
  * Warrants ingest no longer needs an admin id: warrants.issued_by is nullable
  * and federated warrants carry "via <ally>" provenance (source_feed_id).
@@ -1016,9 +1149,9 @@ export async function syncTrustedFeeds(force?: boolean, onlyPeerIds?: string[]) 
                         _meta: feedData._meta
                     };
                     feedLog.push(`Direct query returned: ${data.countReports} reports, ${data.countWarrants} warrants, ${data.countBulletins} bulletins`);
-                    // (Per-reason "excluded by clearance/marker" counts were removed
+                    // Per-reason "excluded by clearance/marker" counts were removed
                     // from the feed _meta — they disclosed how much classified intel
-                    // exists above the requester's ceiling. See SECURITY L6.)
+                    // exists above the requester's ceiling.
                 } catch (localErr) {
                     feedResults.push({
                         label: feed.label, status: 'error',
@@ -1048,12 +1181,13 @@ export async function syncTrustedFeeds(force?: boolean, onlyPeerIds?: string[]) 
                 const timeout = setTimeout(() => controller.abort(), 15000);
                 let response: Response;
                 try {
-                    // SECURITY (M7): the literal-IP check above does not resolve DNS.
-                    // This fetch carries our decrypted feed/alliance x-api-key, so a
-                    // hostname resolving to a private/cloud-metadata IP would be an
-                    // SSRF + key-exfil. Resolve and reject private targets first.
-                    await assertResolvesToPublicHost(url);
-                    response = await fetch(url, {
+                    // The literal-IP check above does not resolve DNS, and this
+                    // fetch carries our decrypted feed/alliance x-api-key.
+                    // ssrfSafeFetch resolves + rejects private targets, PINS the
+                    // vetted IP into the connection (DNS-rebind), and refuses
+                    // redirects (a hostile feed could otherwise 302 the credentialed
+                    // request to an internal or metadata endpoint).
+                    response = await ssrfSafeFetch(url, {
                         method: 'GET',
                         headers: { 'x-api-key': feed.api_key },
                         signal: controller.signal
@@ -1088,9 +1222,29 @@ export async function syncTrustedFeeds(force?: boolean, onlyPeerIds?: string[]) 
 
                 // Parse response
                 const contentType = response.headers.get('content-type') || '';
+                // Reject EARLY on a declared Content-Length over the cap — before
+                // buffering the body at all. A hostile feed that honestly
+                // advertises a multi-GB body is refused without ever being read
+                // (the post-buffer length check below still guards
+                // chunked/unset-length bodies). Applies to BOTH the JSON and the
+                // non-JSON branch.
+                const tooLargeMsg = `Feed response too large (> ${Math.round(MAX_FEED_RESPONSE_BYTES / 1048576)} MB) — refused.`;
+                const declaredLen = Number(response.headers.get('content-length') || '');
+                if (Number.isFinite(declaredLen) && declaredLen > MAX_FEED_RESPONSE_BYTES) {
+                    feedResults.push({ label: feed.label, status: 'error', message: tooLargeMsg });
+                    continue;
+                }
                 try {
                     if (!contentType.includes('application/json')) {
+                        // The non-JSON branch also buffers the body (for the error
+                        // preview) — apply the SAME byte cap so a hostile feed can't
+                        // OOM us by serving a giant text/plain body with no
+                        // Content-Length.
                         const bodyPreview = await response.text();
+                        if (bodyPreview.length > MAX_FEED_RESPONSE_BYTES) {
+                            feedResults.push({ label: feed.label, status: 'error', message: tooLargeMsg });
+                            continue;
+                        }
                         const isHtml = bodyPreview.trimStart().startsWith('<') || contentType.includes('text/html');
                         feedResults.push({
                             label: feed.label, status: 'error',
@@ -1100,7 +1254,17 @@ export async function syncTrustedFeeds(force?: boolean, onlyPeerIds?: string[]) 
                         });
                         continue;
                     }
-                    data = await response.json();
+                    // Cap the parsed body before JSON.parse so a hostile feed can't
+                    // OOM us with a giant payload.
+                    const bodyText = await response.text();
+                    if (bodyText.length > MAX_FEED_RESPONSE_BYTES) {
+                        feedResults.push({
+                            label: feed.label, status: 'error',
+                            message: tooLargeMsg,
+                        });
+                        continue;
+                    }
+                    data = JSON.parse(bodyText);
                 } catch {
                     feedResults.push({
                         label: feed.label, status: 'error',
@@ -1127,21 +1291,30 @@ export async function syncTrustedFeeds(force?: boolean, onlyPeerIds?: string[]) 
             const newWarrantIds: string[] = [];
             const newBulletinIds: string[] = [];
 
-            // 4. Process reports
+            // 4. Process reports (cap the per-channel item count)
             if (data.reports && Array.isArray(data.reports) && feed.sync_reports !== false) {
-                for (const r of data.reports) {
+                if (data.reports.length > MAX_FEED_ITEMS) feedLog.push(`Truncated reports ${data.reports.length}→${MAX_FEED_ITEMS} (feed cap)`);
+                for (const r of data.reports.slice(0, MAX_FEED_ITEMS)) {
                     try {
                         if (!r.target_id || !r.summary) continue;
                         const maxClearance = feed.inbound_max_clearance ?? 5;
                         if ((r.classification_level || 0) > maxClearance) continue;
-                        const normalizedSummary = normalizeString(r.summary);
+                        // Sanitize ONCE and use the cleaned values for both dedup
+                        // and insert — otherwise dedup (raw) and stored (clean)
+                        // diverge and id-less items re-insert each sync.
+                        const cleanTarget = stripHtmlSingleLine(r.target_id, 200);
+                        const cleanSummary = stripHtml(r.summary, 8000);
+                        if (!cleanTarget || !cleanSummary) continue;
+                        const cleanAffiliated = stripHtmlSingleLine(r.affiliated_org, 200) || null;
+                        const cleanTags = sanitizeFeedTags(r.tags);
+                        const normalizedSummary = normalizeString(cleanSummary);
 
                         // Check if already imported from this feed (by external_id + source_feed_id)
                         const { data: existingExternal } = await supabase.from('intel_reports')
                             .select('id')
                             .eq('external_id', r.id)
                             .eq('source_feed_id', feed.id)
-                            
+
                             .maybeSingle();
 
                         if (existingExternal) {
@@ -1152,7 +1325,7 @@ export async function syncTrustedFeeds(force?: boolean, onlyPeerIds?: string[]) 
                         // Check for content match within THIS org only
                         const { data: internalMatches } = await supabase.from('intel_reports')
                             .select('id, summary, external_id')
-                            .ilike('target_id', r.target_id)
+                            .ilike('target_id', cleanTarget)
                             ;
 
                         const existingInternal = (internalMatches || []).find(
@@ -1172,14 +1345,35 @@ export async function syncTrustedFeeds(force?: boolean, onlyPeerIds?: string[]) 
                                 feedDuplicateReports++;
                             }
                         } else {
-                            // Insert new report
+                            // Resolve the report's limiting markers BEFORE
+                            // inserting and FAIL CLOSED on any unknown code — never
+                            // insert a compartmented report markerless at full
+                            // classification_level.
+                            let markerIdsToAttach: number[] = [];
+                            if (Array.isArray(r.limiting_markers) && r.limiting_markers.length > 0) {
+                                const markerCodes = r.limiting_markers.slice(0, MAX_FEED_TAGS).map((c: unknown) => String(c).slice(0, 60));
+                                const { data: localMarkers } = await supabase.from('security_limiting_markers')
+                                    .select('id, code')
+                                    .in('code', markerCodes);
+                                const resolved = resolveFeedMarkerIds(r.limiting_markers, localMarkers);
+                                if (!resolved) {
+                                    // Unknown compartment locally → skip the item
+                                    // (do NOT insert it without its markers).
+                                    feedReportErrors++;
+                                    log.warn('feed report skipped — unknown limiting marker code(s); refusing to insert markerless (compartment fail-closed)', { feedLabel: feed.label, externalId: r.id });
+                                    continue;
+                                }
+                                markerIdsToAttach = resolved.ids;
+                            }
+
+                            // Insert new report (sanitized fields computed above).
                             const { data: inserted, error: insertErr } = await supabase.from('intel_reports').insert({
-                                target_id: r.target_id,
+                                target_id: cleanTarget,
                                 subject_type: r.subject_type,
                                 threat_level: r.threat_level,
-                                tags: r.tags,
-                                summary: r.summary,
-                                affiliated_org: r.affiliated_org,
+                                tags: cleanTags,
+                                summary: cleanSummary,
+                                affiliated_org: cleanAffiliated,
                                 created_at: r.created_at,
                                 source_feed_id: feed.id,
                                 external_id: r.id,
@@ -1194,18 +1388,12 @@ export async function syncTrustedFeeds(force?: boolean, onlyPeerIds?: string[]) 
                                 continue;
                             }
 
-                            // Attach limiting markers from source feed (match by code)
-                            if (inserted && r.limiting_markers && Array.isArray(r.limiting_markers) && r.limiting_markers.length > 0) {
-                                const { data: localMarkers } = await supabase.from('security_limiting_markers')
-                                    .select('id, code')
-                                    
-                                    .in('code', r.limiting_markers);
-
-                                if (localMarkers && localMarkers.length > 0) {
-                                    await supabase.from('intel_report_limiting_markers').insert(
-                                        localMarkers.map((m) => ({ report_id: inserted.id, marker_id: m.id }))
-                                    );
-                                }
+                            // Attach the resolved markers (all codes were known —
+                            // verified above).
+                            if (inserted && markerIdsToAttach.length > 0) {
+                                await supabase.from('intel_report_limiting_markers').insert(
+                                    markerIdsToAttach.map((mid) => ({ report_id: inserted.id, marker_id: mid }))
+                                );
                             }
 
                             feedNewReports++;
@@ -1222,9 +1410,14 @@ export async function syncTrustedFeeds(force?: boolean, onlyPeerIds?: string[]) 
             //    provenance is source_feed_id ("via <ally>"), not fake admin
             //    attribution — so the cron can ingest these with no admin actor.
             if (data.warrants && Array.isArray(data.warrants) && feed.sync_warrants !== false) {
-                for (const w of data.warrants) {
+                if (data.warrants.length > MAX_FEED_ITEMS) feedLog.push(`Truncated warrants ${data.warrants.length}→${MAX_FEED_ITEMS} (feed cap)`);
+                for (const w of data.warrants.slice(0, MAX_FEED_ITEMS)) {
                     try {
                         if (!w.target_rsi_handle || !w.reason) continue;
+                        // Sanitize once; use for content-match dedup + insert.
+                        const cleanHandle = stripHtmlSingleLine(w.target_rsi_handle, 200);
+                        const cleanReason = stripHtml(w.reason, 8000);
+                        if (!cleanHandle || !cleanReason) continue;
 
                         // Dedup by (source_feed_id, external_id) when the feed
                         // supplies an id (backed by uq_warrants_feed_external);
@@ -1243,15 +1436,15 @@ export async function syncTrustedFeeds(force?: boolean, onlyPeerIds?: string[]) 
 
                         const { data: existing } = await supabase.from('warrants')
                             .select('id')
-                            .ilike('target_rsi_handle', w.target_rsi_handle)
-                            .eq('reason', w.reason)
+                            .ilike('target_rsi_handle', cleanHandle)
+                            .eq('reason', cleanReason)
 
                             .maybeSingle();
 
                         if (!existing) {
                             const { data: insertedWarrant, error: warrantInsertErr } = await supabase.from('warrants').insert({
-                                target_rsi_handle: w.target_rsi_handle,
-                                reason: w.reason,
+                                target_rsi_handle: cleanHandle,
+                                reason: cleanReason,
                                 action: w.action,
                                 uec_reward: w.uec_reward,
                                 status: w.status,
@@ -1280,26 +1473,58 @@ export async function syncTrustedFeeds(force?: boolean, onlyPeerIds?: string[]) 
 
             // 6. Process bulletins
             if (data.bulletins && Array.isArray(data.bulletins) && feed.sync_bulletins !== false) {
-                for (const b of data.bulletins) {
+                if (data.bulletins.length > MAX_FEED_ITEMS) feedLog.push(`Truncated bulletins ${data.bulletins.length}→${MAX_FEED_ITEMS} (feed cap)`);
+                for (const b of data.bulletins.slice(0, MAX_FEED_ITEMS)) {
                     try {
                         if (!b.title || !b.body) continue;
+                        // Enforce the per-feed clearance ceiling on bulletins
+                        // exactly as reports do above, so a hostile/misconfigured
+                        // peer can't push bulletins above the ceiling the admin set
+                        // for this feed.
+                        const maxClearance = feed.inbound_max_clearance ?? 5;
+                        if ((b.classification_level || 0) > maxClearance) continue;
+                        // Sanitize once; use for title dedup + insert.
+                        const cleanTitle = stripHtmlSingleLine(b.title, 200);
+                        const cleanBody = stripHtml(b.body, 8000);
+                        const cleanLocation = stripHtmlSingleLine(b.location, 200) || null;
+                        if (!cleanTitle || !cleanBody) continue;
 
                         // Check for existing bulletin by title match within org
                         const { data: existingBulletin } = await supabase.from('intel_bulletins')
                             .select('id')
-                            .eq('title', b.title)
-                            
+                            .eq('title', cleanTitle)
+
                             .maybeSingle();
 
                         if (!existingBulletin) {
+                            // Resolve the bulletin's limiting markers BEFORE
+                            // inserting and FAIL CLOSED on any unknown code —
+                            // mirrors the report path above. Never insert a
+                            // compartmented bulletin markerless at full
+                            // classification_level.
+                            let bulletinMarkerIds: number[] = [];
+                            if (Array.isArray(b.limiting_markers) && b.limiting_markers.length > 0) {
+                                const markerCodes = b.limiting_markers.slice(0, MAX_FEED_TAGS).map((c: unknown) => String(c).slice(0, 60));
+                                const { data: localMarkers } = await supabase.from('security_limiting_markers')
+                                    .select('id, code')
+                                    .in('code', markerCodes);
+                                const resolved = resolveFeedMarkerIds(b.limiting_markers, localMarkers);
+                                if (!resolved) {
+                                    feedBulletinErrors++;
+                                    log.warn('feed bulletin skipped — unknown limiting marker code(s); refusing to insert markerless (compartment fail-closed)', { feedLabel: feed.label, title: cleanTitle });
+                                    continue;
+                                }
+                                bulletinMarkerIds = resolved.ids;
+                            }
+
                             // Calculate expiry: use remote expires_at, or default to 24h from now
                             const expiresAt = b.expires_at || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
                             const durationMinutes = b.duration_minutes || 1440;
                             const { data: insertedBulletin, error: bulletinInsertErr } = await supabase.from('intel_bulletins').insert({
-                                title: b.title,
-                                body: b.body,
+                                title: cleanTitle,
+                                body: cleanBody,
                                 threat_level: b.threat_level || 'Medium',
-                                location: b.location || null,
+                                location: cleanLocation,
                                 duration_minutes: durationMinutes,
                                 expires_at: expiresAt,
                                 classification_level: b.classification_level || 0,
@@ -1314,6 +1539,15 @@ export async function syncTrustedFeeds(force?: boolean, onlyPeerIds?: string[]) 
                                 feedBulletinErrors++;
                                 log.error('bulletin insert failed', { feedLabel: feed.label, message: bulletinInsertErr.message });
                                 continue;
+                            }
+                            // Attach the bulletin's limiting markers (all codes
+                            // resolved above — compartment preserved). Without this
+                            // an ingested compartmented bulletin lands with NO
+                            // markers, readable by everyone at/below its level.
+                            if (insertedBulletin?.id && bulletinMarkerIds.length > 0) {
+                                await supabase.from('intel_bulletin_limiting_markers').insert(
+                                    bulletinMarkerIds.map((mid) => ({ bulletin_id: insertedBulletin.id, marker_id: mid })),
+                                );
                             }
                             if (insertedBulletin?.id) newBulletinIds.push(insertedBulletin.id);
                             feedNewBulletins++;
@@ -1524,11 +1758,14 @@ export async function saveDossierSummary(targetId: string, summary: string) {
     const { error } = await supabase.from('dossier_summaries').upsert(payload, { onConflict: 'target_id' });
     handleSupabaseError({ error, message: 'Failed to save dossier summary' });
     // Dossier summaries are RPC-fetched on demand (intel:get_dossier) — they
-    // ride neither the intel subset nor the paginated feed, so clients skip
-    // the refetch entirely for this kind. (Previously this emit forced a full
-    // intel refetch + feed refetch on every connected client for a write
-    // nobody could see — the single most wasteful emit in the app.)
-    await broadcastIntelUpdate({ kind: 'dossier', targetId });
+    // ride neither the intel subset nor the paginated feed, so clients skip the
+    // refetch entirely for this kind.
+    // The org-wide db-changes channel authorizes ANY authenticated non-deleted
+    // user (no intel:view/clearance check), so the payload must carry NO
+    // restricted content. targetId is the dossier SUBJECT (who intel is
+    // investigating) — emit only the discriminator. The sole consumer
+    // (DataCoreContext) returns early for kind:'dossier' and never reads targetId.
+    await broadcastIntelUpdate({ kind: 'dossier' });
 }
 
 // --- INTEL BULLETINS ---
@@ -1545,6 +1782,10 @@ export async function createIntelBulletin(data: Record<string, unknown>): Promis
         : new Date(Date.now() + durationMinutes * 60 * 1000).toISOString();
 
     const markerIds = data.markerIds as number[] | undefined;
+    // intel:create_bulletin is gated intel:create (default Member, NOT a clearance
+    // bypass), so the author must not label a bulletin above their own clearance
+    // or apply a marker they don't hold. intel:manage holders classify freely.
+    assertCanClassify(data.user as ClearanceUser | undefined, (data.classificationLevel as number | undefined) ?? 0, markerIds, ['intel:manage']);
     const { data: row, error } = await supabase.from('intel_bulletins').insert({
         title: stripHtmlSingleLine(data.title, 200),
         body: stripHtml(data.body, 8000),
@@ -1560,19 +1801,27 @@ export async function createIntelBulletin(data: Record<string, unknown>): Promis
     handleSupabaseError({ error, message: 'Failed to create intel bulletin' });
 
     if (row && markerIds && markerIds.length > 0) {
+        // Mirror createIntelReport: verify the marker ids belong to this org
+        // before attaching (don't trust arbitrary client-supplied ids).
+        const { data: validMarkers } = await supabase.from('security_limiting_markers')
+            .select('id')
+            .in('id', markerIds);
+        if (!validMarkers || validMarkers.length !== markerIds.length) {
+            throw new Error('One or more limiting markers are not valid for this organization.');
+        }
         const markers = markerIds.map((mid) => ({ bulletin_id: row.id, marker_id: mid }));
         await supabase.from('intel_bulletin_limiting_markers').insert(markers);
     }
 
-    // SECURITY (H4): the realtime 'db-changes' channel is readable by any holder
-    // of the public anon key. A bulletin row carries a classified body +
-    // classification_level + limiting markers — never broadcast it. Emit only
-    // non-sensitive routing metadata; clients re-fetch via the clearance-filtered
-    // intel read path (getIntelState / intel:get_bulletins).
-    // Id-only payload: threatLevel is CONTENT (the classification of a
-    // clearance-gated bulletin) and must not ride the broadcast — receivers
-    // derive styling after the clearance-gated bulletin_slice fetch.
-    // createdById stays for the author's self-skip in the toast listener.
+    // The realtime 'db-changes' channel is readable by any holder of the public
+    // anon key. A bulletin row carries a classified body + classification_level +
+    // limiting markers — never broadcast it. Emit only non-sensitive routing
+    // metadata; clients re-fetch via the clearance-filtered intel read path
+    // (getIntelState / intel:get_bulletins). threatLevel is CONTENT (the
+    // classification of a clearance-gated bulletin) and must not ride the
+    // broadcast — receivers derive styling after the clearance-gated
+    // bulletin_slice fetch. createdById stays for the author's self-skip in the
+    // toast listener.
     await broadcastBulletinUpdate({ type: 'new_bulletin', bulletinId: row.id, createdById: row.created_by_id });
     // No companion intel_update: bulletins feed neither the intel aggregates
     // (index/stats scan intel_reports only) nor the paginated report feed —
@@ -1596,10 +1845,10 @@ export async function getActiveBulletins(): Promise<IntelBulletin[]> {
  * the viewer. Backs the realtime `bulletin_slice` query subset: bulletin
  * broadcasts carry the bulletinId and the client refetches ONLY that row.
  * Returns null when absent, expired, or filtered by the viewer's clearance/
- * markers (SECURITY H3 — the exact same filterIntelByClearance gate the bulk
- * activeBulletins path applies; null → the client removes the row, exactly
- * what a full refetch would have done). THROWS on query errors so a transient
- * DB blip can never masquerade as "bulletin deleted".
+ * markers (the exact same filterIntelByClearance gate the bulk activeBulletins
+ * path applies; null → the client removes the row, exactly what a full refetch
+ * would have done). THROWS on query errors so a transient DB blip can never
+ * masquerade as "bulletin deleted".
  */
 export async function getBulletinByIdForViewer(bulletinId: string, user?: ClearanceUser | null): Promise<IntelBulletin | null> {
     const { data, error } = await supabase.from('intel_bulletins')

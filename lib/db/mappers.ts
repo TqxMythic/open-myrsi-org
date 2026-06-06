@@ -226,8 +226,7 @@ export const toUser = (dbUser: UserRowWithEmbeds | null | undefined): User | und
 // etc.). Reuses toUser for public identity + professional fields, but hard-blanks
 // private/security fields so that widening an embed's SELECT can never leak
 // adminNotes / personnelNotes / conductRecord / clearance / limiting markers /
-// permissions / discord id. (The narrow embed joins omit these today; this makes
-// the omission enforced rather than incidental — see the warrant-data leak audit.)
+// permissions / discord id — the omission is enforced rather than incidental.
 export const toMiniUser = (dbUser: UserRowWithEmbeds | null | undefined): User | undefined => {
     const full = toUser(dbUser);
     if (!full) return undefined;

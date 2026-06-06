@@ -83,13 +83,12 @@ const NotificationListener: React.FC = () => {
             const sound = playSoundRef.current;
             const config = brandingConfigRef.current;
 
-            // SECURITY (H4): the realtime broadcast carries only
-            // { type, bulletinId, createdById } — no body/title and no
-            // threatLevel (the threat classification is itself content for a
-            // clearance-gated resource). The toast is generic AND gated on
-            // intel:view: a member without intel access must not even learn
-            // that intel activity occurred. The clearance-filtered bulletin
-            // arrives via the gated bulletin_slice refetch.
+            // The broadcast carries only { type, bulletinId, createdById } — no
+            // body/title/threatLevel, since the threat classification is itself
+            // clearance-gated content. The toast is generic and gated on
+            // intel:view so members without intel access don't learn intel
+            // activity occurred; the clearance-filtered bulletin arrives via the
+            // gated bulletin_slice refetch.
             if (bulletinData?.type === 'new_bulletin') {
                 if (!user?.permissions?.includes('intel:view') && String(user?.role) !== UserRole.Admin) return;
                 const createdById = bulletinData.createdById ?? bulletinData.bulletin?.created_by_id;

@@ -81,7 +81,6 @@ export default function WhCatalogTab({ catalog, canAdmin, onEdit, onAdd, onCatal
 
     return (
         <div className="space-y-4">
-            {/* Header — mirrors QmCatalogTab layout */}
             <div className="flex items-center justify-between gap-3 flex-wrap">
                 <div>
                     <h2 className="text-sm font-bold text-white uppercase tracking-widest">Catalog</h2>
@@ -103,7 +102,6 @@ export default function WhCatalogTab({ catalog, canAdmin, onEdit, onAdd, onCatal
                 </div>
             </div>
 
-            {/* Search bar — same shell as QM */}
             <div className="rounded-xl border border-white/10 bg-slate-900/30 p-3 flex flex-col sm:flex-row sm:items-center gap-3">
                 <div className="relative flex-1">
                     <input
@@ -135,7 +133,6 @@ export default function WhCatalogTab({ catalog, canAdmin, onEdit, onAdd, onCatal
                 </label>
             </div>
 
-            {/* Table — matches QM table styling (rounded-xl, border-white/10, bg-slate-900/40) */}
             {catalog.length === 0 && !debouncedSearch ? (
                 <div className="rounded-xl border border-white/5 bg-slate-900/30 p-10 text-center text-slate-500 text-sm">
                     No commodities defined yet. {canAdmin && 'Click "Add Commodity" to add one, or use the search above with "Include platform catalog" to browse the platform-wide catalog.'}
@@ -193,7 +190,6 @@ export default function WhCatalogTab({ catalog, canAdmin, onEdit, onAdd, onCatal
                         </tbody>
                     </table>
 
-                    {/* Platform results — appended below the custom table when opt-in is on */}
                     {includePlatform && debouncedSearch && (
                         <>
                             <div className="px-3 py-2 bg-black/20 border-t border-white/5 text-[10px] font-mono uppercase tracking-widest text-slate-500 flex items-center gap-2">

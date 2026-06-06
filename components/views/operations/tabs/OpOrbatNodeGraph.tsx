@@ -10,7 +10,6 @@ interface OpOrbatNodeGraphProps {
     fillParent?: boolean; // If true, fills parent height instead of using calc
 }
 
-// Layout constants
 const CMD_W = 300;
 const CMD_H = 110;
 const POS_W = 240;

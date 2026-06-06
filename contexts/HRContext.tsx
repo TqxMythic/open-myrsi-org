@@ -1,45 +1,22 @@
-// HRContext owns the HR domain slices that were previously embedded in
-// DataContext. This is Phase 3e of the context refactor — a behavior-preserving
-// extraction. The shim invariant is: useData() still exposes every HR field
-// with identical names and types, so the 220 consumer files that import
-// useData() continue to work without changes.
+// HRContext owns the HR slices (applicants, interviews, jobs, templates,
+// transfers, positions).
 //
-// Provider order: DataCoreProvider > MembersProvider > ConfigProvider >
-// OperationsProvider > IntelProvider > HRProvider > DataProvider. HR must
-// mount OUTSIDE Data so DataContext can call useHR() inside its body and
-// re-expose the HR fields on its own context value.
+// Mounts OUTSIDE DataProvider so DataContext can call useHR() inside its body
+// and re-expose the HR fields on its own context value, keeping the useData()
+// surface unchanged.
 //
-// State slices owned here (6):
-//   hrApplicants, hrInterviews, hrJobs, hrTemplates, hrTransfers, hrPositions
+// There are no local HR CRUD methods; HR mutations come through other action
+// paths. refreshHR is defined in DataContext and registered here via
+// registerRefreshHR so future CRUD can chain a post-RPC refresh without
+// depending on useData() (which would create a context cycle).
 //
-// Methods owned here:
-//   refreshHR — exposed for HR-internal use after CRUD operations. Currently
-//   there are NO local HR CRUD methods here; HR mutations come through other
-//   action paths (AuthContext simpleAction wrappers pending the Phase 4 sweep).
-//   refreshHR is also defined locally in DataContext and registered with HR
-//   via registerRefreshHR so future HR-owned CRUD methods can chain post-RPC
-//   refreshes without depending on useData() (which would create a context
-//   cycle — HR is mounted OUTSIDE Data). Matches the pattern used by Members /
-//   Config / Operations / Intel.
+// Hydration: registers a single slice setter under key 'hr' that handles all
+// six fields when data.hr is present (the server payload nests HR fields under
+// an `hr` object).
 //
-// Realtime / state hydration: HR registers a SINGLE slice setter with DataCore
-// under the key 'hr' that handles all 6 HR fields if data.hr is present.
-// This mirrors the original DataContext.setStateFromData behavior line-for-line
-// (the server payload nests HR fields under a `hr` object). When DataContext
-// (or any caller) invokes applyStateData(data) on DataCore, that registered
-// setter runs and populates HR state from the response of a 'main' / 'hr'
-// subset fetch. This replaces the nested-block inline assignments that used to
-// live in DataContext's setStateFromData() for these fields.
-//
-// Cross-context optimistic updates: DataContext's optimisticUpdate has
-// 'hr_applications' and 'hr_interviews' branches that write to setHrApplicants
-// / setHrInterviews. Those setters now live here and are exposed on the
-// context value; DataContext destructures them and uses them in its
-// optimisticUpdate. Matches the MembersContext / OperationsContext approach.
-//
-// setHrJobs is exposed directly on the useData() public value per the
-// DataContextType interface; DataContext destructures it from useHR() and
-// forwards it on its own value object to preserve the public shape.
+// DataContext's optimisticUpdate has 'hr_applications'/'hr_interviews' branches
+// that write through setHrApplicants/setHrInterviews exposed here; setHrJobs is
+// likewise forwarded on the useData() value per DataContextType.
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useDataCore } from './DataCoreContext';
@@ -48,10 +25,8 @@ import {
     HRInterviewTemplate, TransferRequest, PersonnelPosition,
 } from '../types';
 
-// Re-exports — see types/hr.ts for the canonical list. Mirrors the
-// MembersContext / ConfigContext / OperationsContext / IntelContext convention
-// so domain consumers can import either from '../contexts/HRContext' or
-// '../types/hr' interchangeably during the migration.
+// Re-exports so domain consumers can import either from '../contexts/HRContext'
+// or '../types/hr' interchangeably.
 export type {
     HydratedHRApplication,
     HydratedHRInterview,
@@ -62,7 +37,6 @@ export type {
 } from '../types';
 
 export interface HRContextValue {
-    // --- State slices (6) ---
     hrApplicants: HydratedHRApplication[];
     hrInterviews: HydratedHRInterview[];
     hrJobs: JobPosting[];
@@ -70,11 +44,8 @@ export interface HRContextValue {
     hrTransfers: TransferRequest[];
     hrPositions: PersonnelPosition[];
 
-    // --- State setters (exposed for DataContext's optimisticUpdate branches
-    //     that handle 'hr_applications' and 'hr_interviews', and for the
-    //     setHrJobs forward on the useData() public value per
-    //     DataContextType). DataContext is INSIDE HR, so it consumes these
-    //     setters via useHR(). ---
+    // Exposed for DataContext's optimisticUpdate ('hr_applications',
+    // 'hr_interviews') branches and the setHrJobs forward on the useData() value.
     setHrApplicants: React.Dispatch<React.SetStateAction<HydratedHRApplication[]>>;
     setHrInterviews: React.Dispatch<React.SetStateAction<HydratedHRInterview[]>>;
     setHrJobs: React.Dispatch<React.SetStateAction<JobPosting[]>>;
@@ -82,15 +53,10 @@ export interface HRContextValue {
     setHrTransfers: React.Dispatch<React.SetStateAction<TransferRequest[]>>;
     setHrPositions: React.Dispatch<React.SetStateAction<PersonnelPosition[]>>;
 
-    // --- Refresh ---
     refreshHR: () => Promise<void> | void;
 
-    // --- Refresh registration ---
-    /** DataContext calls this in a useEffect once its `refreshHR` callback
-     *  is defined. Future HR-owned CRUD methods will invoke the registered fn
-     *  after their RPC completes so consumers see the new state without
-     *  waiting for a realtime broadcast (websocket-reconnect fallback, same
-     *  intent as the existing chained fetchDataSubset('hr') pattern). */
+    /** DataContext registers its refreshHR callback here once defined, so
+     *  future HR-owned CRUD can chain a post-RPC refresh. */
     registerRefreshHR: (fn: () => Promise<void> | void) => () => void;
 }
 
@@ -99,7 +65,6 @@ const HRContext = createContext<HRContextValue | null>(null);
 export const HRProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const { registerSliceSetter } = useDataCore();
 
-    // --- 6 state slices ---
     const [hrApplicants, setHrApplicants] = useState<HydratedHRApplication[]>([]);
     const [hrInterviews, setHrInterviews] = useState<HydratedHRInterview[]>([]);
     const [hrJobs, setHrJobs] = useState<JobPosting[]>([]);
@@ -107,11 +72,8 @@ export const HRProvider: React.FC<{ children: React.ReactNode }> = ({ children }
     const [hrTransfers, setHrTransfers] = useState<TransferRequest[]>([]);
     const [hrPositions, setHrPositions] = useState<PersonnelPosition[]>([]);
 
-    // --- Refresh-callback registration plumbing ---
-    // DataContext defines refreshHR and registers it here on mount; future
-    // HR-owned CRUD methods will call the registered fn via ref to avoid
-    // re-creating callbacks on every Data render. Same pattern as
-    // MembersContext / ConfigContext / OperationsContext / IntelContext.
+    // DataContext registers refreshHR here on mount; held in a ref so future
+    // CRUD can call it without re-creating callbacks on every render.
     const refreshHRRef = useRef<(() => Promise<void> | void) | null>(null);
 
     const registerRefreshHR = useCallback((fn: () => Promise<void> | void) => {
@@ -126,23 +88,8 @@ export const HRProvider: React.FC<{ children: React.ReactNode }> = ({ children }
         if (fn) await fn();
     }, []);
 
-    // --- Slice-setter registration (Phase 0b plumbing) ---
-    // Register a SINGLE slice setter under key 'hr' that handles all 6 HR
-    // fields if data.hr is present. This mirrors the original
-    // DataContext.setStateFromData nested-block:
-    //
-    //   if (data.hr) {
-    //       if (data.hr.applicants) setHrApplicants(data.hr.applicants);
-    //       if (data.hr.interviews) setHrInterviews(data.hr.interviews);
-    //       if (data.hr.jobs) setHrJobs(data.hr.jobs);
-    //       if (data.hr.templates) setHrTemplates(data.hr.templates);
-    //       if (data.hr.transfers) setHrTransfers(data.hr.transfers);
-    //       if (data.hr.positions) setHrPositions(data.hr.positions);
-    //   }
-    //
-    // Single-setter approach matches the server payload shape (HR fields are
-    // nested under a `hr` object) and is simpler than registering 6 separate
-    // setters that each re-check `data.hr`.
+    // Single slice setter under key 'hr' handling all six fields when data.hr
+    // is present — matches the server payload shape (HR fields nested under hr).
     useEffect(() => {
         const unreg = registerSliceSetter('hr', (data: any) => {
             if (data.hr) {
@@ -158,12 +105,9 @@ export const HRProvider: React.FC<{ children: React.ReactNode }> = ({ children }
     }, [registerSliceSetter]);
 
     const value = useMemo<HRContextValue>(() => ({
-        // State
         hrApplicants, hrInterviews, hrJobs, hrTemplates, hrTransfers, hrPositions,
-        // Setters (consumed by DataContext.optimisticUpdate + setHrJobs forward)
         setHrApplicants, setHrInterviews, setHrJobs,
         setHrTemplates, setHrTransfers, setHrPositions,
-        // Refresh + registration
         refreshHR,
         registerRefreshHR,
     }), [

@@ -18,7 +18,6 @@ interface ClientManagementTabProps {
     onManageUser: (user: User) => void;
 }
 
-// Define the type for the items being displayed in the list
 type ClientListItem = User & { requestCount: number };
 
 const ClientManagementTab: React.FC<ClientManagementTabProps> = ({ onManageUser }) => {
@@ -30,7 +29,7 @@ const ClientManagementTab: React.FC<ClientManagementTabProps> = ({ onManageUser 
     const { selected, toggle, isSelected, clear, setMany, count } = useBulkSelection<number>();
     const [bulkAction, setBulkAction] = useState<BulkActionKey | null>(null);
 
-    // Artificial delay to match the Roster's loading feel
+    // Brief delay to let data hydrate before rendering.
     useEffect(() => {
         const timer = setTimeout(() => {
             setIsLoading(false);
@@ -72,8 +71,7 @@ const ClientManagementTab: React.FC<ClientManagementTabProps> = ({ onManageUser 
         return 'text-green-400';
     };
 
-    // Resolve the User objects for the selection — modals expect full User
-    // objects (for the preview list) not bare ids.
+    // Resolve full User objects for the selection (modals need them, not bare ids).
     const selectedUsers = useMemo<User[]>(
         () => clientData.filter((c) => isSelected(c.id)),
         [clientData, isSelected],
@@ -181,7 +179,6 @@ const ClientManagementTab: React.FC<ClientManagementTabProps> = ({ onManageUser 
                 ) : (
                     <div id="admin-client-list" className="flex-1 relative overflow-y-auto custom-scrollbar">
                         {clientData.length > 0 ? (
-                            /* Fix: Corrected generic component syntax to remove extra angle bracket and made tag self-closing as VirtualizedList does not use children. */
                             <VirtualizedList<ClientListItem>
                                 scrollContainerId="admin-client-list"
                                 items={clientData as ClientListItem[]}

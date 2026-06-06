@@ -15,6 +15,14 @@
 // =============================================================================
 
 import { log as baseLog } from '../log.js';
+import { stripHtmlSingleLine } from '../textSanitize.js';
+
+// Third-party UEX/wiki catalog strings are stored verbatim and rendered across
+// the app, so strip markup + length-cap the DISPLAY free-text on ingest — a
+// compromised/typo'd upstream record can't plant markup. Identifier/slug/
+// code-shape fields are left exact (slugify constrains slugs; codes are matched,
+// not rendered as markup).
+const cat = (v: unknown, n = 200): string | null => stripHtmlSingleLine(v, n) || null;
 
 const log = baseLog.child({ module: 'db.uex' });
 
@@ -381,8 +389,15 @@ export async function fetchAllUexItems(): Promise<{
 
     const items: UexItem[] = [];
     const errors: Array<{ categoryId: number; categoryName: string; message: string }> = [];
+    // Bound total ingest — UEX is a trusted fixed host, but an upstream bug /
+    // spoofed response shouldn't drive an unbounded insert loop.
+    const MAX_UEX_ITEMS = 50_000;
 
     for (const cat of itemCategories) {
+        if (items.length >= MAX_UEX_ITEMS) {
+            log.warn('uex item ceiling reached — truncating', { cap: MAX_UEX_ITEMS, fetched: items.length });
+            break;
+        }
         try {
             const batch = await fetchUexItemsForCategory(cat.id);
             items.push(...batch);
@@ -439,9 +454,9 @@ export function mapUexItemToQmRow(
     const platformCategoryId = item.id_category ? categoryFkLookup.get(item.id_category) ?? null : null;
     return {
         slug: item.slug || slugify(item.name),
-        name: item.name || 'Unknown',
+        name: cat(item.name) || 'Unknown',
         category: uexSectionToQmLegacy(item.section, item.category),
-        subcategory: item.category || item.section || null,
+        subcategory: cat(item.category || item.section),
         attributes: {},
         source: 'platform',
         thumbnail_url: item.screenshot || null,
@@ -453,8 +468,8 @@ export function mapUexItemToQmRow(
         is_harvestable: !!item.is_harvestable,
         screenshot_url: item.screenshot || null,
         store_url: item.url_store || null,
-        company_name: item.company_name || null,
-        vehicle_name: item.vehicle_name || null,
+        company_name: cat(item.company_name),
+        vehicle_name: cat(item.vehicle_name),
         quality: typeof item.quality === 'number' ? item.quality : null,
         size_label: item.size || null,
         color: item.color || null,
@@ -482,9 +497,9 @@ export function mapUexCommodityToWarehouseRow(
         external_id: commodity.id,
         external_uuid: null,
         slug: commodity.slug || slugify(commodity.name),
-        name: commodity.name || 'Unknown',
-        code: commodity.code || null,
-        kind: commodity.kind || null,
+        name: cat(commodity.name) || 'Unknown',
+        code: cat(commodity.code, 60),
+        kind: cat(commodity.kind, 80),
         weight_scu: num(commodity.weight_scu),
         price_buy: num(commodity.price_buy),
         price_sell: num(commodity.price_sell),

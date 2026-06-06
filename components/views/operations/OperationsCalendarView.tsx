@@ -60,7 +60,6 @@ const OperationsCalendarView: React.FC<OperationsCalendarViewProps> = ({ operati
 
     const goToToday = () => setCurrentDate(new Date());
 
-    // Month View
     const monthDays = useMemo(() => {
         const year = currentDate.getFullYear();
         const month = currentDate.getMonth();
@@ -83,7 +82,6 @@ const OperationsCalendarView: React.FC<OperationsCalendarViewProps> = ({ operati
         return days;
     }, [currentDate]);
 
-    // Week View
     const weekDays = useMemo(() => {
         const d = new Date(currentDate);
         d.setDate(d.getDate() - d.getDay());
@@ -135,7 +133,6 @@ const OperationsCalendarView: React.FC<OperationsCalendarViewProps> = ({ operati
 
     return (
         <div className="flex flex-col h-full bg-slate-900/60 backdrop-blur-md border border-slate-700/50 rounded-xl overflow-hidden">
-            {/* Calendar Header */}
             <div className="px-5 py-4 border-b border-white/5 bg-white/5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <div className="flex items-center gap-2">
                     <button onClick={() => navigate(-1)} className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-900/60 border border-slate-700 text-slate-400 hover:text-white hover:border-purple-500/40 hover:bg-purple-500/10 transition-colors">
@@ -168,7 +165,6 @@ const OperationsCalendarView: React.FC<OperationsCalendarViewProps> = ({ operati
                 </div>
             </div>
 
-            {/* Legend */}
             <div className="px-5 pt-3 pb-2 flex items-center gap-3 flex-wrap text-[9px] font-black uppercase tracking-widest border-b border-white/5">
                 {Object.values(OperationType).map(type => {
                     const colors = getTypeColor(type);
@@ -182,9 +178,6 @@ const OperationsCalendarView: React.FC<OperationsCalendarViewProps> = ({ operati
             </div>
 
             <div className="flex-1 flex flex-col min-h-0 p-5">
-            {/* Original view-specific body begins below */}
-
-            {/* Month View */}
             {viewMode === 'month' && (
                 <div className="flex-1 flex flex-col min-h-0">
                     <div className="grid grid-cols-7 border-b border-slate-700/50 mb-1">
@@ -221,7 +214,6 @@ const OperationsCalendarView: React.FC<OperationsCalendarViewProps> = ({ operati
                 </div>
             )}
 
-            {/* Week View */}
             {viewMode === 'week' && (
                 <div className="flex-1 flex flex-col min-h-0">
                     <div className="grid grid-cols-7 gap-3 flex-1">
@@ -248,7 +240,6 @@ const OperationsCalendarView: React.FC<OperationsCalendarViewProps> = ({ operati
                 </div>
             )}
 
-            {/* Day View */}
             {viewMode === 'day' && (
                 <div className="flex-1 overflow-y-auto custom-scrollbar">
                     {(() => {

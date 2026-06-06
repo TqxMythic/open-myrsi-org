@@ -2,9 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
-// =============================================================================
-// PERMISSION SEED PARITY (deploy-correctness rule)
-// =============================================================================
+// Permission seed parity (deploy-correctness rule).
 // A fresh Supabase deploy runs ONLY schema.sql — its §7 INSERT is THE seed of
 // the permissions table. The seeder (lib/db/seeder.ts) then grants Admin every
 // permission that EXISTS; it inserts none itself. So a permission the app gates
@@ -16,10 +14,6 @@ import { join, resolve } from 'node:path';
 //   2. The repair backstop (lib/db/system.ts GLOBAL_PERMISSIONS) stays in
 //      PARITY with §7, so "repair database" can fully self-heal.
 //   3. (informational) reports §7 permissions no server path gates on.
-//
-// This caught 3 real deploy blockers on the 2026 audit (admin:config:catalog,
-// units:view_all, user:manage:personnel_notes) and the GLOBAL_PERMISSIONS drift
-// (missing all finance/qm/warehouse perms).
 
 const ROOT = resolve(__dirname, '..');
 const read = (rel: string) => readFileSync(join(ROOT, rel.split('/').join('/')), 'utf8');

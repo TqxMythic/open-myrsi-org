@@ -162,9 +162,8 @@ export default function WarehouseView() {
         );
     }
 
-    // While the initial fetch is in flight, the context arrays are still []
-    // — distinguish "definitely empty" from "still loading" via the overview
-    // (which is also async): if we have no overview AND no stock, assume mount.
+    // Distinguish "definitely empty" from "still loading": during the initial
+    // fetch the context arrays are [] and the overview is null.
     const initialLoading = overview === null && warehouseCatalog.length === 0 && warehouseStock.length === 0;
     const firstRun = !initialLoading && warehouseCatalog.length === 0 && warehouseStock.length === 0;
     const openRequestCount = overview?.openRequestCount ?? warehouseRequests.length;
@@ -286,7 +285,6 @@ export default function WarehouseView() {
                 ) : null}
             </div>
 
-            {/* Modals */}
             <WhAdjustStockDialog
                 isOpen={adjustTarget !== null}
                 stock={adjustTarget}

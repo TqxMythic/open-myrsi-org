@@ -1,6 +1,8 @@
 import { supabase, handleSupabaseError, broadcastToOrg } from './common.js';
 import { log as baseLog } from '../log.js';
 import { toWarehousePlatformCommodity, toWarehousePlatformCategory } from './mappers.js';
+import { safeSearchTerm } from '../pgrest.js';
+import { stripHtml, stripHtmlSingleLine } from '../textSanitize.js';
 import type { Tables } from './rows.js';
 import {
     fetchUexCommodities,
@@ -484,15 +486,17 @@ function catalogIndexKey(name: string, quality: string | null | undefined): stri
 function normalizeCatalogImportRow(raw: unknown): { item: WarehouseCatalogImportItem } | { reason: string; name?: string } {
     if (!raw || typeof raw !== 'object') return { reason: 'Row is not an object.' };
     const r = raw as Record<string, unknown>;
-    const name = typeof r.name === 'string' ? r.name.trim() : '';
+    // Strip markup + length-cap the client-supplied free-text so a CSV import
+    // can't store HTML/control chars or multi-MB blobs in warehouse_catalog.
+    const name = stripHtmlSingleLine(r.name, 200);
     if (!name) return { reason: 'Missing name.' };
     const category = r.category as WarehouseCatalogCategory;
     if (!VALID_CATEGORIES.includes(category)) {
         return { name, reason: `Invalid category "${r.category}". Expected one of: ${VALID_CATEGORIES.join(', ')}.` };
     }
-    const qualityLabel = r.qualityLabel == null || r.qualityLabel === '' ? null : String(r.qualityLabel).trim();
-    const unit = (typeof r.unit === 'string' && r.unit.trim()) || 'units';
-    const description = r.description == null || r.description === '' ? null : String(r.description).trim();
+    const qualityLabel = stripHtmlSingleLine(r.qualityLabel, 80) || null;
+    const unit = stripHtmlSingleLine(r.unit, 40) || 'units';
+    const description = stripHtml(r.description, 2000) || null;
     const archived = !!r.archived;
     return {
         item: { name, category, qualityLabel, unit, description, archived },
@@ -990,7 +994,10 @@ export async function listWarehouseMovements(filters: MovementFilters = {}): Pro
     if (filters.actorUserId != null) q = q.eq('actor_user_id', filters.actorUserId);
     if (filters.sinceIso) q = q.gte('created_at', filters.sinceIso);
     if (filters.untilIso) q = q.lte('created_at', filters.untilIso);
-    q = q.range(filters.offset || 0, (filters.offset || 0) + (filters.limit || 200) - 1);
+    // Clamp the client-supplied limit like the sibling list fns — a
+    // warehouse:view member could otherwise request a huge embedded-join page.
+    const moveLimit = Math.min(Math.max(filters.limit ?? 200, 1), 500);
+    q = q.range(filters.offset || 0, (filters.offset || 0) + moveLimit - 1);
 
     const { data, error } = await q;
     if (error && error.code === '42P01') return [];
@@ -1074,7 +1081,9 @@ export async function listWithdrawalRequests(filters: RequestFilters = {}): Prom
     }
     if (filters.requesterUserId != null) q = q.eq('requested_by_user_id', filters.requesterUserId);
     if (filters.stockId != null) q = q.eq('stock_id', filters.stockId);
-    if (filters.limit) q = q.limit(filters.limit);
+    // Apply the clamped default UNCONDITIONALLY — an absent limit must not return
+    // all rows unbounded (sibling fns clamp to 500).
+    q = q.limit(Math.min(Math.max(filters.limit ?? 200, 1), 500));
 
     const { data, error } = await q;
     if (error && error.code === '42P01') return [];
@@ -1292,8 +1301,8 @@ export async function getPlatformCommodityCatalog(opts: ListPlatformCommoditiesO
     const offset = Math.max(opts.offset ?? 0, 0);
     let qb = supabase.from('warehouse_platform_commodities').select('*');
     if (opts.search && opts.search.trim()) {
-        const safe = opts.search.trim().replace(/[\\%_]/g, (m) => '\\' + m);
-        qb = qb.or(`name.ilike.%${safe}%,kind.ilike.%${safe}%,code.ilike.%${safe}%`);
+        const safe = safeSearchTerm(opts.search); // allow-list before .or()
+        if (safe) qb = qb.or(`name.ilike.%${safe}%,kind.ilike.%${safe}%,code.ilike.%${safe}%`);
     }
     if (opts.platformCategoryId != null) qb = qb.eq('platform_category_id', opts.platformCategoryId);
     if (opts.illegalOnly) qb = qb.eq('is_illegal', true);
@@ -1319,8 +1328,8 @@ export async function getPlatformCommodityCatalogWithUsage(opts: ListPlatformCom
 export async function getPlatformCommodityCatalogCount(opts: ListPlatformCommoditiesOptions = {}): Promise<number> {
     let qb = supabase.from('warehouse_platform_commodities').select('*', { count: 'exact', head: true });
     if (opts.search && opts.search.trim()) {
-        const safe = opts.search.trim().replace(/[\\%_]/g, (m) => '\\' + m);
-        qb = qb.or(`name.ilike.%${safe}%,kind.ilike.%${safe}%,code.ilike.%${safe}%`);
+        const safe = safeSearchTerm(opts.search); // allow-list before .or()
+        if (safe) qb = qb.or(`name.ilike.%${safe}%,kind.ilike.%${safe}%,code.ilike.%${safe}%`);
     }
     if (opts.platformCategoryId != null) qb = qb.eq('platform_category_id', opts.platformCategoryId);
     if (opts.illegalOnly) qb = qb.eq('is_illegal', true);
@@ -1420,11 +1429,18 @@ export async function syncPlatformCommodityCatalog() {
 
 const PLATFORM_COMMODITY_DELETE_REASON = 'Cannot delete: this is the platform catalog table; tenant warehouses do not reference it yet.';
 
+// Identity/sync-key fields must not be admin-editable — overwriting external_id
+// (the onConflict upsert key) would mis-key the next sync and create
+// duplicate/orphan rows.
+const COMMODITY_PROTECTED_FIELDS = new Set(['id', 'external_id', 'external_uuid', 'slug', 'created_at', 'last_synced_at']);
+
 export async function updatePlatformCommodity(id: number, patch: Partial<Tables<'warehouse_platform_commodities'>>) {
-    if (!Object.keys(patch).length) throw new Error('No updatable fields provided');
-    patch.updated_at = new Date().toISOString();
+    const safe: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(patch)) if (!COMMODITY_PROTECTED_FIELDS.has(k)) safe[k] = v;
+    if (!Object.keys(safe).length) throw new Error('No updatable fields provided');
+    safe.updated_at = new Date().toISOString();
     const { error } = await supabase.from('warehouse_platform_commodities')
-        .update(patch)
+        .update(safe)
         .eq('id', id);
     handleSupabaseError({ error, message: 'Failed to update platform commodity' });
 }

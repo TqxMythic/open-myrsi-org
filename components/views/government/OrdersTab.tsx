@@ -155,9 +155,7 @@ const OrdersTab: React.FC = () => {
     );
 };
 
-// =============================================================================
 // Order card
-// =============================================================================
 
 const OrderCard: React.FC<{ order: Order; onClick: () => void }> = ({ order, onClick }) => {
     const fmt = useFormatDate();
@@ -210,9 +208,7 @@ const OrderCard: React.FC<{ order: Order; onClick: () => void }> = ({ order, onC
     );
 };
 
-// =============================================================================
 // Empty state
-// =============================================================================
 
 const EmptyState: React.FC<{ canIssue: boolean; onCreate: () => void; filter: string }> = ({ canIssue, onCreate, filter }) => (
     <div className="bg-slate-900/30 border border-dashed border-slate-700 rounded-xl p-12 text-center">
@@ -234,9 +230,7 @@ const EmptyState: React.FC<{ canIssue: boolean; onCreate: () => void; filter: st
     </div>
 );
 
-// =============================================================================
 // Editor modal (create + edit drafts)
-// =============================================================================
 
 const OrderEditorModal: React.FC<{
     positions: IssuingPosition[];
@@ -389,9 +383,7 @@ const OrderEditorModal: React.FC<{
     );
 };
 
-// =============================================================================
 // Detail modal (read + revoke)
-// =============================================================================
 
 const OrderDetailModal: React.FC<{
     order: Order;

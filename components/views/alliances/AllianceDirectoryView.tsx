@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useData } from '../../../contexts/DataContext';
 import { AllianceDirectoryEntry, AllyRosterData, AllyFleetSummary } from '../../../types';
+import HeroShell from '../../shared/ui/HeroShell';
+import HeroStat from '../../shared/ui/HeroStat';
+import HeroActionButton from '../../shared/ui/HeroActionButton';
 
 type StatusFilter = 'All' | 'Active' | 'Pending';
 type TypeFilter = 'All' | 'Alliance' | 'Neutral' | 'Rivalry';
@@ -63,20 +66,23 @@ const AllianceDirectoryView: React.FC = () => {
     ), [entries, statusFilter, typeFilter]);
 
     return (
-        <div className="p-4 md:p-8 space-y-6">
-            <div className="border-b border-slate-700/50 pb-6 flex flex-col md:flex-row md:items-end md:justify-between gap-4">
-                <div className="flex items-start gap-3">
-                    <span className="shrink-0 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-indigo-500/15 border border-indigo-500/30">
-                        <i className="fa-solid fa-handshake text-indigo-300" aria-hidden />
-                    </span>
-                    <div>
-                        <h2 className="text-2xl font-bold text-white tracking-tight">Alliance Directory</h2>
-                        <p className="text-slate-400 text-sm mt-1">Organizations your org has a standing diplomatic relationship with.</p>
-                    </div>
-                </div>
-                <button onClick={load} className="text-xs text-slate-400 hover:text-white self-start md:self-auto"><i className="fa-solid fa-rotate mr-1"></i>Refresh</button>
-            </div>
+        <div className="h-full flex flex-col overflow-hidden animate-fade-in">
+            <HeroShell
+                chipLabel="MODULE · ALLIANCES"
+                chipIcon="fa-handshake"
+                chipAccent="indigo"
+                title="Alliance Directory"
+                subtitle="Organizations your org has a standing diplomatic relationship with."
+                actions={<HeroActionButton onClick={load} accent="slate" icon="fa-rotate">Refresh</HeroActionButton>}
+                stats={<>
+                    <HeroStat icon="fa-handshake" label="Total" value={entries.length} accent="indigo" emphasize={entries.length > 0} />
+                    <HeroStat icon="fa-circle-check" label="Active" value={entries.filter((e) => e.status === 'Active').length} accent="emerald" emphasize={entries.some((e) => e.status === 'Active')} />
+                    <HeroStat icon="fa-hourglass-half" label="Pending" value={entries.filter((e) => e.status === 'Pending').length} accent="amber" emphasize={entries.some((e) => e.status === 'Pending')} />
+                    <HeroStat icon="fa-bolt" label="Rivalries" value={entries.filter((e) => e.type === 'Rivalry').length} accent="red" emphasize={entries.some((e) => e.type === 'Rivalry')} />
+                </>}
+            />
 
+            <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 md:p-8 space-y-6">
             <div className="flex flex-wrap items-center gap-2">
                 <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mr-1">Status</span>
                 {(['All', 'Active', 'Pending'] as StatusFilter[]).map(s => (
@@ -131,6 +137,7 @@ const AllianceDirectoryView: React.FC = () => {
                     })}
                 </div>
             )}
+            </div>
 
             {openPeer && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setOpenPeer(null)}>

@@ -35,6 +35,7 @@ export * from './db/importer.js';
 export * from './db/alliances.js';
 export * from './db/operations-federation.js';
 export * from './db/allianceSync.js';
+export * from './db/marketplace.js';
 
 // --- STATE AGGREGATION (single-org: no organization_id scoping) ---
 
@@ -123,9 +124,7 @@ const REQUEST_SELECT = `
     )
 `;
 
-// SECURITY (BOLA): request visibility was previously enforced ONLY by a
-// client-side filter in ServiceRequestsView — any authenticated Client could
-// read every request's body/PII straight off the subset. Server-enforce it:
+// Request visibility is enforced server-side (client-side filters are cosmetic):
 // holders of a request-duty permission (the dispatch board audience) see the
 // full log; everyone else sees only requests they created. Permission-based
 // rather than role-name-based so custom roles behave correctly.
@@ -162,9 +161,9 @@ export async function getRequestDetail(requestId: string, currentUser?: { id: nu
         throw error;
     }
     const request = toServiceRequest(data);
-    // SECURITY (BOLA): same predicate as the list — non-duty callers may only
-    // fetch their own request (or one they responded to). null → 404 upstream,
-    // indistinguishable from a missing row.
+    // Same predicate as the list — non-duty callers may only fetch their own
+    // request (or one they responded to). null → 404 upstream, indistinguishable
+    // from a missing row.
     if (!canSeeAllRequests(currentUser)) {
         const isOwn = request.clientId === currentUser?.id;
         const isResponder = (request.assignedMemberIds || []).includes(currentUser?.id as number);
@@ -216,7 +215,7 @@ export async function getOperationsState(user?: any) {
     if (!user) return { operations: [], operationTemplates: [] };
     const [operationsRes, templatesRes] = await Promise.allSettled([
         ops.getOperations(user),
-        listOperationTemplates(),
+        listOperationTemplates(user),
     ]);
     const operations = operationsRes.status === 'fulfilled' ? operationsRes.value : [];
     const operationTemplates = templatesRes.status === 'fulfilled' ? templatesRes.value : [];
@@ -275,15 +274,15 @@ export async function getExternalToolsState(currentUser?: { role?: string; permi
 
 export async function getIntelState(currentUser?: any) {
     const [intelTargetIndex, intelHubStats, activeBulletins] = await Promise.all([
-        // SECURITY: the index/stats aggregates are clearance-ceilinged per
-        // viewer — a low-clearance member must not learn which targets appear
-        // only in classified reports (or their threat levels/counts).
+        // The index/stats aggregates are clearance-ceilinged per viewer — a
+        // low-clearance member must not learn which targets appear only in
+        // classified reports (or their threat levels/counts).
         intel.getIntelTargetIndex(currentUser),
         intel.getIntelHubStats(currentUser),
         intel.getActiveBulletins(),
     ]);
-    // SECURITY (H3): bulletin bodies carry classification + limiting markers.
-    // Filter them by the requester's clearance before they reach the browser.
+    // Bulletin bodies carry classification + limiting markers. Filter them by the
+    // requester's clearance before they reach the browser.
     return { intelTargetIndex, intelHubStats, activeBulletins: intel.filterIntelByClearance(activeBulletins, currentUser) };
 }
 
@@ -296,22 +295,20 @@ function aggHasPerm(currentUser: any, perm: string): boolean {
     return Array.isArray(currentUser.permissions) && currentUser.permissions.includes(perm);
 }
 
-// SECURITY (H1): getState() is the aggregate used by BOTH the boot response
-// (handleInitialState) and the no-subset "full state" refresh. It previously
-// spread warrants/intel/HR into every authenticated session unconditionally,
-// bypassing the per-subset permission gate in api/query.ts. Gate each sensitive
-// slice by the SAME permission the dedicated subset requires, so a low-privilege
-// member (e.g. a Client) never receives warrants/KOS, intel, or HR via boot or
-// the legacy full-state path. (HR is additionally redacted inside getHRState for
-// hr:view-without-hr:recruiter callers — see H2.)
+// getState() is the aggregate used by BOTH the boot response
+// (handleInitialState) and the no-subset "full state" refresh. Gate each
+// sensitive slice by the SAME permission the dedicated subset requires in
+// api/query.ts, so a low-privilege member (e.g. a Client) never receives
+// warrants/KOS, intel, or HR via boot or the legacy full-state path. (HR is
+// additionally redacted inside getHRState for hr:view-without-hr:recruiter
+// callers.)
 export async function getState(currentUser?: any) {
     const empty = Promise.resolve({} as Record<string, never>);
     const wantWarrants = aggHasPerm(currentUser, 'warrant:view');
     const wantIntel = aggHasPerm(currentUser, 'intel:view') || aggHasPerm(currentUser, 'intel:view:clearance');
     const wantHr = aggHasPerm(currentUser, 'hr:view');
-    // Operations was the one sensitive slice the H1 fix missed: the dedicated
-    // subset requires operations:view but the boot aggregate shipped the list
-    // unconditionally. Gate it identically.
+    // Operations: the dedicated subset requires operations:view, so gate the
+    // boot aggregate's list identically.
     const wantOps = aggHasPerm(currentUser, 'operations:view');
 
     // NOTE: getDiscordState() is gone from the aggregate. Its discordConfig

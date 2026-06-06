@@ -42,7 +42,7 @@ export const allianceActions = {
     'alliance:get_self_profile': () => db.getAllianceSelfProfile(),
     'alliance:save_self_profile': ({ profile }: SaveSelfProfilePayload) => db.saveAllianceSelfProfile(profile),
 
-    // P4: fetch an ally's shared roster / fleet summary (server-to-server pull,
+    // Fetch an ally's shared roster / fleet summary (server-to-server pull,
     // returned to the browser; outbound keys never reach the client). Served
     // from the live-sync directory cache when fresh.
     'alliance:fetch_peer_roster': ({ peerId }: PeerIdPayload) => db.fetchPeerRoster(peerId),

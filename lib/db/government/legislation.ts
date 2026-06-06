@@ -105,7 +105,7 @@ export async function getMotionsState(currentUserId?: number): Promise<Governmen
 // ---------------------------------------------------------------------------
 
 export async function createLegislation(data: Partial<GovernmentLegislation> & { userId?: number }): Promise<GovernmentLegislation | null> {
-    // #14: legislation body is edited via the WikiEditor (Tiptap JSON) — sanitize on save.
+    // Legislation body is edited via the WikiEditor (Tiptap JSON) — sanitize on save.
     const safeBody = data.body && typeof data.body === 'object' ? sanitizeTiptapJson(data.body, 'wiki') : (data.body || '');
     const payload = {
         title: data.title,
@@ -194,12 +194,20 @@ export async function castLegislationVote(
         throw new Error('You do not hold a position with legislative voting rights');
     }
 
+    // One-person-one-vote. Pre-check, and treat the UNIQUE violation
+    // (uq_gov_legislation_vote) as the authoritative atomic guard against a
+    // concurrent double-submit.
+    const { data: existingVote } = await supabase.from('government_legislation_votes')
+        .select('id').eq('legislation_id', legislationId).eq('user_id', userId).maybeSingle();
+    if (existingVote) throw new Error('You have already voted on this legislation.');
+
     const { error } = await supabase.from('government_legislation_votes').insert({
         legislation_id: legislationId,
         user_id: userId,
         position_id: positionId,
         vote,
     });
+    if (error && (error as { code?: string }).code === '23505') throw new Error('You have already voted on this legislation.');
     handleSupabaseError({ error, message: 'Failed to cast legislation vote' });
 
     // Update vote counts
@@ -285,9 +293,9 @@ export async function repealLegislation(legislationId: number, repealingLegislat
 // ---------------------------------------------------------------------------
 
 export async function addLegislationComment(legislationId: number, userId: number, content: string): Promise<GovernmentLegislationComment | null> {
-    // SECURITY (permission-map-correctness#6): comments are gated at the read-level
-    // gov:view perm and rendered to other members — strip markup + cap length at
-    // the boundary (defence-in-depth against stored HTML/markup injection).
+    // Comments are gated at the read-level gov:view perm and rendered to other
+    // members — strip markup + cap length at the boundary (defence-in-depth
+    // against stored HTML/markup injection).
     const safeContent = stripHtml(content, 4000);
     const { data: result, error } = await supabase.from('government_legislation_comments').insert({
         legislation_id: legislationId,
@@ -311,7 +319,7 @@ export async function deleteLegislationComment(commentId: number) {
 // ---------------------------------------------------------------------------
 
 export async function createMotion(data: MotionInput): Promise<GovernmentMotion | null> {
-    // #14: motion description is edited via the WikiEditor (Tiptap JSON) — sanitize on save.
+    // Motion description is edited via the WikiEditor (Tiptap JSON) — sanitize on save.
     const safeDescription = data.description && typeof data.description === 'object'
         ? sanitizeTiptapJson(data.description, 'wiki')
         : (data.description || null);
@@ -358,20 +366,31 @@ export async function castMotionVote(
         if (!count || count === 0) throw new Error('You do not hold a required position to vote on this motion');
     }
 
+    // One-person-one-vote. computeVoterHash is deterministic, so a re-vote yields
+    // the same voter_hash and trips uq_gov_motion_vote_hash; the non-secret path
+    // trips uq_gov_motion_vote_user. Pre-check + 23505 guard.
     if (motion.is_secret_ballot) {
         const voterHash = computeVoterHash(motionId, userId);
+        const { data: existingVote } = await supabase.from('government_motion_votes')
+            .select('id').eq('motion_id', motionId).eq('voter_hash', voterHash).maybeSingle();
+        if (existingVote) throw new Error('You have already voted on this motion.');
         const { error } = await supabase.from('government_motion_votes').insert({
             motion_id: motionId,
             voter_hash: voterHash,
             vote,
         });
+        if (error && (error as { code?: string }).code === '23505') throw new Error('You have already voted on this motion.');
         handleSupabaseError({ error, message: 'Failed to cast motion vote' });
     } else {
+        const { data: existingVote } = await supabase.from('government_motion_votes')
+            .select('id').eq('motion_id', motionId).eq('user_id', userId).maybeSingle();
+        if (existingVote) throw new Error('You have already voted on this motion.');
         const { error } = await supabase.from('government_motion_votes').insert({
             motion_id: motionId,
             user_id: userId,
             vote,
         });
+        if (error && (error as { code?: string }).code === '23505') throw new Error('You have already voted on this motion.');
         handleSupabaseError({ error, message: 'Failed to cast motion vote' });
     }
 

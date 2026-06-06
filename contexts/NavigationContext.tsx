@@ -137,8 +137,8 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     const [viewingMember, setViewingMember] = useState<User | null>(null);
     const [selectedDossierTarget, setSelectedDossierTarget] = useState<string | null>(null);
 
-    // #1 Org Chart → Unit Detail navigation. Mirrors viewOperationDetails:
-    // store the picked unit id and switch the active view to the detail route.
+    // Org Chart → Unit Detail navigation: store the picked unit id and switch
+    // the active view to the detail route.
     const [selectedUnitDetailId, setSelectedUnitDetailId] = useState<number | null>(null);
 
     const viewRequestDetails = useCallback((request: HydratedServiceRequest) => {

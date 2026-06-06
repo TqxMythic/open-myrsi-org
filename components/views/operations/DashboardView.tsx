@@ -25,8 +25,6 @@ import ClientDashboardMetrics from './dashboard/ClientDashboardMetrics';
 import { useNavigation } from '../../../contexts/NavigationContext';
 import { useModalRegistry } from '../../../contexts/ModalRegistryContext';
 
-// --- SHARED COMPONENTS ---
-
 const DashboardCard: React.FC<{ children: React.ReactNode, className?: string, title?: React.ReactNode, icon?: string, action?: React.ReactNode }> = ({ children, className = "", title, icon, action }) => (
     <div className={`bg-slate-900/60 backdrop-blur-md border border-slate-700/50 rounded-xl overflow-hidden shadow-xl flex flex-col ${className}`}>
         {(title || icon) && (
@@ -43,8 +41,6 @@ const DashboardCard: React.FC<{ children: React.ReactNode, className?: string, t
         </div>
     </div>
 );
-
-// --- FEEDS ---
 
 const PriorityDispatchFeed: React.FC = () => {
     const { hydratedServiceRequests } = useData();
@@ -154,8 +150,6 @@ const OpenVacanciesFeed: React.FC = () => {
     );
 };
 
-// --- CLIENT COMPONENTS ---
-
 const ClientMissionTracker: React.FC<{ request: HydratedServiceRequest }> = ({ request }) => {
     const { viewRequestDetails } = useNavigation();
 
@@ -167,7 +161,6 @@ const ClientMissionTracker: React.FC<{ request: HydratedServiceRequest }> = ({ r
     ];
 
     const currentStepIndex = steps.findIndex(s => s.status === request.status);
-    // If status isn't in linear flow (e.g. Success, Failed), assume end state or specific logic
     const isCompleted = request.status === ServiceRequestStatus.Success;
     const activeIndex = isCompleted ? 4 : (currentStepIndex === -1 ? 0 : currentStepIndex);
 
@@ -186,7 +179,6 @@ const ClientMissionTracker: React.FC<{ request: HydratedServiceRequest }> = ({ r
                     </p>
                 </div>
 
-                {/* Progress Bar */}
                 <div className="relative">
                     <div className="absolute top-1/2 left-0 w-full h-1 bg-slate-800 -translate-y-1/2 rounded-full z-0"></div>
                     <div
@@ -233,7 +225,6 @@ const QuickRequestForm: React.FC = () => {
     const { members } = useMembers();
     const { brandingConfig, heroCardConfig, serviceTypes } = useConfig();
 
-    // Filter active service types
     const activeServiceTypes = useMemo(() => serviceTypes.filter(t => t.isActive), [serviceTypes]);
 
     const [serviceType, setServiceType] = useState<ServiceType>(activeServiceTypes.length > 0 ? activeServiceTypes[0].name : 'Security');
@@ -248,7 +239,7 @@ const QuickRequestForm: React.FC = () => {
         refreshRequests();
     }, [refreshMainState, refreshRequests]);
 
-    // Update service type if loaded types change and current is invalid (optional but good UX)
+    // Reset to a valid service type when the loaded types change.
     useEffect(() => {
         if (activeServiceTypes.length > 0 && !activeServiceTypes.find(t => t.name === serviceType)) {
             setServiceType(activeServiceTypes[0].name);
@@ -271,7 +262,6 @@ const QuickRequestForm: React.FC = () => {
         }
     }, [createRequest, setActiveView, serviceType, location, description, threatLevel]);
 
-    // Check for Low Reputation Standing
     if (currentUser && currentUser.reputation <= 10) {
         return (
             <div className="flex flex-col items-center justify-center py-6 text-center space-y-4 animate-fade-in">
@@ -400,8 +390,6 @@ const QuickRequestForm: React.FC = () => {
     );
 }
 
-// --- STAFF DASHBOARD ---
-
 const StaffDashboard: React.FC<{
     filteredBulletins: IntelBulletin[];
     handleDeleteBulletin: (id: string) => void;
@@ -445,7 +433,6 @@ const StaffDashboard: React.FC<{
 
     const openPositions = useMemo(() => hrJobs.filter(j => j.status === JobPostingStatus.Open).length, [hrJobs]);
 
-    // Quick action buttons config
     const quickActions = useMemo<QuickAction[]>(() => ([
         hasPermission('request:create') && { label: 'New Request', icon: 'fa-plus', accent: 'sky' as const, onClick: () => setIsCreateModalOpen(true) },
         hasPermission('request:create_adhoc') && { label: 'Ad Hoc', icon: 'fa-bolt', accent: 'amber' as const, onClick: () => setIsAdHocModalOpen(true) },
@@ -477,13 +464,11 @@ const StaffDashboard: React.FC<{
 
     return (
         <div className="space-y-6">
-            {/* Attention Required — hides itself when nothing pending */}
+            {/* Hides itself when nothing pending */}
             <AttentionRequiredPanel />
 
-            {/* Metrics strip */}
             <DashboardMetrics />
 
-            {/* Quick Actions */}
             <QuickActionsBar actions={quickActions} />
 
             {/* Feature tabs — one panel visible at a time, persists in sessionStorage */}
@@ -491,8 +476,6 @@ const StaffDashboard: React.FC<{
         </div>
     );
 };
-
-// --- MAIN VIEW ---
 
 const DashboardView: React.FC<{ openRateRequestModal: (req: HydratedServiceRequest) => void }> = ({ openRateRequestModal }) => {
     const { currentUser } = useAuth();
@@ -549,7 +532,6 @@ const DashboardView: React.FC<{ openRateRequestModal: (req: HydratedServiceReque
 
     if (!currentUser) return null;
 
-    // --- LOGIC ---
     const activeRequest = isClient ? hydratedServiceRequests.find(r => r.clientId === currentUser.id && [ServiceRequestStatus.Submitted, ServiceRequestStatus.Triaged, ServiceRequestStatus.Accepted, ServiceRequestStatus.InProgress].includes(r.status)) : null;
     const pendingRating = isClient ? hydratedServiceRequests.find(r => r.clientId === currentUser.id && r.status === ServiceRequestStatus.Success && !r.rated) : null;
 
@@ -565,14 +547,10 @@ const DashboardView: React.FC<{ openRateRequestModal: (req: HydratedServiceReque
         return false;
     });
 
-    // --- RENDER ---
-
     return (
         <div className="space-y-6 pb-8 animate-fade-in">
-            {/* HERO */}
             <DashboardHero variant={isClient ? 'client' : 'staff'} />
 
-            {/* NOTICES */}
             {visibleAnnouncements.length > 0 && (
                 <div className="space-y-4">
                     {visibleAnnouncements.map(announcement => (
@@ -581,18 +559,16 @@ const DashboardView: React.FC<{ openRateRequestModal: (req: HydratedServiceReque
                 </div>
             )}
 
-            {/* CLIENT DASHBOARD */}
             {isClient && (
                 <>
-                    {/* Attention Required — hides itself when nothing pending */}
+                    {/* Hides itself when nothing pending */}
                     <AttentionRequiredPanel />
-                    {/* Client metric strip — 3 cards, includes contracts if marketplace enabled */}
+                    {/* 3 cards, includes contracts if marketplace enabled */}
                     <ClientDashboardMetrics />
                 </>
             )}
             {isClient && (
                 <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-                    {/* Primary Action Area (2 Cols on XL) */}
                     <div className="xl:col-span-2 space-y-6">
                         {activeRequest ? (
                             <div>
@@ -637,9 +613,7 @@ const DashboardView: React.FC<{ openRateRequestModal: (req: HydratedServiceReque
                         )}
                     </div>
 
-                    {/* Secondary Area (1 Col on XL, Stacked otherwise) */}
                     <div className="space-y-6">
-                        {/* Join Organization Card */}
                         <div className="bg-slate-800/60 border border-slate-700/50 rounded-xl p-5 flex flex-col gap-4">
                             <div className="flex items-center gap-3 mb-1">
                                 <div className="w-10 h-10 rounded-lg bg-sky-900/30 flex items-center justify-center text-sky-400 border border-sky-500/20">
@@ -684,7 +658,6 @@ const DashboardView: React.FC<{ openRateRequestModal: (req: HydratedServiceReque
                 </div>
             )}
 
-            {/* MEMBER DASHBOARD */}
             {!isClient && (
                 <StaffDashboard
                     filteredBulletins={filteredBulletins}
@@ -693,7 +666,6 @@ const DashboardView: React.FC<{ openRateRequestModal: (req: HydratedServiceReque
                 />
             )}
 
-            {/* Modals */}
             <ClientApplyModal
                 isOpen={isApplyModalOpen}
                 onClose={() => setIsApplyModalOpen(false)}

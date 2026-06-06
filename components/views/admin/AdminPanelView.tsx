@@ -44,6 +44,7 @@ const WikiToolsTab = React.lazy(() => import('./WikiToolsTab'));
 const OrgImportTab = React.lazy(() => import('./OrgImportTab'));
 const GovernmentSettingsTab = React.lazy(() => import('./GovernmentSettingsTab'));
 const FeaturesSettingsTab = React.lazy(() => import('./FeaturesSettingsTab'));
+const MarketplaceAdminTab = React.lazy(() => import('./MarketplaceAdminTab'));
 const AdminShipCatalogTab = React.lazy(() => import('./catalog/AdminShipCatalogTab'));
 const AdminItemCatalogTab = React.lazy(() => import('./catalog/AdminItemCatalogTab'));
 const AdminCommodityCatalogTab = React.lazy(() => import('./catalog/AdminCommodityCatalogTab'));
@@ -58,7 +59,6 @@ const AdminTabFallback = () => (
     </div>
 );
 
-// Tabs Configuration — restructured into 12 tight groups
 const tabGroups = {
     "Dashboard": [
         { id: 'overview', label: 'System Overview', icon: 'fa-solid fa-gauge-high', permission: 'admin:access' },
@@ -87,6 +87,9 @@ const tabGroups = {
     ],
     "Diplomacy": [
         { id: 'alliances', label: 'Alliances', icon: 'fa-solid fa-handshake', permission: 'alliance:manage' },
+    ],
+    "Marketplace": [
+        { id: 'marketplace_admin', label: 'Marketplace', icon: 'fa-solid fa-store', permission: 'marketplace:admin' },
     ],
     "Integrations": [
         { id: 'discord', label: 'Discord', icon: 'fa-brands fa-discord', permission: 'admin:config:discord' },
@@ -213,6 +216,7 @@ const AdminPanelView: React.FC = () => {
             case 'ai': return hasPermission('admin:config:ai') ? <AIConfigTab /> : null;
             case 'intel_mgmt': return hasPermission('intel:manage') ? <IntelligenceManagementTab /> : null;
             case 'alliances': return hasPermission('alliance:manage') ? <AllianceManagementTab /> : null;
+            case 'marketplace_admin': return hasPermission('marketplace:admin') ? <MarketplaceAdminTab /> : null;
             case 'government': return hasPermission('gov:admin') ? <GovernmentSettingsTab /> : null;
             case 'features': return hasPermission('admin:config:features') ? <FeaturesSettingsTab /> : null;
             case 'db_tools': return hasPermission('admin:access') ? <DatabaseToolsTab /> : null;

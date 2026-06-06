@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Server half of the round-2 slice contracts:
-//   1. Every new single-row fetcher THROWS on query errors (never a silent
+// Server half of the slice contracts:
+//   1. Every single-row fetcher THROWS on query errors (never a silent
 //      null) — the client merge treats null as "row gone" and EVICTS it, so
 //      a transient DB blip must surface as a 500 → full-refetch fallback.
 //   2. getBulletinByIdForViewer re-applies the SAME clearance/marker filter
-//      as the bulk activeBulletins path (H3) — null for filtered viewers.
+//      as the bulk activeBulletins path — null for filtered viewers.
 //   3. Broadcast payload contracts: warrant emits carry warrantId(s); the
 //      dossier-summary save emits {kind:'dossier'} (clients skip refetch);
 //      bulletin deletion emits its bulletinId and NO id-less intel_update
@@ -138,12 +138,14 @@ describe('broadcast payload contracts', () => {
         expect(h.broadcasts).toContainEqual({ event: 'warrant_update', payload: { warrantIds: ['w1', 'w2'] } });
     });
 
-    it('saveDossierSummary emits {kind:dossier, targetId} — clients skip the refetch', async () => {
+    it('saveDossierSummary emits {kind:dossier} with NO targetId (M4 — db-changes is org-wide)', async () => {
         h.resolveQuery = () => ({ data: null, error: null });
         await saveDossierSummary('TargetHandle', 'summary text');
         const emit = h.broadcasts.find(b => b.event === 'intel_update');
         expect(emit?.payload.kind).toBe('dossier');
-        expect(emit?.payload.targetId).toBe('TargetHandle');
+        // targetId is the dossier SUBJECT — restricted; it must NOT ride the
+        // anon-authorized org channel. Clients skip the refetch on kind.
+        expect(emit?.payload.targetId).toBeUndefined();
     });
 
     it('deleteIntelBulletin emits bulletin_deleted WITH the id and NO intel_update companion', async () => {

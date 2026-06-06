@@ -91,7 +91,7 @@ interface PersonnelPositionPayload {
 /** Array names of the 6-key hr bundle, used as broadcast slice
  *  discriminators so clients refetch only the affected array(s) instead of
  *  the whole bundle. Id-only/discriminator-only payloads — the db-changes
- *  channel is anon-readable (H4). */
+ *  channel is anon-readable. */
 type HrSlice = 'applicants' | 'interviews' | 'jobs' | 'templates' | 'transfers' | 'positions';
 
 /** Call with the array(s) the mutation touched; with NO args clients fall
@@ -137,9 +137,8 @@ async function notifyHRStaff(title: string, body: string, data: Record<string, u
     }
 }
 
-// Optimized: Remove interviews join (fetched separately)
+// Interviews are fetched separately, not joined here.
 export async function getHRApplications(): Promise<HydratedHRApplication[]> {
-    // Only fetch minimal user data needed for display (id, name, avatar, role)
     let query = supabase.from('hr_applications')
         .select(`
             *,
@@ -151,10 +150,9 @@ export async function getHRApplications(): Promise<HydratedHRApplication[]> {
 
     // Map applications without logs/interviews initially.
     // vettingData (background-check verdicts + free-text adjudication — the most
-    // sensitive applicant PII) is NOT shipped in the bulk list: the UI renders vetting
-    // one applicant at a time and lazy-loads it via hr:get_application_data on open.
-    // Dropping it here keeps ~200 sensitive blobs off every recruiter's HR-state
-    // payload (and off every hr_update-triggered refetch).
+    // sensitive applicant PII) is NOT shipped in the bulk list: the UI lazy-loads
+    // it per-applicant via hr:get_application_data on open, keeping ~200 sensitive
+    // blobs off every recruiter's HR-state payload and every hr_update refetch.
     const apps = data.map(toHydratedApplication).map((a) => ({ ...a, vettingData: undefined }));
     return apps;
 }
@@ -204,7 +202,7 @@ async function fetchPanelMembers(interviewIds: string[]): Promise<Map<string, Pa
     return panelMap;
 }
 
-// New: Dedicated function to fetch all interviews efficiently (flat list)
+// Fetch all interviews as a flat list.
 export async function getAllHRInterviews(): Promise<HydratedHRInterview[]> {
     const applicationJoin = 'application:hr_applications!hr_interviews_application_id_fkey(applicant_name)';
 
@@ -298,9 +296,9 @@ export async function createHRApplication(payload: CreateHRApplicationPayload) {
     }
 
     broadcastHRUpdate('applicants');
-    // Never return the raw inserted row — a future hr_applications column
-    // (internal flag, vetting field) would auto-ship to the creator. Map
-    // through the same allow-list shape as the read path, vettingData blanked.
+    // Never return the raw inserted row — a future hr_applications column would
+    // auto-ship to the creator. Map through the same allow-list shape as the read
+    // path, vettingData blanked.
     return data ? { ...toHydratedApplication(data), vettingData: undefined } : data;
 }
 
@@ -486,7 +484,7 @@ export async function addApplicationLog(applicationId: string, actionType: strin
     });
 }
 
-// Optimized: Removed questions join
+// Questions are loaded on demand (getHRInterviewTemplateDetails), not here.
 export async function getHRInterviewTemplates(): Promise<HRInterviewTemplate[]> {
     const query = supabase.from('hr_interview_templates').select('*');
 
@@ -495,11 +493,9 @@ export async function getHRInterviewTemplates(): Promise<HRInterviewTemplate[]> 
         if (error.code === '42P01') return [];
         handleSupabaseError({ error, message: 'Failed to get templates' });
     }
-    // Map with empty questions initially to save bandwidth
     return (data || []).map(t => toHRInterviewTemplate({ ...t, questions: [] }));
 }
 
-// New: Fetch full details on demand
 export async function getHRInterviewTemplateDetails(id: number): Promise<HRInterviewTemplate> {
     const { data, error } = await supabase.from('hr_interview_templates')
         .select('*, questions:hr_interview_questions(*)')
@@ -510,7 +506,7 @@ export async function getHRInterviewTemplateDetails(id: number): Promise<HRInter
 }
 
 export async function createHRInterview(payload: CreateHRInterviewPayload) {
-    // Implicit Check: application_id MUST belong to org.
+    // Verify the application exists before scheduling against it.
     const { count } = await supabase.from('hr_applications').select('id', { count: 'exact', head: true }).eq('id', payload.applicationId);
     if (!count) throw new Error("Application not found or access denied.");
 
@@ -541,7 +537,7 @@ export async function createHRInterview(payload: CreateHRInterviewPayload) {
     }
 
     broadcastHRUpdate('interviews');
-    // Allow-list mapped, never the raw row (see createHRApplication).
+    // Allow-list mapped, never the raw row.
     return data ? toHydratedInterview(data) : data;
 }
 
@@ -735,7 +731,7 @@ export async function createJobPosting(payload: JobPostingPayload) {
         requirements: payload.requirements,
         status: payload.status || 'Open',
         created_by_id: payload.userId,
-        position_id: payload.positionId // New Field
+        position_id: payload.positionId
     }).select('*, position:personnel_positions(*)').single();
     handleSupabaseError({ error, message: 'Failed to create job posting' });
     return toJobPosting(data);
@@ -963,30 +959,46 @@ export async function deletePersonnelPosition(id: number) {
     handleSupabaseError({ error, message: 'Failed to delete position' });
 }
 
-// --- HR viewer redaction (SECURITY H2) ----------------------------------
+// --- HR viewer redaction ----------------------------------
 // The full ATS (recruiter notes, vetting data, interview scores/notes/
 // responses, applicant Discord IDs, transfer admin notes) is recruiter-grade.
 // The seeded Member role holds the base `hr:view` perm; it must NOT receive
-// case-file internals. Redact unless the caller is Admin or holds
-// hr:recruiter. Job board (jobs/positions/templates) + basic application
-// status stay visible at hr:view.
+// case-file internals. Redact unless the caller is Admin or holds hr:recruiter.
+// Job board (jobs/positions/templates) + basic application status stay visible
+// at hr:view.
 //
-// Exported as standalone helpers so getHRState AND the per-array realtime
-// slice subsets (hr_applicants / hr_interviews / hr_transfers in api/query.ts)
-// share ONE redaction source of truth — a slice endpoint that skipped these
-// would re-leak the H2 fields.
+// Exported as standalone helpers so getHRState AND the per-array realtime slice
+// subsets (hr_applicants / hr_interviews / hr_transfers in api/query.ts) share
+// ONE redaction source of truth — a slice endpoint that skipped these would
+// re-leak the redacted fields.
 
 export function isHrRecruiter(requester?: { role?: string; permissions?: string[] } | null): boolean {
     return requester?.role === 'Admin'
         || (Array.isArray(requester?.permissions) && requester!.permissions!.includes('hr:recruiter'));
 }
 
+// Empty-but-shape-correct stand-ins for the identity relations that the
+// interview joins carry (interviewer / panel). Non-recruiters get a typeless
+// placeholder so the array shape survives JSON without leaking real members.
+const REDACTED_USER = {} as HydratedHRInterview['interviewer'];
+
 const redactInterview = (i: HydratedHRInterview): HydratedHRInterview => ({
     ...i,
+    // Interview internals (scores, notes, responses) are recruiter-grade.
     overallNotes: undefined,
     finalScore: undefined,
     isRecommended: undefined,
     responses: [],
+    // …and so is everything that identifies WHO the interview is about or who is
+    // running it. getAllHRInterviews joins the real applicant_name onto every row
+    // and the interviewer/panel/schedule reveal the applicant's pipeline; a
+    // non-recruiter hr:view member must see none of it (matches how
+    // redactApplicantsForViewer blanks applicant identity).
+    applicantName: '',
+    interviewerId: 0,
+    interviewer: REDACTED_USER,
+    panelMembers: [],
+    scheduledAt: '',
 });
 
 export function redactApplicantsForViewer(applicants: HydratedHRApplication[], recruiter: boolean): HydratedHRApplication[] {
@@ -996,13 +1008,22 @@ export function redactApplicantsForViewer(applicants: HydratedHRApplication[], r
         // Applicant identity (real name, RSI handle, Discord id) is recruiter-
         // grade — and applicants may be external recruits not in the roster, so
         // this is the only place that PII would surface. Blank it all for
-        // non-recruiters; status/createdAt/counts remain.
+        // non-recruiters; createdAt/counts remain.
         applicantName: '',
         rsiHandle: '',
         applicantDiscordId: '',
         referralSource: undefined,
         notes: undefined,
         vettingData: undefined,
+        // Null the cross-reference keys (linkedUserId/assignedRecruiterId/
+        // assignedRecruiter) and coarsen status so a non-recruiter can't
+        // cross-reference linkedUserId against the roster to learn "user #42 has a
+        // REJECTED application" — a blanked row must carry no usable signal about a
+        // known roster member.
+        linkedUserId: undefined,
+        assignedRecruiterId: undefined,
+        assignedRecruiter: undefined,
+        status: undefined as unknown as ApplicationStatus,
         interviews: (a.interviews || []).map(redactInterview),
     }));
 }
@@ -1025,7 +1046,6 @@ export async function getTransferRequests() {
 }
 
 export async function getHRState(requester?: { role?: string; permissions?: string[] } | null) {
-    // Optimized fetches to only retrieve necessary user columns for relations
     const [applicants, interviews, templates, jobs, safeTransfers, positions] = await Promise.all([
         getHRApplications(),
         getAllHRInterviews(),

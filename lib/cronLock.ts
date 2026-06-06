@@ -6,10 +6,9 @@
 // migrations/add-cron-locks.sql — mirroring the processed_stripe_events pattern.
 //
 // FAIL-OPEN: if the lease RPC itself errors (e.g. the migration hasn't been
-// applied yet, or a transient DB blip), the job RUNS anyway. This guarantees the
-// guard can never make a job worse than the pre-#17 behaviour (a single instance
-// running everything unconditionally), and lets the code deploy before the
-// migration lands.
+// applied yet, or a transient DB blip), the job RUNS anyway, so the guard can
+// never make a job worse than a single instance running everything
+// unconditionally, and the code can deploy before the migration lands.
 
 import os from 'os';
 import { supabase } from './db/common.js';
@@ -36,7 +35,7 @@ export async function withCronLease(jobName: string, holdSeconds: number, fn: ()
         acquired = data === true;
     } catch (e) {
         // Fail-open: never silently skip (esp. billing sync) because the lock
-        // layer is unavailable. Run unguarded, exactly as before #17.
+        // layer is unavailable. Run unguarded.
         log.warn('cron lease check failed, running unguarded (fail-open)', { jobName, err: e });
         await fn();
         return;

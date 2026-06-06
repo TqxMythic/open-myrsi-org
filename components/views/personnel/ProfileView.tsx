@@ -56,7 +56,6 @@ const ProfileView: React.FC = () => {
     const [diagLog, setDiagLog] = useState<string[]>([]);
     const [isDiagnosing, setIsDiagnosing] = useState(false);
 
-    // Ref to store interval ID for cleanup
     const cooldownIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
     useEffect(() => {
@@ -304,7 +303,6 @@ const ProfileView: React.FC = () => {
 
     return (
         <div className="h-full flex flex-col overflow-hidden animate-fade-in">
-            {/* Hero */}
             <div className="shrink-0 relative overflow-hidden border-b border-white/5 bg-linear-to-b from-sky-950/30 via-slate-950/80 to-slate-950">
                 <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[400px] bg-sky-500/10 rounded-full blur-[120px] pointer-events-none" aria-hidden />
 
@@ -323,12 +321,9 @@ const ProfileView: React.FC = () => {
                 </div>
             </div>
 
-            {/* Content */}
             <div className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 space-y-6 max-w-5xl mx-auto w-full">
 
-                {/* 1. IDENTITY CARD */}
                 <div className="bg-slate-900/80 backdrop-blur-md border border-slate-700/50 rounded-xl p-6 md:p-8 relative overflow-hidden shadow-lg">
-                    {/* Background decoration */}
                     <div className="absolute top-0 right-0 w-64 h-64 bg-sky-500/10 blur-[100px] rounded-full pointer-events-none -translate-y-1/2 translate-x-1/2"></div>
 
                     <div className="relative z-10 flex flex-col md:flex-row items-center md:items-start gap-6 md:gap-8">
@@ -376,7 +371,6 @@ const ProfileView: React.FC = () => {
 
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
 
-                    {/* 2. ACCOUNT SETTINGS */}
                     <div className="bg-slate-900/60 backdrop-blur-md border border-slate-700/50 rounded-xl overflow-hidden">
                         <div className="px-5 py-4 border-b border-white/5 bg-white/5 flex items-center gap-3">
                             <div className="w-8 h-8 rounded-lg bg-sky-500/10 flex items-center justify-center text-sky-400">
@@ -386,7 +380,6 @@ const ProfileView: React.FC = () => {
                         </div>
 
                         <div className="p-5 space-y-6">
-                            {/* RSI Handle Edit */}
                             <div>
                                 <div className="flex justify-between items-center mb-2">
                                     <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">RSI Handle</label>
@@ -424,7 +417,6 @@ const ProfileView: React.FC = () => {
                                 )}
                             </div>
 
-                            {/* Display Name override */}
                             <div className="pt-4 border-t border-slate-800">
                                 <div className="flex justify-between items-center mb-2">
                                     <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Display Name</label>
@@ -495,7 +487,6 @@ const ProfileView: React.FC = () => {
                                 )}
                             </div>
 
-                            {/* Discord Sync */}
                             <div className="pt-4 border-t border-slate-800">
                                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 block">Rank Synchronization</label>
                                 <div className="flex flex-col sm:flex-row gap-4 items-start">
@@ -524,7 +515,6 @@ const ProfileView: React.FC = () => {
                         </div>
                     </div>
 
-                    {/* 3. COMMS UPLINK */}
                     <div className="bg-slate-900/60 backdrop-blur-md border border-slate-700/50 rounded-xl overflow-hidden">
                         <div className="px-5 py-4 border-b border-white/5 bg-white/5 flex items-center justify-between gap-3">
                             <div className="flex items-center gap-3">
@@ -562,7 +552,6 @@ const ProfileView: React.FC = () => {
                                 </button>
                             </div>
 
-                            {/* Diagnostic Log */}
                             {diagLog.length > 0 && (
                                 <div className="bg-black/40 rounded-lg border border-slate-800 p-3 h-32 overflow-y-auto custom-scrollbar font-mono text-[10px]">
                                     {diagLog.map((log, i) => (
@@ -577,7 +566,6 @@ const ProfileView: React.FC = () => {
                     </div>
                 </div>
 
-                {/* Time Preferences */}
                 <div className="bg-slate-900/60 backdrop-blur-md border border-slate-700/50 rounded-xl overflow-hidden">
                     <div className="px-5 py-4 border-b border-white/5 bg-white/5 flex items-center gap-3">
                         <div className="w-8 h-8 rounded-lg bg-sky-500/10 flex items-center justify-center text-sky-400">
@@ -591,7 +579,6 @@ const ProfileView: React.FC = () => {
                         </p>
 
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            {/* Timezone */}
                             <div>
                                 <div className="flex items-center justify-between mb-2">
                                     <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Timezone</label>
@@ -623,7 +610,6 @@ const ProfileView: React.FC = () => {
                                 </p>
                             </div>
 
-                            {/* Date format */}
                             <div>
                                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 block">Date Format</label>
                                 <div className="space-y-2">
@@ -662,7 +648,6 @@ const ProfileView: React.FC = () => {
                     </div>
                 </div>
 
-                {/* Danger Zone */}
                 <div className="bg-red-950/10 border border-red-500/20 rounded-xl overflow-hidden">
                     <div className="px-5 py-4 border-b border-red-500/10 bg-red-500/5 flex items-center gap-3">
                         <div className="w-8 h-8 rounded-lg bg-red-500/10 flex items-center justify-center text-red-400">
@@ -683,7 +668,6 @@ const ProfileView: React.FC = () => {
                 </div>
             </div>
 
-            {/* Confirmation Modal */}
             {showHandleConfirm && (
                 <div className="fixed inset-0 bg-black/80 backdrop-blur-xs flex items-center justify-center z-100 animate-fade-in p-4">
                     <div className="bg-slate-900/90 backdrop-blur-md border border-amber-500/30 rounded-xl shadow-2xl max-w-md w-full overflow-hidden">

@@ -1,54 +1,21 @@
-// OperationsContext owns the Operations domain slices and template/refresh
-// methods that were previously embedded in DataContext. This is Phase 3c of
-// the context refactor — a behavior-preserving extraction. The shim invariant
-// is: useData() still exposes every Operations field with identical names and
-// types, so the 220 consumer files that import useData() continue to work
-// without changes.
+// OperationsContext owns the Operations slices (operations, operationTemplates,
+// warrants) plus the operation/template/warrant CRUD methods.
 //
-// Provider order: DataCoreProvider > MembersProvider > ConfigProvider >
-// OperationsProvider > DataProvider. Operations must mount OUTSIDE Data so
-// DataContext can call useOperations() inside its body and re-expose the
-// Operations fields on its own context value.
+// Mounts OUTSIDE DataProvider so DataContext can call useOperations() inside
+// its body and re-expose the Operations fields on its own context value,
+// keeping the useData() surface unchanged.
 //
-// State slices owned here (3):
-//   operations, operationTemplates, warrants
+// radioChannels is NOT owned here — it lives in ConfigContext with the other
+// admin-managed reference data, sourced from useConfig() at the DataContext layer.
 //
-// (radioChannels was originally listed for this phase but Phase 3b moved it
-// into ConfigContext alongside the other admin-managed reference data — so
-// it's NOT owned here. Sourced from useConfig() at the DataContext layer.)
+// Hydration: registers a slice setter per slice with DataCore, populated when
+// applyStateData(data) runs after a 'main'/'operations'/'warrants' subset fetch.
 //
-// Methods owned here (5 templates + 2 refresh helpers):
-//   createOperationTemplate, updateOperationTemplate, deleteOperationTemplate,
-//   extractTemplateFromOperation, importOperationTemplate
-//   refreshOperations, refreshWarrants
-//
-// Phase 4a landed the full operation-CRUD surface (create, update, status
-// changes, participant management, payouts, readiness, timeline, RSVP) into
-// this context — see the "Operation CRUD methods" block below. Consumers
-// migrated to useOperations() in Phase 4b.
-//
-// Realtime / state hydration: Operations registers a slice setter with
-// DataCore for each of its 3 slices (Phase 0b plumbing). When DataContext
-// calls applyStateData(data) after fetching the 'main' / 'operations' /
-// 'warrants' subset, those registered setters fire and populate Operations's
-// local state. This replaces the per-slice inline assignments that used to
-// live in DataContext's setStateFromData() switch for these fields.
-//
-// Refresh callbacks: the 5 template methods chain fetchDataSubset('operations')
-// after their RPC succeeds (templates ship in the operations subset bundle).
-// Since Operations lives OUTSIDE Data, it can't read useData() directly
-// (would cycle). Instead, DataContext registers its refreshOperations and
-// refreshWarrants functions with Operations at mount via registerRefreshOperations
-// / registerRefreshWarrants, and Operations's methods call them via ref after
-// the RPC completes. Same registration pattern as MembersContext (Phase 3a)
-// and ConfigContext (Phase 3b).
-//
-// Cross-context optimistic updates: DataContext's optimisticUpdate has
-// 'operations' and 'warrants' branches that write to setOperations /
-// setWarrants. Those setters now live here and are exposed on the context
-// value; DataContext destructures them and uses them in its optimisticUpdate.
-// Matches the MembersContext approach (setRanks / setUnits exposed for the
-// same reason).
+// refreshOperations/refreshWarrants are defined in DataContext and registered
+// here via registerRefreshOperations/registerRefreshWarrants so CRUD methods can
+// chain a post-RPC refresh without depending on useData() (would cycle).
+// DataContext's optimisticUpdate 'operations'/'warrants' branches write through
+// the setOperations/setWarrants setters exposed here.
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useDataCore } from './DataCoreContext';
@@ -56,10 +23,8 @@ import {
     HydratedOperation, HydratedWarrant, OperationTemplate, OperationTemplatePayload,
 } from '../types';
 
-// Re-exports — see types/operations.ts for the canonical list. Mirrors the
-// ConfigContext convention so domain consumers can import either from
-// '../contexts/OperationsContext' or '../types/operations' interchangeably
-// during the migration.
+// Re-exports so domain consumers can import either from
+// '../contexts/OperationsContext' or '../types/operations' interchangeably.
 export type {
     HydratedOperation,
     HydratedOperationTeam,
@@ -70,26 +35,21 @@ export type {
 } from '../types';
 
 export interface OperationsContextValue {
-    // --- State slices (3) ---
     operations: HydratedOperation[];
     operationTemplates: OperationTemplate[];
     warrants: HydratedWarrant[];
 
-    // --- State setters (exposed for DataContext's optimisticUpdate branches
-    //     that handle 'operations' and 'warrants'; DataContext is INSIDE
-    //     Operations, so it consumes these setters via useOperations().) ---
+    // Exposed for DataContext's optimisticUpdate ('operations', 'warrants') branches.
     setOperations: React.Dispatch<React.SetStateAction<HydratedOperation[]>>;
     setOperationTemplates: React.Dispatch<React.SetStateAction<OperationTemplate[]>>;
     setWarrants: React.Dispatch<React.SetStateAction<HydratedWarrant[]>>;
 
-    // --- Template methods (5) ---
-    createOperationTemplate: (data: { name: string; description?: string; payload: OperationTemplatePayload }) => Promise<OperationTemplate>;
+    createOperationTemplate: (data: { name: string; description?: string; payload: OperationTemplatePayload; sourceOperationId?: string }) => Promise<OperationTemplate>;
     updateOperationTemplate: (id: number, updates: { name?: string; description?: string; payload?: OperationTemplatePayload }) => Promise<OperationTemplate>;
     deleteOperationTemplate: (id: number) => Promise<void>;
     extractTemplateFromOperation: (operationId: string) => Promise<OperationTemplatePayload>;
     importOperationTemplate: (data: { name: string; description?: string; payload: OperationTemplatePayload }) => Promise<OperationTemplate>;
 
-    // --- Operation CRUD methods (Phase 4a — moved from SessionContext) ---
     createOperation: (data: any) => Promise<any>;
     deleteOperation: (id: string) => Promise<void>;
     updateOperationStatus: (id: string, status: string) => Promise<void>;
@@ -113,23 +73,14 @@ export interface OperationsContextValue {
     addOperationTimelineEntry: (opId: string, entry: string) => Promise<void>;
     rsvpOperation: (opId: string, rsvpStatus: string, shipId?: number, userShipId?: number) => Promise<void>;
 
-    // --- Warrant CRUD methods (Phase 4e — moved from SessionContext) ---
     createWarrant: (data: any) => Promise<void>;
     updateWarrant: (id: string, data: any) => Promise<void>;
     deleteWarrant: (id: string) => Promise<void>;
 
-    // --- Refresh registration ---
-    /** DataContext calls this in a useEffect once its `refreshOperations`
-     *  callback is defined. Operations's template methods invoke the registered
-     *  fn after their RPC completes so consumers see the new state without
-     *  waiting for a realtime broadcast (websocket-reconnect fallback, same
-     *  intent as the existing chained fetchDataSubset('operations') pattern). */
+    /** DataContext registers its refreshOperations callback here once defined;
+     *  CRUD methods invoke it after their RPC completes. */
     registerRefreshOperations: (fn: () => Promise<void> | void) => () => void;
-    /** Same pattern, but for the 'warrants' subset. Phase 4e moved the
-     *  warrant CRUD methods (createWarrant/updateWarrant/deleteWarrant) into
-     *  this context, so the registered refreshWarrants is now actively used
-     *  alongside the optimisticUpdate('warrants', ...) routing through
-     *  setWarrants. */
+    /** Same, for the 'warrants' subset. */
     registerRefreshWarrants: (fn: () => Promise<void> | void) => () => void;
 }
 
@@ -138,16 +89,12 @@ const OperationsContext = createContext<OperationsContextValue | null>(null);
 export const OperationsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const { rpcAction, registerSliceSetter } = useDataCore();
 
-    // --- 3 state slices ---
     const [operations, setOperations] = useState<HydratedOperation[]>([]);
     const [operationTemplates, setOperationTemplates] = useState<OperationTemplate[]>([]);
     const [warrants, setWarrants] = useState<HydratedWarrant[]>([]);
 
-    // --- Refresh-callback registration plumbing ---
-    // DataContext defines refreshOperations / refreshWarrants and registers
-    // them here on mount; Operations's template methods call the registered
-    // fn via ref to avoid re-creating callbacks on every Data render. Same
-    // pattern as MembersContext / ConfigContext.
+    // DataContext registers refreshOperations/refreshWarrants here on mount;
+    // held in refs so CRUD methods can call them without re-creating callbacks.
     const refreshOperationsRef = useRef<(() => Promise<void> | void) | null>(null);
     const refreshWarrantsRef = useRef<(() => Promise<void> | void) | null>(null);
 
@@ -174,13 +121,8 @@ export const OperationsProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         if (fn) await fn();
     }, []);
 
-    // --- Slice-setter registration (Phase 0b plumbing) ---
-    // Each setter applies its slice of a bulk-state payload. When DataContext
-    // (or any caller) invokes applyStateData(data) on DataCore, every
-    // registered setter runs — populating Operations state from the response of
-    // a 'main' / 'operations' / 'warrants' subset fetch. This replaces the
-    // per-slice inline assignments that used to live in DataContext's
-    // setStateFromData() for these fields.
+    // Each setter applies its slice when applyStateData(data) runs after a
+    // 'main'/'operations'/'warrants' subset fetch.
     useEffect(() => {
         const cleanups = [
             registerSliceSetter('operations', (data: any) => { if (data.operations) setOperations(data.operations); }),
@@ -190,12 +132,7 @@ export const OperationsProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         return () => cleanups.forEach(unreg => unreg());
     }, [registerSliceSetter]);
 
-    // --- Template methods (5) ---
-    // Mirror the originals 1:1: same RPC action, same payload shape, same
-    // post-call refresh. The only structural change is that they call
-    // refreshOperationsFn() (registered by DataContext) instead of an in-scope
-    // fetchDataSubset('operations') — semantically equivalent.
-    const createOperationTemplate = useCallback((data: { name: string; description?: string; payload: OperationTemplatePayload }) =>
+    const createOperationTemplate = useCallback((data: { name: string; description?: string; payload: OperationTemplatePayload; sourceOperationId?: string }) =>
         rpcAction('operation:template:create', data).then((tpl) => { void refreshOperationsFn(); return tpl as OperationTemplate; }),
     [rpcAction, refreshOperationsFn]);
 
@@ -218,21 +155,8 @@ export const OperationsProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         rpcAction('operation:template:import', data).then((tpl) => { void refreshOperationsFn(); return tpl as OperationTemplate; }),
     [rpcAction, refreshOperationsFn]);
 
-    // --- Operation CRUD methods (Phase 4a) ---
-    // Moved verbatim from SessionContext. Semantics preserved 1:1: same RPC
-    // action, same payload shape, same post-call refresh, same optimistic
-    // updates. The two changes are mechanical:
-    //   1. simpleAction(...) → rpcAction(...) — equivalent when no refresh
-    //      callback is passed (both resolve to apiService.rpc → res.data,
-    //      both log+rethrow on error).
-    //   2. refreshOperations() → refreshOperationsFn() — DataContext
-    //      registers its fetchDataSubset('operations') callback at mount.
-    // For deleteOperation and updateOperationStatus, the optimistic write
-    // goes directly through setOperations here instead of routing through
-    // DataContext.optimisticUpdate('operations', ...) — which itself just
-    // calls setOperations via the cross-context wiring, so the behavior is
-    // identical and one indirection layer is removed.
-
+    // deleteOperation and updateOperationStatus apply an optimistic write through
+    // setOperations before the RPC, then refresh.
     const createOperation = useCallback((data: any) =>
         rpcAction('operation:create', data).then(async (res) => { await refreshOperationsFn(); return res; }),
     [rpcAction, refreshOperationsFn]);
@@ -279,8 +203,8 @@ export const OperationsProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         rpcAction('operation:update_participant', { operationId: opId, targetUserId: userId, updates: data }).then(() => { void refreshOperationsFn(); }),
     [rpcAction, refreshOperationsFn]);
 
-    // Note: removeOperationParticipant uses the 'operation:leave' RPC with a
-    // targetUserId override — mirroring the original SessionContext impl.
+    // removeOperationParticipant reuses the 'operation:leave' RPC with a
+    // targetUserId override.
     const removeOperationParticipant = useCallback((opId: string, userId: number) =>
         rpcAction('operation:leave', { operationId: opId, targetUserId: userId }).then(() => { void refreshOperationsFn(); }),
     [rpcAction, refreshOperationsFn]);
@@ -325,13 +249,8 @@ export const OperationsProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         rpcAction('operation:rsvp', { operationId: opId, rsvpStatus, shipId, userShipId }).then(() => { void refreshOperationsFn(); }),
     [rpcAction, refreshOperationsFn]);
 
-    // --- Warrant CRUD methods (Phase 4e) ---
-    // Moved from SessionContext. Same RPC actions and payload shapes; the
-    // optimistic writes that used to go through DataContext.optimisticUpdate
-    // ('warrants', ...) now write directly through setWarrants here. Behavior
-    // is identical — DataContext.optimisticUpdate's 'warrants' branch was
-    // already routing through this setter via the cross-context wiring.
-
+    // updateWarrant and deleteWarrant apply an optimistic write through
+    // setWarrants before the RPC, then refresh.
     const createWarrant = useCallback((data: any) =>
         rpcAction('warrant:create', data).then(() => { void refreshWarrantsFn(); }),
     [rpcAction, refreshWarrantsFn]);
@@ -347,14 +266,10 @@ export const OperationsProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     }, [rpcAction, refreshWarrantsFn]);
 
     const value = useMemo<OperationsContextValue>(() => ({
-        // State
         operations, operationTemplates, warrants,
-        // Setters (consumed by DataContext.optimisticUpdate)
         setOperations, setOperationTemplates, setWarrants,
-        // Template methods
         createOperationTemplate, updateOperationTemplate, deleteOperationTemplate,
         extractTemplateFromOperation, importOperationTemplate,
-        // Operation CRUD methods (Phase 4a)
         createOperation, deleteOperation, updateOperationStatus, updateOperationDetails,
         joinOperation, joinOperationWithShip, acceptOperationInvite, declineOperationInvite,
         leaveOperation, addOperationParticipant, updateOperationParticipant,
@@ -362,9 +277,7 @@ export const OperationsProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         setOperationPayoutMode, setOperationPayoutSplits, toggleParticipantPayoutPaid,
         toggleParticipantReady, updateParticipantLiveStatus, resetOperationReadiness,
         addOperationTimelineEntry, rsvpOperation,
-        // Warrant CRUD (Phase 4e)
         createWarrant, updateWarrant, deleteWarrant,
-        // Refresh registration
         registerRefreshOperations, registerRefreshWarrants,
     }), [
         operations, operationTemplates, warrants,

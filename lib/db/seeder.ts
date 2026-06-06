@@ -72,8 +72,8 @@ export async function seedInstall() {
 
     // Define Permission Sets
     const clientPerms = [...CLIENT_DEFAULT_PERMS];
-    const memberPerms = ['alliance:view', 'user:receive:eam', 'fleet:view', 'fleet:manage_own', 'hr:view', 'intel:view', 'intel:view:clearance', 'intel:create', 'warrant:view', 'operations:view', 'request:create', 'request:create_adhoc', 'request:accept', 'request:start', 'request:complete', 'request:cancel', 'request:rate', 'user:toggle_duty', 'user:view:roster', 'user:manage:self', 'wiki:view', 'gov:view', 'gov:participate'];
-    const dispatcherPerms = ['alliance:view', 'radio:manage', 'admin:broadcast:eam', 'user:receive:eam', 'fleet:view', 'fleet:manage_own', 'fleet:manage', 'hr:view', 'hr:recruiter', 'hr:manager', 'hr:admin', 'hr:manage:positions', 'admin:manage:documents', 'intel:view', 'intel:view:clearance', 'intel:create', 'intel:manage', 'warrant:view', 'warrant:create', 'warrant:manage', 'operations:view', 'operations:create', 'operations:manage', 'unit:manage:own', 'request:create', 'request:create_adhoc', 'request:triage', 'request:dispatch', 'request:accept', 'request:start', 'request:complete', 'request:cancel', 'request:delete', 'request:manage_responders', 'request:set_lead', 'request:update', 'request:rate', 'request:view:feedback', 'admin:access', 'admin:config:notices', 'admin:view:roster', 'admin:view:clients', 'user:manage:conduct_record', 'user:toggle_duty', 'admin:award:certification', 'admin:award:commendation', 'user:view:roster', 'user:manage:self', 'wiki:view', 'wiki:add_page', 'wiki:edit_page', 'wiki:delete_page', 'gov:view', 'gov:participate', 'gov:electoral_officer', 'gov:manage'];
+    const memberPerms = ['alliance:view', 'user:receive:eam', 'fleet:view', 'fleet:manage_own', 'hr:view', 'intel:view', 'intel:view:clearance', 'intel:create', 'warrant:view', 'operations:view', 'request:create', 'request:create_adhoc', 'request:accept', 'request:start', 'request:complete', 'request:cancel', 'request:rate', 'user:toggle_duty', 'user:view:roster', 'user:manage:self', 'wiki:view', 'gov:view', 'gov:participate', 'marketplace:view', 'marketplace:list', 'marketplace:contract'];
+    const dispatcherPerms = ['alliance:view', 'radio:manage', 'admin:broadcast:eam', 'user:receive:eam', 'fleet:view', 'fleet:manage_own', 'fleet:manage', 'hr:view', 'hr:recruiter', 'hr:manager', 'hr:admin', 'hr:manage:positions', 'admin:manage:documents', 'intel:view', 'intel:view:clearance', 'intel:create', 'intel:manage', 'warrant:view', 'warrant:create', 'warrant:manage', 'operations:view', 'operations:create', 'operations:manage', 'unit:manage:own', 'request:create', 'request:create_adhoc', 'request:triage', 'request:dispatch', 'request:accept', 'request:start', 'request:complete', 'request:cancel', 'request:delete', 'request:manage_responders', 'request:set_lead', 'request:update', 'request:rate', 'request:view:feedback', 'admin:access', 'admin:config:notices', 'admin:view:roster', 'admin:view:clients', 'user:manage:conduct_record', 'user:toggle_duty', 'admin:award:certification', 'admin:award:commendation', 'user:view:roster', 'user:manage:self', 'wiki:view', 'wiki:add_page', 'wiki:edit_page', 'wiki:delete_page', 'gov:view', 'gov:participate', 'gov:electoral_officer', 'gov:manage', 'marketplace:view', 'marketplace:list', 'marketplace:contract'];
     const adminPerms = permissions.map(p => p.name);
 
     const assign = (roleName: string, permNames: string[]) => {
@@ -185,6 +185,10 @@ export async function seedInstall() {
     // 10. Seed Locations
     await seedDefaultLocations();
 
+    // 11. Seed Marketplace categories (reference taxonomy; seeded here — not in
+    // schema.sql — so a full-reset reseed restores them).
+    await seedMarketplaceCategories();
+
     // Bust any cached system-role lookup that may have been written by a parallel
     // request that ran while seeding was mid-flight. Without this, getSystemRoles
     // can serve a stale "no roles found" entry for the full 5-minute TTL even
@@ -193,6 +197,49 @@ export async function seedInstall() {
 
     log.info('install seeding complete', { roles: Object.keys(roleMap) });
     return { success: true, roles: roleMap };
+}
+
+/** Seed the marketplace category taxonomy (top-level + children, idempotent by
+ *  slug). Two-pass so children can resolve their parent_id. */
+export async function seedMarketplaceCategories() {
+    const tops = [
+        { slug: 'ships-vehicles', name: 'Ships & Vehicles', listing_kind: 'item', icon: 'fa-solid fa-rocket', sort_order: 0 },
+        { slug: 'components', name: 'Ship Components', listing_kind: 'item', icon: 'fa-solid fa-microchip', sort_order: 1 },
+        { slug: 'weapons-armor', name: 'Weapons & Armor', listing_kind: 'item', icon: 'fa-solid fa-gun', sort_order: 2 },
+        { slug: 'cargo-commodities', name: 'Cargo & Commodities', listing_kind: 'item', icon: 'fa-solid fa-boxes-stacked', sort_order: 3 },
+        { slug: 'consumables', name: 'Consumables & Gear', listing_kind: 'item', icon: 'fa-solid fa-kit-medical', sort_order: 4 },
+        { slug: 'services', name: 'Services', listing_kind: 'service', icon: 'fa-solid fa-handshake-angle', sort_order: 5 },
+        { slug: 'other', name: 'Other', listing_kind: 'both', icon: 'fa-solid fa-ellipsis', sort_order: 6 },
+    ];
+    const { error: topErr } = await supabase.from('marketplace_categories').upsert(tops, { onConflict: 'slug', ignoreDuplicates: true });
+    if (topErr) { log.error('marketplace categories (top) seed failed', { err: topErr }); return; }
+
+    const { data: parents } = await supabase.from('marketplace_categories').select('id, slug').is('parent_id', null);
+    const bySlug = new Map(((parents as { id: number; slug: string }[]) || []).map((p) => [p.slug, p.id]));
+    const c = (parentSlug: string, slug: string, name: string, kind: string, icon: string, sort: number) => ({
+        slug, name, listing_kind: kind, icon, sort_order: sort, parent_id: bySlug.get(parentSlug),
+    });
+    const children = [
+        c('services', 'svc-hauling', 'Hauling & Logistics', 'service', 'fa-solid fa-truck', 0),
+        c('services', 'svc-escort', 'Escort & Security', 'service', 'fa-solid fa-shield-halved', 1),
+        c('services', 'svc-mining', 'Mining', 'service', 'fa-solid fa-gem', 2),
+        c('services', 'svc-salvage', 'Salvage', 'service', 'fa-solid fa-recycle', 3),
+        c('services', 'svc-medical', 'Medical & Rescue', 'service', 'fa-solid fa-truck-medical', 4),
+        c('services', 'svc-refuel-repair', 'Refuel & Repair', 'service', 'fa-solid fa-gas-pump', 5),
+        c('components', 'cmp-power', 'Power Plants', 'item', 'fa-solid fa-bolt', 0),
+        c('components', 'cmp-shields', 'Shield Generators', 'item', 'fa-solid fa-shield', 1),
+        c('components', 'cmp-coolers', 'Coolers', 'item', 'fa-solid fa-snowflake', 2),
+        c('components', 'cmp-qd', 'Quantum Drives', 'item', 'fa-solid fa-gauge-high', 3),
+        c('weapons-armor', 'wa-ship-weapons', 'Ship Weapons', 'item', 'fa-solid fa-crosshairs', 0),
+        c('weapons-armor', 'wa-fps', 'FPS Weapons', 'item', 'fa-solid fa-gun', 1),
+        c('weapons-armor', 'wa-armor', 'Armor Sets', 'item', 'fa-solid fa-user-shield', 2),
+        c('cargo-commodities', 'cc-raw', 'Raw Materials', 'item', 'fa-solid fa-mountain', 0),
+        c('cargo-commodities', 'cc-refined', 'Refined Goods', 'item', 'fa-solid fa-industry', 1),
+    ].filter((ch) => ch.parent_id != null);
+    if (children.length > 0) {
+        const { error: childErr } = await supabase.from('marketplace_categories').upsert(children, { onConflict: 'slug', ignoreDuplicates: true });
+        if (childErr) log.error('marketplace categories (children) seed failed', { err: childErr });
+    }
 }
 
 export async function resetOrgDefaults() {

@@ -99,6 +99,9 @@ interface UpdateUserPayload extends OrgScopedPayload {
 interface UpdateUserClearancePayload extends OrgScopedPayload {
     targetUserId: number;
     userId: number;
+    // Authenticated actor injected by services.ts — threaded so updateUserClearance
+    // can author-clamp the requested grant against the actor's own clearance.
+    user: User;
     levelId: number | null;
     markerIds: number[];
 }
@@ -106,6 +109,8 @@ interface UpdateUserClearancePayload extends OrgScopedPayload {
 interface BulkUpdateUserClearancesPayload extends OrgScopedPayload {
     targetUserIds: number[];
     userId: number;
+    // Authenticated actor injected by services.ts — threaded for the clearance clamp.
+    user: User;
     levelId: number | null;
     markerIds: number[];
     markerMode: 'replace' | 'add';
@@ -427,12 +432,14 @@ export const adminActions = {
         // can enforce the role-escalation guard when `details.roleId` is set.
         return db.updateUser(targetUserId, stripActorFields(rest), user);
     },
-    'admin:update_user_clearance': ({ targetUserId, userId, levelId, markerIds }: UpdateUserClearancePayload) => db.updateUserClearance(targetUserId, userId, levelId, markerIds),
-    // #17: bulk version. Loops the same per-user contract; returns
+    // Forward the authenticated actor (user) so the db layer can author-clamp
+    // the grant against the actor's own clearance/markers.
+    'admin:update_user_clearance': ({ targetUserId, userId, user, levelId, markerIds }: UpdateUserClearancePayload) => db.updateUserClearance(targetUserId, userId, levelId, markerIds, user),
+    // Bulk version. Loops the same per-user contract; returns
     // { updated, total } so the UI can toast partial-success counts.
-    'admin:bulk_update_user_clearances': ({ targetUserIds, userId, levelId, markerIds, markerMode }: BulkUpdateUserClearancesPayload) => {
+    'admin:bulk_update_user_clearances': ({ targetUserIds, userId, user, levelId, markerIds, markerMode }: BulkUpdateUserClearancesPayload) => {
         assertIdArray(targetUserIds, MAX_IMPORT_BATCH_SIZE, 'targetUserIds');
-        return db.bulkUpdateUserClearances(targetUserIds, userId, levelId, markerIds, markerMode);
+        return db.bulkUpdateUserClearances(targetUserIds, userId, levelId, markerIds, markerMode, user);
     },
     // Bulk demote N users to the org's Client system role. Wraps updateUser
     // per-target so assertCanAssignRole's privilege guard applies; tier

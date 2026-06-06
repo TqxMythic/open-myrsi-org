@@ -31,8 +31,8 @@ export async function generateDossierSummary(dossier: DossierData): Promise<stri
 
     // 2. Validate API Key
     const apiKey = await getOrgSecret('GEMINI_API_KEY');
-    // SECURITY (L10): never log key material (length / prefix is still a partial
-    // disclosure). Log only presence.
+    // Never log key material (length / prefix is still a partial disclosure).
+    // Log only presence.
     console.log(`[AI] API key lookup result: ${apiKey ? 'found' : 'NOT FOUND'}`);
     if (!apiKey) {
         console.warn(`[AI] GEMINI_API_KEY missing. Ensure the key is set in admin settings or the server environment.`);
@@ -155,9 +155,9 @@ export async function generateDossierSummary(dossier: DossierData): Promise<stri
             return "QUOTA_EXCEEDED: AI Analysis throughput has reached its current limit. Operations will resume in the next cycle.";
         }
 
-        // SECURITY (I3): don't surface the raw third-party (Gemini SDK) error text
-        // to the browser — it can carry internal request detail. Log it server-side
-        // and return a generic message for the unmatched cases.
+        // Don't surface the raw third-party (Gemini SDK) error text to the
+        // browser — it can carry internal request detail. Log it server-side and
+        // return a generic message for the unmatched cases.
         console.error('[AI] dossier summary failed:', errMsg);
         return 'Error generating tactical summary. Please try again later or check the AI configuration.';
     }
@@ -310,9 +310,9 @@ If a section has no entries, infer cautiously from the available information rat
         if (errStatus === 500 || status === 'INTERNAL' || errMsg.includes('INTERNAL')) {
             throw new Error(`Gemini returned an internal error. This is on Google's end — try again in a few minutes.`);
         }
-        // SECURITY (I3): the matched cases above return curated, actionable text.
-        // For anything else, log the real error server-side and surface a generic
-        // message rather than the raw third-party error string.
+        // The matched cases above return curated, actionable text. For anything
+        // else, log the real error server-side and surface a generic message
+        // rather than the raw third-party error string.
         console.error('[AI] draft failed:', extractedMessage || errMsg);
         throw new Error('AI draft failed. Please try again later or verify the AI configuration.');
     }

@@ -8,6 +8,19 @@
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * Sanitize a user-supplied search term before it is interpolated into a
+ * PostgREST `.or()`/`.filter()` grammar string. Escaping only the LIKE
+ * metacharacters (`%_\`) is NOT enough — `.or()` also parses commas, parens and
+ * dots as structure, so an under-escaped term can inject sibling OR conditions.
+ * Strip to an allow-list (alphanumerics, space, underscore, hyphen) and cap
+ * length. Returns '' for non-strings/empties so callers can skip the filter.
+ */
+export function safeSearchTerm(raw: unknown, maxLen = 100): string {
+    if (typeof raw !== 'string') return '';
+    return raw.replace(/[^a-zA-Z0-9 _-]/g, '').trim().slice(0, maxLen);
+}
+
 /** Return a UUID if it matches the canonical shape, otherwise throw. */
 export function requireUuid(value: unknown, field = 'id'): string {
     if (typeof value !== 'string' || !UUID_RE.test(value)) {

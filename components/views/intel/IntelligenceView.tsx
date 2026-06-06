@@ -18,7 +18,7 @@ import { useNotification } from '../../../contexts/NotificationContext';
 import { useNavigation } from '../../../contexts/NavigationContext';
 import { useModalRegistry } from '../../../contexts/ModalRegistryContext';
 
-/** Paranoid string coercion — guarantees a primitive string for JSX rendering */
+/** String coercion — guarantees a primitive string for JSX rendering. */
 const s = (v: unknown, fallback = ''): string => {
     if (v == null) return fallback;
     if (typeof v === 'string') return v;
@@ -170,8 +170,7 @@ const IntelligenceView: React.FC = () => {
     /** Drilldown breadcrumb stack — tail is the currently-open target. */
     const [dossierStack, setDossierStack] = useState<string[]>([]);
 
-    /** Hub filter state. Single tag for v1 — server query keeps shape simple
-     *  and the UI swaps the chip when a different tag is clicked. */
+    /** Hub filter state. Single tag in v1 — the UI swaps the chip when a different tag is clicked. */
     const [threatFilter, setThreatFilter] = useState<IntelThreatLevel | 'all'>('all');
     const [subjectFilter, setSubjectFilter] = useState<IntelSubjectType | 'all'>('all');
     const [tagFilter, setTagFilter] = useState<string | null>(null);
@@ -531,7 +530,6 @@ const IntelligenceView: React.FC = () => {
         }
     }, [activeSubject, setSelectedDossierTarget]);
 
-    // === DOSSIER VIEW ===
     if (activeSubject && dossier) {
         return (
             <DossierView
@@ -548,9 +546,8 @@ const IntelligenceView: React.FC = () => {
         );
     }
 
-    // Computed stats
-    // Hub stats are server-aggregated org-wide counts (not clearance-filtered)
-    // — accurate even when the visible feed is paginated/filtered.
+    // Hub stats are server-aggregated org-wide counts (not clearance-filtered),
+    // so they stay accurate even when the visible feed is paginated/filtered.
     const totalReports = intelHubStats.totalReports;
     const criticalCount = intelHubStats.criticalCount;
     const reports7d = intelHubStats.recentCount7d;
@@ -611,9 +608,7 @@ const IntelligenceView: React.FC = () => {
                 </>}
             />
 
-            {/* === CONTENT BODY — full width === */}
             <div className="w-full px-4 sm:px-6 lg:px-8 space-y-8 pb-12 grow mt-6">
-                {/* Search bar */}
                 <div className="flex flex-col lg:flex-row gap-3">
                     <div className="relative flex-1 group max-w-2xl">
                         <i className={`fa-solid ${isLoadingPage && searchTerm.trim() ? 'fa-spinner animate-spin text-rose-400' : 'fa-search text-slate-600'} absolute left-4 top-1/2 -translate-y-1/2 transition-colors text-sm`}></i>
@@ -632,9 +627,7 @@ const IntelligenceView: React.FC = () => {
                     )}
                 </div>
 
-                {/* === FILTER BAR === */}
                 <div className="flex flex-wrap items-center gap-3">
-                    {/* Threat chips */}
                     <div className="flex items-center gap-1.5 flex-wrap">
                         <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest mr-1">Threat</span>
                         {(['all', IntelThreatLevel.Critical, IntelThreatLevel.High, IntelThreatLevel.Medium, IntelThreatLevel.Low] as const).map(level => {
@@ -658,7 +651,6 @@ const IntelligenceView: React.FC = () => {
                         })}
                     </div>
 
-                    {/* Subject toggle */}
                     <div className="flex items-center gap-1 bg-slate-900/40 rounded-lg border border-white/10 p-0.5">
                         {(['all', IntelSubjectType.Person, IntelSubjectType.Organization] as const).map(subj => {
                             const isActive = subjectFilter === subj;
@@ -677,7 +669,6 @@ const IntelligenceView: React.FC = () => {
                         })}
                     </div>
 
-                    {/* Warrants-only toggle */}
                     <button
                         onClick={() => setWarrantsOnly(v => !v)}
                         className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[10px] font-black uppercase tracking-widest transition-colors ${
@@ -706,7 +697,6 @@ const IntelligenceView: React.FC = () => {
                     )}
                 </div>
 
-                {/* Live Bulletin Board */}
                 <div className="space-y-4">
                     <div className="flex items-center gap-3">
                         <div className="flex items-center gap-2">
@@ -743,7 +733,6 @@ const IntelligenceView: React.FC = () => {
                     )}
                 </div>
 
-                {/* Intelligence Archive */}
                 <div className="space-y-4">
                     <div className="flex items-center gap-3">
                         <div className="flex items-center gap-2">
@@ -771,7 +760,6 @@ const IntelligenceView: React.FC = () => {
                         </button>
                     )}
 
-                    {/* Bulk Action Bar */}
                     {viewMode === 'table' && selectedIds.size > 0 && hasPermission('intel:manage') && (
                         <div className="flex items-center gap-3 p-3 bg-sky-500/10 border border-sky-500/20 rounded-lg animate-fade-in">
                             <span className="text-xs font-bold text-sky-400">{selectedIds.size} selected</span>

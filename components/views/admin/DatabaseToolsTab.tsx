@@ -246,7 +246,7 @@ const DatabaseToolsTab: React.FC = () => {
         }
     };
 
-    // ----- Post-wipe screen: the DB is empty; nothing else can run -----------
+    // Post-wipe screen: the DB is empty; nothing else can run.
     if (wiped) {
         return (
             <div className="p-4 md:p-8 flex items-center justify-center min-h-[60vh] animate-fade-in">

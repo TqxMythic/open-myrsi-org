@@ -11,7 +11,7 @@ import { useModalRegistry } from '../../../contexts/ModalRegistryContext';
 
 const ManageInterviewsTab: React.FC = () => {
     const { rpcAction, refreshHR } = useData();
-    const { hrInterviews } = useHR(); // Use hrInterviews directly
+    const { hrInterviews } = useHR();
     const { currentUser } = useAuth();
     const fmt = useFormatDate();
     const { addToast, confirm } = useNotification();
@@ -23,12 +23,12 @@ const ManageInterviewsTab: React.FC = () => {
     useEffect(() => {
         const handleResize = () => setItemHeight(window.innerWidth < 768 ? 140 : 70);
         window.addEventListener('resize', handleResize);
-        handleResize(); // Init
+        handleResize();
         return () => window.removeEventListener('resize', handleResize);
     }, []);
 
     const allInterviews = useMemo(() => {
-        // Use hrInterviews directly. It now has applicantName populated by the backend/mapper.
+        // hrInterviews already has applicantName populated by the mapper.
         let interviews = [...hrInterviews].sort((a, b) => new Date(b.scheduledAt || 0).getTime() - new Date(a.scheduledAt || 0).getTime());
 
         if (searchTerm.trim()) {

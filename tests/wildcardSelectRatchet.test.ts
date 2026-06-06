@@ -2,28 +2,21 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 
-// =============================================================================
-// WILDCARD-SELECT RATCHET (security / data-minimisation rule)
-// =============================================================================
-// RULE: no NEW `select('*')`, `select(`...(*)...`)` embed wildcards, or bare
-// `select()` calls may be added to the server data layer. Every wildcard pulls
-// EVERY column — including ones added to the table later — and is one missed
-// mapper away from shipping them to the browser. New queries must enumerate
-// exactly the columns the caller needs (see the security rules in the
-// contributor/architecture docs).
+// Wildcard-select ratchet (security / data-minimisation rule).
 //
-// The baseline below pins the per-file count of wildcard selects that existed
-// when the rule landed (2026-06-04 deep-dive audit). Every one of those was
-// audited and is narrowed by an explicit allow-list mapper (toUser /
-// toHydratedX / ...) before anything reaches the wire — see the audit's
-// wildcard census. They are tolerated as legacy, NOT precedent.
+// No new `select('*')`, `select(`...(*)...`)` embed wildcards, or bare `select()`
+// calls may be added to the server data layer. Every wildcard pulls every column
+// — including ones added to the table later — and is one missed mapper away from
+// shipping them to the browser. New queries must enumerate exactly the columns the
+// caller needs.
 //
-// If this test fails because a count INCREASED: rewrite your query with an
-// explicit column list. Do NOT bump the baseline — additions need a documented
-// security review (the same scrutiny a stripSecrets change gets).
-// If it fails because a count DECREASED: great — lower the baseline number so
-// the ratchet locks in the improvement.
-// =============================================================================
+// The baseline below pins the per-file count of legacy wildcard selects; each is
+// narrowed by an explicit allow-list mapper (toUser / toHydratedX / ...) before
+// anything reaches the wire. They are tolerated as legacy, not precedent.
+//
+// If a count INCREASED: rewrite your query with an explicit column list; do not
+// bump the baseline. If a count DECREASED: lower the baseline so the ratchet locks
+// in the improvement.
 
 const BASELINE: Record<string, number> = {
     'lib/db/alliances.ts': 4,

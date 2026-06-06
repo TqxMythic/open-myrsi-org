@@ -88,12 +88,10 @@ const ProbationTab: React.FC = () => {
 
         setSaving(true);
         try {
-            // Clear probation dates and let admin demote via role change
+            // Clear probation dates, then demote to Client via role change.
             await updateUserRecord(userId, { probationStart: null, probationEnd: null });
-            // Note: the actual role demotion is handled by changing roleId in the admin detail view
-            // We use promoteUserToMember's inverse — just update the role to client
             const clientRole = allUsers.find(u => u.role === UserRole.Client);
-            // Find the client role ID from any existing client user, or fall back
+            // Take the client role ID from an existing client user.
             const clientUsers = allUsers.filter(u => u.role === UserRole.Client);
             if (clientUsers.length > 0) {
                 await updateUserRecord(userId, { roleId: clientUsers[0].roleId, probationStart: null, probationEnd: null });

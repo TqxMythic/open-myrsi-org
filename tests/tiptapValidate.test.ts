@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { sanitizeTiptapJson, tiptapJsonToSafeHtml, safeUrl, tryParseTiptapJson, isEmptyTiptapDoc } from '../lib/tiptapValidate';
 
-// #14: lock the sanitizer + safe-HTML emitter contract. Any regression here
-// reopens an XSS surface on the public landing-page blurb (anonymous render
-// path) so the assertions are intentionally exhaustive on attack vectors.
+// Locks the sanitizer + safe-HTML emitter contract. A regression here reopens
+// an XSS surface on the public landing-page blurb (anonymous render path), so
+// the attack-vector assertions are exhaustive.
 
 describe('safeUrl', () => {
     it('accepts http(s) absolute URLs', () => {

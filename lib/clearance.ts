@@ -1,12 +1,9 @@
 // Generic clearance + limiting-marker visibility filter (single-org).
 //
-// SECURITY (H3): classified resources (intel reports/bulletins, wiki pages,
-// operations) carry a numeric `classificationLevel` (0 = unclassified) and a set
-// of `limitingMarkers` (compartment tags). Visibility was previously enforced
-// only by client-side React filters, which the project's own model treats as
-// cosmetic — so any holder of the base view permission received above-clearance
-// or marker-restricted content in the raw HTTP response. This helper enforces it
-// server-side, deny-by-default:
+// Classified resources (intel reports/bulletins, wiki pages, operations) carry a
+// numeric `classificationLevel` (0 = unclassified) and a set of `limitingMarkers`
+// (compartment tags). This helper enforces visibility server-side, deny-by-default
+// (client-side filters are cosmetic):
 //   - the item's classification must be at/below the viewer's clearance level, AND
 //   - the viewer must hold EVERY limiting marker attached to the item.
 // Admins (and any caller holding one of `bypassPermissions`) see everything.
@@ -75,4 +72,66 @@ export function filterByClearance<T extends ClearanceItem>(
 ): T[] {
     if (canViewAllClassifications(user, bypassPermissions)) return items;
     return items.filter((it) => passesClearance(user, it.classificationLevel, it.limitingMarkers, bypassPermissions));
+}
+
+// ---------------------------------------------------------------------------
+// WRITE-side clearance integrity
+//
+// passesClearance/filterByClearance are READ-side. Authoring paths (intel
+// reports, wiki pages, operations) must not accept a client-supplied
+// classification level + marker ids verbatim, or a low-clearance author could
+// mislabel content UP to a level they cannot read, or apply a compartment marker
+// they do not hold. Mirrored from the read side: the population that may VIEW all
+// classifications in a domain (Admin, or the domain's `*:manage` bypass) is
+// exactly the population that may CLASSIFY at any level / with any marker.
+// Everyone else is bounded by their own clearance level and held markers.
+//
+// This guards the NEW label. Preventing a *downgrade* of an existing classified
+// resource the caller cannot currently see is a separate current-visibility check
+// the caller must apply at the relabel site (see updateWikiPage) —
+// assertCanClassify alone does not block setting level to 0.
+
+/** Held limiting-marker id set for the user (markers project to {id,...}). */
+function heldMarkerIds(user?: ClearanceUser | null): Set<string> {
+    const ids = new Set<string>();
+    for (const m of (user?.limitingMarkers || [])) {
+        if (m && typeof m === 'object') {
+            const o = m as Record<string, unknown>;
+            if (o.id !== undefined && o.id !== null) { ids.add(String(o.id)); continue; }
+            if (o.code !== undefined && o.code !== null) { ids.add(String(o.code)); continue; }
+            if (o.name !== undefined && o.name !== null) { ids.add(String(o.name)); continue; }
+        } else if (m !== undefined && m !== null) {
+            ids.add(String(m));
+        }
+    }
+    return ids;
+}
+
+/**
+ * Throws if `user` may not author content at `classificationLevel` with
+ * `markerIds`. Admins / `bypassPermissions` holders may classify anything.
+ * Everyone else: the level must be at/below their clearance, and they must
+ * hold every applied marker. Fails closed (no user → clearance 0, no markers).
+ */
+export function assertCanClassify(
+    user: ClearanceUser | null | undefined,
+    classificationLevel?: number | null,
+    markerIds?: Array<number | string> | null,
+    bypassPermissions: string[] = [],
+): void {
+    if (canViewAllClassifications(user, bypassPermissions)) return;
+
+    const level = user?.clearanceLevel?.level ?? 0;
+    if ((classificationLevel ?? 0) > level) {
+        throw new Error('You cannot classify content above your own clearance level.');
+    }
+    if (markerIds && markerIds.length > 0) {
+        const held = heldMarkerIds(user);
+        for (const mid of markerIds) {
+            if (mid === undefined || mid === null) continue;
+            if (!held.has(String(mid))) {
+                throw new Error('You cannot apply a limiting marker you do not hold.');
+            }
+        }
+    }
 }

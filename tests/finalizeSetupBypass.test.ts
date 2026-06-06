@@ -21,6 +21,8 @@ vi.mock('../lib/auth', () => ({
     signToken: () => 'session-token',
     signAdminSetupGrant: (d: string) => `grant:${d}`,
     verifyAdminSetupGrant: (t: string) => (t === 'valid-grant' ? { discordId: 'd1' } : null),
+    signIdentityGrant: () => 'valid-identity',
+    verifyIdentityGrant: (t: string) => (t === 'valid-identity' ? { discordId: 'd1' } : null),
 }));
 vi.mock('../lib/rsi', () => ({ verifyRsiHandle: vi.fn(async () => { h.verifyRsiCalls++; return true; }) }));
 vi.mock('../lib/db/userFilters', () => ({ stripSensitiveUserFields: (u: any) => u }));
@@ -28,7 +30,7 @@ vi.mock('../lib/db/userFilters', () => ({ stripSensitiveUserFields: (u: any) => 
 import { authActions } from '../api/actions/auth';
 
 const finalize = (authActions as Record<string, (p: any) => Promise<any>>)['auth:finalize_setup'];
-const base = { discordId: 'd1', name: 'Cmdr', avatarUrl: 'a.png', rsiHandle: 'Cmdr_Handle' };
+const base = { discordId: 'd1', name: 'Cmdr', avatarUrl: 'a.png', rsiHandle: 'Cmdr_Handle', identityToken: 'valid-identity' };
 
 beforeEach(() => { h.createUserCalls = []; h.verifyRsiCalls = 0; });
 
@@ -56,5 +58,23 @@ describe('auth:finalize_setup RSI bypass', () => {
 
     it('requires an RSI handle', async () => {
         await expect(finalize({ ...base, rsiHandle: '', adminSetupToken: 'valid-grant', skipVerification: true })).rejects.toThrow(/RSI handle/i);
+    });
+});
+
+describe('auth:finalize_setup identity binding', () => {
+    it('rejects a missing identity grant', async () => {
+        await expect(finalize({ ...base, identityToken: undefined, verificationCode: 'X' })).rejects.toThrow(/sign in with discord/i);
+        expect(h.createUserCalls).toHaveLength(0);
+    });
+
+    it('rejects an identity grant minted for a different discord id (no account squatting)', async () => {
+        await expect(finalize({ ...base, discordId: 'victim', verificationCode: 'X' })).rejects.toThrow(/sign in with discord/i);
+        expect(h.createUserCalls).toHaveLength(0);
+    });
+
+    it('accepts a grant matching the submitted discord id', async () => {
+        await finalize({ ...base, verificationCode: 'X' });
+        expect(h.createUserCalls).toHaveLength(1);
+        expect(h.createUserCalls[0].discordId).toBe('d1');
     });
 });

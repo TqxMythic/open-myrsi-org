@@ -37,8 +37,6 @@ export const subjectIcon = (t: IntelSubjectType | string | null | undefined): st
 export const subjectLabel = (t: IntelSubjectType | string | null | undefined): string =>
     t === IntelSubjectType.Organization ? 'Organization' : 'Individual';
 
-/* ── Time helpers ─────────────────────────────────────────────────────────── */
-
 export const timeAgoShort = (iso: string | null | undefined): string => {
     if (!iso) return '';
     const d = new Date(iso);
@@ -58,16 +56,13 @@ export const timeAgoShort = (iso: string | null | undefined): string => {
 
 /**
  * Renders a stored ISO timestamp using the viewer's preferred format + zone.
- * Pass `fmt.prefs` from `useFormatDate()` at the call site so each viewer
- * gets their own formatting; omit prefs and you'll fall back to the browser
- * zone + the `compact_12h` default preset.
+ * Pass `fmt.prefs` from `useFormatDate()` for per-viewer formatting; omit it to
+ * fall back to the browser zone + the `compact_12h` default preset.
  */
 export const formatDateCompact = (iso: string | null | undefined, prefs?: FormatPrefs): string => {
     if (!iso) return 'N/A';
     return formatUserDateTime(iso, prefs);
 };
-
-/* ── AI error humanisation ────────────────────────────────────────────────── */
 
 export interface HumanisedAiError {
     title: string;

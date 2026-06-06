@@ -3,11 +3,11 @@ import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 // Live-sync tests for the joint-op federation surface:
-//   - the manifest endpoint's peer scoping (SECURITY L6/I2)
+//   - the manifest endpoint's peer scoping
 //   - the invited-not-accepted snapshot posture (matches today's invite push)
-//   - RSVP removal scoped to the CALLING peer's own rows (I8)
+//   - RSVP removal scoped to the CALLING peer's own rows
 //   - inbound pushes stay strictly version-gated — a malicious peer can NEVER
-//     roll a mirror back by replaying a stale/lower version (I8)
+//     roll a mirror back by replaying a stale/lower version
 //   - push gating: down-peer drop, budget deferral, immediate-event override,
 //     debounce coalescing
 //   - the guest reconcile loop: missed-invite/accept healing, stale pulls,
@@ -141,9 +141,7 @@ const drainBucket = (peerId: string) => {
     for (let i = 0; i < ALLIANCE_SYNC_DEFAULTS.outboundBudgetPerMin + 1; i++) tryConsumeToken(peerId);
 };
 
-// =============================================================================
-// HOST surface
-// =============================================================================
+// --- HOST surface ---
 
 describe('getOperationSnapshotForPeer posture (invite row, not acceptance)', () => {
     it('non-invited peer stays forbidden', async () => {
@@ -154,6 +152,7 @@ describe('getOperationSnapshotForPeer posture (invite row, not acceptance)', () 
         h.tables.operation_allied_orgs = [{ operation_id: 'op1', peer_id: 'peerA', accepted: false }];
         h.tables.operations = [{ id: 'op1', joint_version: 4 }];
         h.tables.operation_limiting_markers = [];
+        h.tables.alliance_peers = [{ id: 'peerA', status: 'Active', channels: { operations: true } }]; // serve-time channel gate
         const res = await getOperationSnapshotForPeer('op1', 'peerA');
         expect('unchanged' in res).toBe(false);
         if (!('unchanged' in res)) {
@@ -164,6 +163,7 @@ describe('getOperationSnapshotForPeer posture (invite row, not acceptance)', () 
     it('?since at or above the current version answers unchanged', async () => {
         h.tables.operation_allied_orgs = [{ operation_id: 'op1', peer_id: 'peerA', accepted: true }];
         h.tables.operations = [{ id: 'op1', joint_version: 4 }];
+        h.tables.alliance_peers = [{ id: 'peerA', status: 'Active', channels: { operations: true } }]; // serve-time channel gate
         const res = await getOperationSnapshotForPeer('op1', 'peerA', 4);
         expect(res).toEqual({ unchanged: true });
     });
@@ -181,6 +181,7 @@ describe('getOperationManifestForPeer (SECURITY: per-peer scoping, L6)', () => {
             { id: 'op2', joint_version: 2 },
             { id: 'op3', joint_version: 9 },
         ];
+        h.tables.alliance_peers = [{ id: 'peerA', status: 'Active', channels: { operations: true } }]; // serve-time channel gate
         const m = await getOperationManifestForPeer('peerA');
         expect(m.v).toBe(1);
         expect(m.accepted).toEqual({ op1: 7 });
@@ -191,6 +192,7 @@ describe('getOperationManifestForPeer (SECURITY: per-peer scoping, L6)', () => {
     it('drops rows whose operation vanished mid-query', async () => {
         h.tables.operation_allied_orgs = [{ operation_id: 'gone', peer_id: 'peerA', accepted: true }];
         h.tables.operations = [];
+        h.tables.alliance_peers = [{ id: 'peerA', status: 'Active', channels: { operations: true } }]; // serve-time channel gate
         const m = await getOperationManifestForPeer('peerA');
         expect(m.accepted).toEqual({});
         expect(m.invited).toEqual([]);
@@ -224,9 +226,7 @@ describe('removeAlliedParticipant (SECURITY: delete scoped to the caller)', () =
     });
 });
 
-// =============================================================================
-// Inbound pushes stay version-gated (I8 — the regression override is NOT here)
-// =============================================================================
+// --- Inbound pushes stay version-gated (the regression override is NOT here) ---
 
 describe('receiveMirrorInvite cross-peer clobber guard (VULN-1 regression)', () => {
     it('a DIFFERENT peer cannot clobber a victim-hosted mirror (host_peer_id / snapshot / accepted unchanged)', async () => {
@@ -277,9 +277,7 @@ describe('receiveMirrorPush replay safety', () => {
     });
 });
 
-// =============================================================================
-// Push gating + debounce
-// =============================================================================
+// --- Push gating + debounce ---
 
 describe('pushOperationToAllies live-sync gating', () => {
     const seedJointOp = () => {
@@ -357,9 +355,7 @@ describe('scheduleAlliedPush coalescing', () => {
     });
 });
 
-// =============================================================================
-// GUEST reconcile loop
-// =============================================================================
+// --- GUEST reconcile loop ---
 
 const manifest = (accepted: Record<string, number>, invited: string[] = []) =>
     ({ status: 200, json: { v: 1, fetchedAt: new Date().toISOString(), accepted, invited } });
@@ -508,9 +504,7 @@ describe('reconcileMirrorsWithPeer — FALSE-REVOKE guard', () => {
     });
 });
 
-// =============================================================================
-// Inbound-only cache / projection isolation (I7) — source-scan pin
-// =============================================================================
+// --- Inbound-only cache / projection isolation — source-scan pin ---
 
 describe('directory cache never feeds an outbound projection (source pin)', () => {
     const ROOT = resolve(__dirname, '..');

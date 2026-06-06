@@ -12,12 +12,10 @@ export function useSEO(config: SEOConfig) {
     useEffect(() => {
         const { title, description, image, url } = config;
 
-        // 1. Update Document Title
         if (title) {
             document.title = title;
         }
 
-        // 2. Helper to update/create meta tags
         const updateMeta = (selector: string, attribute: string, value: string) => {
             if (!value) return;
             let element = document.querySelector(selector);
@@ -36,17 +34,16 @@ export function useSEO(config: SEOConfig) {
             element.setAttribute(attribute, value);
         };
 
-        // 3. Update Standard Meta Tags
         if (description) updateMeta('meta[name="description"]', 'content', description);
 
-        // 4. Update Open Graph (Facebook/Discord)
+        // Open Graph (Facebook/Discord)
         if (title) updateMeta('meta[property="og:title"]', 'content', title);
         if (description) updateMeta('meta[property="og:description"]', 'content', description);
         if (image) updateMeta('meta[property="og:image"]', 'content', image);
         if (url) updateMeta('meta[property="og:url"]', 'content', url);
         updateMeta('meta[property="og:type"]', 'content', 'website');
 
-        // 5. Update Twitter Card
+        // Twitter Card
         updateMeta('meta[name="twitter:card"]', 'content', 'summary_large_image');
         if (title) updateMeta('meta[name="twitter:title"]', 'content', title);
         if (description) updateMeta('meta[name="twitter:description"]', 'content', description);

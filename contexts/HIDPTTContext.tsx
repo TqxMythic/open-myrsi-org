@@ -142,7 +142,6 @@ export const HIDPTTProvider: React.FC<{ children: React.ReactNode }> = ({ childr
                 for (let bi = 0; bi < gp.buttons.length; bi++) {
                     if (bi >= baseline.length) continue;
                     if (gp.buttons[bi].pressed && !baseline[bi]) {
-                        // This button was just pressed — bind it
                         const binding: GamepadBinding = {
                             type: 'gamepad',
                             gamepadIndex: gi,

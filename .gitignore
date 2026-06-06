@@ -31,10 +31,6 @@ supabase-dump.sql
 gitbook-docs
 file_list.txt
 coverage
-# Internal security audit (kept local — describes live findings/exploit paths)
-SECURITY_AUDIT_DATA_EXPOSURE.md
-# Internal engineering handoff notes (methodology/work-log — not contributor docs)
-DATA_MINIMISATION_HANDOFF.md
 
 # --- Backups & transitional artifacts --------------------------------------
 *.bak

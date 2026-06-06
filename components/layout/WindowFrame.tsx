@@ -132,11 +132,7 @@ const WindowFrame: React.FC<WindowFrameProps> = ({
                  setPosition({ x: initialX || 0, y: initialY || 100 });
                  setHasMoved(true);
              } else {
-                 // Reset to centered default if re-opening without props
-                 // We don't reset hasMoved to false if it was already true? 
-                 // Actually, usually when reopening a modal, you want it reset.
-                 // But if component is kept alive, state persists. 
-                 // Assuming component remounts or we want fresh center:
+                 // Reset to centered default when re-opening without props.
                  setHasMoved(false);
                  setPosition({ x: 0, y: 100 }); 
              }
@@ -242,7 +238,7 @@ const WindowFrame: React.FC<WindowFrameProps> = ({
 
     if (!isOpen) return null;
 
-    // Explicitly cast color to WindowColor to resolve TS error "Argument of type 'string' is not assignable to parameter of type 'WindowColor'"
+    // Cast color to WindowColor since the prop arrives as a plain string.
     const styles = getColorStyles(color as WindowColor);
 
     // Apply inline styles only on desktop. Mobile uses CSS classes for full screen.
@@ -259,10 +255,8 @@ const WindowFrame: React.FC<WindowFrameProps> = ({
         height: size.height || undefined
     };
 
-    // Responsive classes:
-    // Mobile: fixed inset-0 w-full h-full rounded-none
-    // Desktop (sm+): sm:inset-auto sm:rounded-xl sm:w-auto sm:h-auto sm:min-w-[440px]
-    // Added sm:h-auto to allow content to dictate height on desktop, preventing full-screen height stretching.
+    // Mobile fills the screen; desktop (sm+) floats as a rounded card with
+    // sm:h-auto so content dictates height instead of stretching full-screen.
     const containerClasses = `
         fixed flex flex-col 
         backdrop-blur-xl bg-slate-900/95 border shadow-2xl animate-fade-in z-100

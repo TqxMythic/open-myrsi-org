@@ -23,7 +23,7 @@ interface Props {
     onTagClick?: (tag: string) => void;
 }
 
-/** Paranoid string coercion — guarantees a primitive string for JSX. */
+/** String coercion — guarantees a primitive string for JSX. */
 const s = (v: unknown, fallback = ''): string => {
     if (v == null) return fallback;
     if (typeof v === 'string') return v;
@@ -67,10 +67,8 @@ const IntelligenceReportCard: React.FC<Props> = ({
             onClick={onClick}
             className={`group relative h-full rounded-xl overflow-hidden border border-white/10 bg-linear-to-br from-slate-900/80 via-slate-900/60 to-slate-950/80 backdrop-blur-xs shadow-lg transition-all duration-300 cursor-pointer hover:border-white/20 hover:shadow-xl ${isDeleting ? 'opacity-70 pointer-events-none' : ''}`}
         >
-            {/* threat-accent rail */}
             <div className={`absolute inset-y-0 left-0 w-1 ${a.dot} ${isAlarm ? 'animate-pulse' : ''}`} aria-hidden />
 
-            {/* hover orb */}
             <div
                 className={`absolute -top-20 -left-10 w-64 h-64 ${a.bg} rounded-full blur-[90px] opacity-0 group-hover:opacity-60 pointer-events-none transition-opacity duration-500`}
                 aria-hidden
@@ -79,7 +77,6 @@ const IntelligenceReportCard: React.FC<Props> = ({
             {/* Content column — reserves space at bottom for the absolute footer */}
             <div className="flex flex-col h-full pb-[52px]">
 
-            {/* HEADER */}
             <div className="relative pl-4 pr-3 py-3 bg-slate-950/40 border-b border-white/5 flex items-center justify-between gap-3 shrink-0">
                 <div className="flex items-center gap-3 min-w-0">
                     <div className={`w-10 h-10 rounded-lg ${a.bg} border ${a.border} flex items-center justify-center shrink-0`}>
@@ -180,7 +177,7 @@ const IntelligenceReportCard: React.FC<Props> = ({
                 </div>
             </div>
 
-            </div>{/* /content column */}
+            </div>
 
             {/* FOOTER — absolutely positioned at the bottom so long content cannot push it below the card edge */}
             <div className="absolute bottom-0 left-0 right-0 z-10 pl-4 pr-3 py-2.5 bg-slate-950/60 backdrop-blur-xs border-t border-white/5 flex items-center justify-between gap-3">

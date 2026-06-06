@@ -1,56 +1,20 @@
-// RequestsContext owns the service-request domain — the hydratedServiceRequests
-// slice (previously in DataContext) plus the 17 request-CRUD methods
-// (previously in SessionContext). Phase 4g of the context refactor: combines
-// a Phase-3-style state extraction with a Phase-4-style method move.
+// RequestsContext owns the hydratedServiceRequests slice plus the
+// service-request CRUD methods.
 //
-// Provider order:
-//   ...> GovernmentProvider > RequestsProvider > DataProvider > AuthProvider
-// Requests must mount OUTSIDE Data so DataContext can call useRequests() in
-// its body and re-expose hydratedServiceRequests on the useData() value,
-// preserving the public API for the 100+ existing useData() consumers. It
-// must mount OUTSIDE AuthProvider/SessionProvider so SessionContext can call
-// useRequests() to register its refreshUser callback (used by deleteRequest
-// to preserve the original simpleAction(..., true) full-session-refresh).
+// Mounts OUTSIDE DataProvider so DataContext can call useRequests() in its body
+// and re-expose hydratedServiceRequests on the useData() value, keeping the
+// public API unchanged. Also mounts OUTSIDE AuthProvider/SessionProvider so
+// SessionContext can register its refreshUser callback here (used by
+// deleteRequest for a full-session refresh).
 //
-// State slice owned here (1):
-//   hydratedServiceRequests
+// CRUD methods emit success toasts/sounds inline; useNotification and useConfig
+// are available because Requests mounts inside NotificationProvider (via
+// UIProvider) and ConfigProvider.
 //
-// CRUD methods owned here (17):
-//   createRequest, createAdHocRequest,
-//   cancelRequest, deleteRequest, updateRequestStatus,
-//   rateRequest, acceptRequest, refuseRequest,
-//   addRequestNote, triageRequest, adminAcceptAndAssignRequest,
-//   dispatchMembers, startMission, completeRequest,
-//   addResponder, removeResponder, setLeadResponder
-//
-// Side effects (addToast, playSound on success) are preserved inline as in
-// the original SessionContext bodies. RequestsContext mounts inside both
-// NotificationProvider (via UIProvider) and ConfigProvider, so useNotification
-// (for addToast/playSound) and useConfig (for brandingConfig sound URLs) are
-// available.
-//
-// Realtime / state hydration: Requests registers a slice setter on 'requests'
-// with DataCore. When applyStateData(data) fires (initial state hydrate, any
-// 'main'/'requests' subset response, realtime resync), the setter populates
-// hydratedServiceRequests. Replaces the inline assignment that used to live
-// in DataContext.setStateFromData() and the explicit
-// fetchDataSubset('requests') branch's setHydratedServiceRequests call.
-//
-// Refresh registration: DataContext registers its
-// refreshRequests = useCallback(() => fetchDataSubset('requests'), ...)
-// here at mount. Requests's CRUD methods call refreshRequestsFn after their
-// RPC completes. Matches Operations / Members / Intel.
-//
-// Session registers its refreshUser here at mount via registerRefreshUser.
-// deleteRequest invokes that callback to preserve the original
-// simpleAction(..., true) full-session-refresh behaviour.
-//
-// Optimistic updates: methods that previously called DataContext's
-// optimisticUpdate('service_requests', ...) now write directly through
-// setHydratedServiceRequests here. The DataContext optimisticUpdate branch
-// is rewired to call this setter via the cross-context destructuring pattern
-// (same as setOpsOperations / setOpsWarrants), so external callers of
-// optimisticUpdate('service_requests', ...) keep the same effect.
+// Hydration: registers a slice setter on 'requests' with DataCore, populated on
+// initial state, any 'main'/'requests' subset response, and realtime resync.
+// DataContext registers its refresh callback here at mount; CRUD methods call
+// it after their RPC completes.
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useDataCore } from './DataCoreContext';
@@ -61,16 +25,12 @@ import { HydratedServiceRequest } from '../types';
 export type { HydratedServiceRequest } from '../types';
 
 export interface RequestsContextValue {
-    // --- State slice (1) ---
     hydratedServiceRequests: HydratedServiceRequest[];
 
-    // --- State setter (exposed for DataContext's optimisticUpdate
-    //     ('service_requests') branch + fetchDataSubset('requests') handler;
-    //     DataContext is INSIDE Requests, so it consumes the setter via
-    //     useRequests().) ---
+    // Exposed for DataContext's optimisticUpdate ('service_requests') branch and
+    // fetchDataSubset('requests') handler.
     setHydratedServiceRequests: React.Dispatch<React.SetStateAction<HydratedServiceRequest[]>>;
 
-    // --- CRUD methods (17) ---
     createRequest: (data: any) => Promise<any>;
     createAdHocRequest: (data: any) => Promise<any>;
     cancelRequest: (id: string) => Promise<void>;
@@ -89,12 +49,10 @@ export interface RequestsContextValue {
     removeResponder: (requestId: string, userId: number) => Promise<void>;
     setLeadResponder: (requestId: string, userId: number | undefined) => Promise<void>;
 
-    // --- Refresh registration ---
     /** DataContext registers its refreshRequests callback here at mount. */
     registerRefreshRequests: (fn: () => Promise<void> | void) => () => void;
-    /** SessionContext registers its refreshUser callback here at mount.
-     *  deleteRequest uses it to preserve the original
-     *  simpleAction('request:delete', ..., true) full-session-refresh. */
+    /** SessionContext registers its refreshUser callback here at mount;
+     *  deleteRequest uses it for a full-session refresh. */
     registerRefreshUser: (fn: () => Promise<void> | void) => () => void;
 }
 
@@ -107,7 +65,6 @@ export const RequestsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     const [hydratedServiceRequests, setHydratedServiceRequests] = useState<HydratedServiceRequest[]>([]);
 
-    // --- Refresh-callback registration plumbing ---
     const refreshRequestsRef = useRef<(() => Promise<void> | void) | null>(null);
     const refreshUserRef = useRef<(() => Promise<void> | void) | null>(null);
 
@@ -129,20 +86,12 @@ export const RequestsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         if (fn) await fn();
     }, []);
 
-    // --- Slice-setter registration ---
     useEffect(() => {
         const unreg = registerSliceSetter('requests', (data: any) => {
             if (data.requests) setHydratedServiceRequests(data.requests);
         });
         return unreg;
     }, [registerSliceSetter]);
-
-    // --- CRUD methods ---
-    // Behaviour preserved 1:1 from the SessionContext originals. Optimistic
-    // updates write through setHydratedServiceRequests directly (the
-    // DataContext.optimisticUpdate('service_requests', ...) indirection layer
-    // was already routing through this same setter via the cross-context
-    // wiring, so behaviour is identical).
 
     const createRequest = useCallback((data: any) =>
         rpcAction('request:create', { newRequest: data }).then(async (res) => {
@@ -173,8 +122,7 @@ export const RequestsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const deleteRequest = useCallback((id: string) => {
         setHydratedServiceRequests(prev => prev.filter(r => r.id !== id));
         return rpcAction('request:delete', { requestId: id }).then(async () => {
-            // The original used simpleAction(..., true) which triggered
-            // Session.refreshUser. Preserve by invoking the registered callback.
+            // Full-session refresh via the registered Session.refreshUser callback.
             await refreshUserFn();
             addToast("Request Deleted", <i className="fa-solid fa-trash"></i>, "bg-red-500/10 text-red-400 border-red-500/50", { description: "The service request has been permanently removed." });
             await refreshRequestsFn();

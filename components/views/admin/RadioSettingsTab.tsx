@@ -55,8 +55,6 @@ const RadioSettingsTab: React.FC = () => {
     };
 
     const handleUpdateChannel = async (id: string, name: string, color: string) => {
-        // Optimistic update or silent update? 
-        // We won't show a global spinner for this, just doing it.
         try {
             await rpcAction('admin:update_radio_channel', { id, name, color });
         } catch (err) {
@@ -71,7 +69,6 @@ const RadioSettingsTab: React.FC = () => {
 
         setIsAdding(true);
         try {
-            // Find max sort order
             const maxOrder = localChannels.reduce((max, c) => Math.max(max, c.sortOrder || 0), 0);
 
             const channelData = {
@@ -165,21 +162,18 @@ const RadioSettingsTab: React.FC = () => {
         const newOrder = [...localChannels];
         const [movedItem] = newOrder.splice(sourceIndex, 1);
 
-        // Since we modified array (spliced), targetIndex might have shifted if source was before target
-        // Just find index of target again in the modified array
+        // Re-find the target index in the spliced array since it may have shifted.
         let insertionIndex = newOrder.findIndex(c => c.id === targetChannel.id);
         if (dropPosition === 'after') insertionIndex += 1;
 
         newOrder.splice(insertionIndex, 0, movedItem);
 
-        // Update local state immediately
         setLocalChannels(newOrder);
         setIsReordering(true);
         setDraggedChannel(null);
         setDropTargetId(null);
         setDropPosition(null);
 
-        // Update DB
         try {
             await Promise.all(newOrder.map((ch, index) =>
                 rpcAction('admin:update_radio_channel', {
@@ -191,7 +185,6 @@ const RadioSettingsTab: React.FC = () => {
             ));
         } catch (err) {
             console.error("Failed to reorder", err);
-            // Revert on error? Or just rely on re-fetch
         } finally {
             setIsReordering(false);
         }

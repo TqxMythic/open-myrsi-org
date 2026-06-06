@@ -86,7 +86,7 @@ const RadioWidget: React.FC = () => {
         });
     }, [radioChannels, squadChannel, missionChannels, isClient]);
 
-    // SECURITY: Disconnect if user is on a channel they shouldn't access
+    // Disconnect if user is on a channel they shouldn't access.
     useEffect(() => {
         if (isEnabled && isConnected && currentChannel && currentUser) {
             const isAllowed = channels.some(c => c.id === currentChannel.id);

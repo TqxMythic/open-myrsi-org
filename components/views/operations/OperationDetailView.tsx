@@ -36,7 +36,6 @@ const getTypeStyles = (type: OperationType) => {
     }
 };
 
-// Phase timeline steps
 const PHASE_STEPS = [
     { key: OperationStatus.Planning, label: 'Planning', icon: 'fa-solid fa-drafting-compass', color: 'purple' },
     { key: OperationStatus.Scheduled, label: 'Scheduled', icon: 'fa-solid fa-clock', color: 'amber' },
@@ -44,7 +43,6 @@ const PHASE_STEPS = [
     { key: OperationStatus.Concluded, label: 'Concluded', icon: 'fa-solid fa-flag-checkered', color: 'slate' },
 ] as const;
 
-// Mission Clock
 const MissionClock: React.FC<{ operation: HydratedOperation }> = ({ operation }) => {
     const [now, setNow] = useState(Date.now());
 
@@ -125,14 +123,9 @@ const OperationDetailView: React.FC<OperationDetailViewProps> = ({ operation: in
 
     useEffect(() => { fetchFullDetails(); }, [fetchFullDetails]);
 
-    // DataContext bridges Supabase `operation_update` broadcasts onto this
-    // window event so we can refetch the per-op detail bundle (board elements,
-    // phases, tasks, command nodes, logistics, AAR) without each viewer waiting
-    // for a local edit. Gated by id so unrelated ops don't trigger a refetch.
-    // Trailing-debounced: a burst of remote edits (participant toggles, task
-    // updates) collapses to one get_details instead of one per broadcast. The
-    // ops-list slice patch lands first (undebounced), so listOp fields may be
-    // ~400ms fresher than the heavy arrays — an intentional, self-healing skew.
+    // Refetch the per-op detail bundle when a realtime operation_update broadcast lands.
+    // Gated by id so unrelated ops don't refetch; trailing-debounced so a burst of remote
+    // edits collapses to one get_details instead of one per broadcast.
     useEffect(() => {
         let timer: number | null = null;
         const handler = (e: Event) => {
@@ -147,8 +140,7 @@ const OperationDetailView: React.FC<OperationDetailViewProps> = ({ operation: in
         window.addEventListener('app:realtime:operation-detail-refresh', handler);
         return () => {
             window.removeEventListener('app:realtime:operation-detail-refresh', handler);
-            // Cancel a pending trailing call so a late get_details doesn't
-            // setState after unmount/navigation.
+            // Cancel a pending trailing call so a late get_details doesn't setState after unmount.
             if (timer !== null) window.clearTimeout(timer);
         };
     }, [initialOperation.id, fetchFullDetails]);
@@ -175,10 +167,8 @@ const OperationDetailView: React.FC<OperationDetailViewProps> = ({ operation: in
             alliedOrgs: fullDetails.alliedOrgs,
             roe: fullDetails.roe ?? listOp.roe,
             commanderNotes: fullDetails.commanderNotes ?? listOp.commanderNotes,
-            // commsPlan lives on the operations table itself, so listOp (refreshed
-            // via realtime postgres_changes on `operations`) is always at least as
-            // fresh as fullDetails. Prefer it so newly-added rows appear without
-            // a per-op refetch — fall back to fullDetails only if listOp is empty.
+            // commsPlan lives on the operations table, so listOp (refreshed via realtime) is at
+            // least as fresh as fullDetails. Prefer it; fall back to fullDetails only if empty.
             commsPlan: listOp.commsPlan?.length ? listOp.commsPlan : fullDetails.commsPlan,
             aarSummary: fullDetails.aarSummary ?? listOp.aarSummary,
             aarLessonsLearned: fullDetails.aarLessonsLearned ?? listOp.aarLessonsLearned,
@@ -287,8 +277,7 @@ const OperationDetailView: React.FC<OperationDetailViewProps> = ({ operation: in
     }, [operation.participants]);
 
     useEffect(() => {
-        // SECURITY/CORRECTNESS: previously also gated on currentUser?.organizationId,
-        // which is always undefined in single-org — so allied-ship fetch never ran.
+        // Not gated on organizationId (always undefined in single-org), which would block the allied-ship fetch.
         if (!operation.isJoint) return;
         if (!activeParticipantIdsKey) return;
         const alliedUserIds = activeParticipantIdsKey.split(',').map(Number);
@@ -351,7 +340,6 @@ const OperationDetailView: React.FC<OperationDetailViewProps> = ({ operation: in
         setIsManageParticipantModalOpen(true);
     };
 
-    // --- Classified view ---
     if (!hasAccess) {
         return (
             <div className="flex flex-col h-full bg-slate-950">
@@ -399,7 +387,6 @@ const OperationDetailView: React.FC<OperationDetailViewProps> = ({ operation: in
         );
     }
 
-    // --- Navigation ---
     const isActive = operation.status === OperationStatus.Active;
     const navGroups = [
         ...(isActive ? [{
@@ -436,7 +423,6 @@ const OperationDetailView: React.FC<OperationDetailViewProps> = ({ operation: in
 
     return (
         <div className="flex flex-col h-full bg-slate-950">
-            {/* ── HERO HEADER ── */}
             <div className="shrink-0 relative overflow-hidden border-b border-white/5 bg-linear-to-b from-purple-950/25 via-slate-950/80 to-slate-950 z-40">
                 <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[300px] bg-purple-500/10 rounded-full blur-[120px] pointer-events-none" aria-hidden />
 
@@ -509,9 +495,7 @@ const OperationDetailView: React.FC<OperationDetailViewProps> = ({ operation: in
                                 purple: 'bg-purple-500/15 text-purple-300 border-purple-500/40',
                                 slate: 'bg-slate-500/15 text-slate-300 border-slate-500/40',
                             } as const;
-                            // When the operation is concluded AND the AAR has been submitted,
-                            // render the Concluded pill in green with a checkmark to make
-                            // finalisation visually unambiguous (was previously slate/grey).
+                            // Green checkmark on the Concluded pill once the AAR is submitted, so finalisation is unambiguous.
                             const aarFinalised = step.key === OperationStatus.Concluded && !!operation.aarSubmittedAt;
                             const stepColor: keyof typeof colorMap = aarFinalised ? 'green' : step.color;
                             const stepIcon = aarFinalised ? 'fa-solid fa-circle-check' : step.icon;

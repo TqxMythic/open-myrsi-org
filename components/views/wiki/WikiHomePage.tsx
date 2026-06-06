@@ -152,7 +152,6 @@ const WikiHomePage: React.FC<WikiHomePageProps> = ({ config, visiblePages, canEd
             || (level === 0 ? '' : `Level ${level}`);
     };
 
-    // EDIT MODE
     if (isEditing) {
         return (
             <div className="max-w-4xl space-y-6 animate-fade-in">
@@ -266,7 +265,6 @@ const WikiHomePage: React.FC<WikiHomePageProps> = ({ config, visiblePages, canEd
         );
     }
 
-    // VIEW MODE
     const hasWelcome = !!config.welcomeContent && Object.keys(config.welcomeContent).length > 0;
     const hasFeatured = featuredPages.length > 0;
     const hasRecent = !config.hideRecentlyUpdated && recentlyUpdated.length > 0;
@@ -274,7 +272,6 @@ const WikiHomePage: React.FC<WikiHomePageProps> = ({ config, visiblePages, canEd
 
     return (
         <div className="max-w-4xl space-y-8 animate-fade-in">
-            {/* Header */}
             <div className="flex items-center justify-between">
                 <h1 className="text-2xl md:text-3xl font-black text-white tracking-tight flex items-center gap-3">
                     <i className="fa-solid fa-book text-sky-500" />

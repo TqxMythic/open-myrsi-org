@@ -138,10 +138,28 @@ export const userActions = {
         // unitId is sent alongside postId so the membership gate can apply; a legacy
         // caller that omits it skips only that gate.
         if (unitId) await db.assertUnitAccess(unitId, userId);
-        // SECURITY (permission-map-correctness#5): scope deletion to the author's
-        // own post unless the caller is this unit's leader.
+        // Scope deletion to the author's own post unless the caller is this
+        // unit's leader.
         const isLeader = !!user?.unit && user.unit.id === unitId && user.unit.leaderId === userId;
         return db.deleteUnitPost(postId, { actorUserId: userId, allowAny: isLeader });
     },
-    'unit:update_details': ({ unitId, updates }: UpdateUnitDetailsPayload) => db.updateUnit({ id: unitId, ...updates }),
+    'unit:update_details': ({ unitId, updates }: UpdateUnitDetailsPayload) => {
+        // This is the unit-LEADER edit path — the dispatcher lets a unit's own
+        // leader through even without unit:manage:own. Restrict it to COSMETIC
+        // fields. The structural fields (leaderId = hand off / orphan
+        // leadership, parentUnitId = re-parent the org tree, isRestricted = flip
+        // the visibility gate) are admin-only and must go through
+        // admin:update_unit (gated admin:config:units).
+        const u = updates || {};
+        return db.updateUnit({
+            id: unitId,
+            ...(u.name !== undefined ? { name: u.name } : {}),
+            ...(u.sortOrder !== undefined ? { sortOrder: u.sortOrder } : {}),
+            ...(u.motto !== undefined ? { motto: u.motto } : {}),
+            ...(u.description !== undefined ? { description: u.description } : {}),
+            ...(u.logoUrl !== undefined ? { logoUrl: u.logoUrl } : {}),
+            ...(u.hasRadioChannel !== undefined ? { hasRadioChannel: u.hasRadioChannel } : {}),
+            ...(u.linkedChannelId !== undefined ? { linkedChannelId: u.linkedChannelId } : {}),
+        });
+    },
 };

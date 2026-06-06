@@ -1,8 +1,4 @@
-// Re-exports of HR domain types for future-PR cleanliness.
-// This file establishes the import boundary for the HR domain so consumers
-// can migrate from `import { HydratedHRApplication, ... } from '../types'` to
-// `import { HydratedHRApplication, ... } from '../types/hr'` over time.
-// No types are moved yet — these are pure re-exports from the canonical types.ts.
+// Import-boundary re-exports of HR domain types. Canonical definitions live in the root types.ts.
 
 export type {
     HydratedHRApplication,

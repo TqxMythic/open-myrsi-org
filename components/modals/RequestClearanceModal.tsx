@@ -27,7 +27,6 @@ const RequestClearanceModal: React.FC<RequestClearanceModalProps> = ({ isOpen, o
     const availableLevels = useMemo(() => {
         if (!securityClearances) return [];
         const currentLevel = currentUser?.clearanceLevel?.level || 0;
-        // Show levels higher than current
         return securityClearances.filter(c => c.level > currentLevel);
     }, [securityClearances, currentUser]);
 

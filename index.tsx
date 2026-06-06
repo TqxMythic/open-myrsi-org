@@ -5,12 +5,10 @@ import ErrorBoundary from './components/ui/ErrorBoundary';
 import { installAvatarFallback } from './lib/avatarFallback';
 import { printConsoleBanner } from './lib/consoleBanner';
 
-// Handle stale chunk errors after deployments.
-// Vite fires this event when a dynamic import (React.lazy) fails to preload.
-// Instead of auto-reloading (which is jarring and can loop on Safari),
-// let the error propagate to the ErrorBoundary which gives the user control
-// via the "Reinitialize System" button. The lazyWithRetry wrappers in
-// DashboardApp and App already handle transient preload failures automatically.
+// Vite fires this when a dynamic import (React.lazy) fails to preload (e.g. a
+// stale chunk after a deploy). Let the error propagate to the ErrorBoundary
+// rather than auto-reloading (which can loop on Safari); the lazyWithRetry
+// wrappers in App/DashboardApp handle transient preload failures.
 window.addEventListener('vite:preloadError', (e) => {
   e.preventDefault();
 });

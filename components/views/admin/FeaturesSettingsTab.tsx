@@ -38,6 +38,7 @@ const FeaturesSettingsTab: React.FC = () => {
     const finances = (features.finances || {}) as { enabled?: boolean };
     const quartermaster = (features.quartermaster || {}) as { enabled?: boolean };
     const warehouse = (features.warehouse || {}) as { enabled?: boolean };
+    const marketplace = (features.marketplace || {}) as { enabled?: boolean };
     // Leaderboard and External Tools default ON — absent/undefined means enabled.
     const leaderboard = (features.leaderboard || {}) as { enabled?: boolean };
     const externalTools = (features.externalTools || {}) as { enabled?: boolean };
@@ -306,6 +307,40 @@ const FeaturesSettingsTab: React.FC = () => {
                                             );
                                         }}
                                         activeColor="bg-sky-500"
+                                    />
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* MARKETPLACE */}
+                    <div className="bg-slate-800/50 rounded-lg border border-slate-700 overflow-hidden">
+                        <div className="flex items-start gap-4 p-5">
+                            <div className="w-10 h-10 shrink-0 rounded-lg bg-indigo-500/10 flex items-center justify-center">
+                                <i className="fa-solid fa-store text-indigo-400"></i>
+                            </div>
+                            <div className="flex-1">
+                                <div className="flex items-start justify-between gap-4">
+                                    <div>
+                                        <h3 className="font-semibold text-white">Marketplace</h3>
+                                        <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                                            An internal trading board where members post listings — items to sell or buy, services to offer or request — and run them through a negotiate → accept → deliver → confirm contract lifecycle with mutual ratings. Item listings can optionally reserve and move real warehouse stock. Prices are in aUEC for negotiation; settlement happens in-game. Off by default.
+                                        </p>
+                                    </div>
+                                    <Toggle
+                                        enabled={!!marketplace.enabled}
+                                        disabled={savingKey === 'marketplace.enabled'}
+                                        onToggle={() => {
+                                            const next = !marketplace.enabled;
+                                            applyPatch(
+                                                'marketplace.enabled',
+                                                { marketplace: { enabled: next } },
+                                                next
+                                                    ? undefined
+                                                    : 'Disabling the Marketplace hides the trading board from all members. Listings, contracts, and ratings are preserved and will return when re-enabled.',
+                                            );
+                                        }}
+                                        activeColor="bg-indigo-500"
                                     />
                                 </div>
                             </div>

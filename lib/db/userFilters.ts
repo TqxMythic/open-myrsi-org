@@ -29,10 +29,9 @@ export function stripSensitiveUserFields(user: User, requester: RequesterContext
 
     const isSelf = !!requester && requester.id === user.id;
 
-    // SECURITY (M1): rsiVerificationCode + rsiHandlePending are a one-time
-    // proof-of-ownership for an in-progress RSI handle change. NOBODY but the
-    // user themselves has a reason to see them — blank for every other viewer,
-    // including Admins, BEFORE the Admin bypass below.
+    // rsiVerificationCode + rsiHandlePending are a one-time proof-of-ownership for
+    // an in-progress RSI handle change. Only the user themselves should see them —
+    // blank for every other viewer, including Admins, BEFORE the Admin bypass.
     const base: User = isSelf
         ? { ...user }
         : { ...user, rsiVerificationCode: undefined, rsiHandlePending: undefined };
@@ -66,9 +65,9 @@ export function stripSensitiveUserFields(user: User, requester: RequesterContext
     if (!isSelf && !hasPerm(perms, 'admin:user:manage_clearance')) {
         out.limitingMarkers = [];
     }
-    // SECURITY (M1): a member's Discord snowflake is PII (enables account
-    // targeting). Only self and roster/Discord administrators need it; strip it
-    // from the bulk roster for rank-and-file members.
+    // A member's Discord snowflake is PII (enables account targeting). Only self
+    // and roster/Discord administrators need it; strip it from the bulk roster for
+    // rank-and-file members.
     if (!isSelf && !hasPerm(perms, 'admin:view:roster') && !hasPerm(perms, 'admin:config:discord')) {
         out.discordId = '';
     }

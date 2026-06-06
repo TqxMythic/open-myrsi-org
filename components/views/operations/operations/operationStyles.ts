@@ -53,13 +53,10 @@ export const clearanceAccent = (level: number): AccentKey => {
     }
 };
 
-/* ── Time helpers ─────────────────────────────────────────────────────────── */
-
 /**
  * Scheduled-op timestamp with zone label appended ("01 Apr 26 10:00 AM GMT").
- * Pass `fmt.prefs` from `useFormatDate()` at the call site so the viewer's
- * timezone + preset are honoured. The zone is always appended to keep
- * cross-timezone op coordination unambiguous.
+ * Pass `fmt.prefs` from `useFormatDate()` so the viewer's timezone + preset are honoured;
+ * the zone is always appended to keep cross-timezone coordination unambiguous.
  */
 export const formatScheduledTime = (iso: string, prefs?: FormatPrefs): string => {
     const formatted = formatUserDateTime(iso, prefs);

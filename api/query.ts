@@ -1,7 +1,7 @@
 
 import { Request, Response } from 'express';
 import * as db from '../lib/db.js';
-import { verifyToken, tokenIssuedAt, signRealtimeToken } from '../lib/auth.js';
+import { verifyToken, isSessionForceLoggedOut, signRealtimeToken } from '../lib/auth.js';
 import { stripSensitiveUserFields, stripSensitiveUserFieldsBulk, RequesterContext } from '../lib/db/userFilters.js';
 import { filterByClearance } from '../lib/clearance.js';
 import type { DiscordConfig } from '../types.js';
@@ -20,16 +20,16 @@ function requesterFromUser(currentUser: any): RequesterContext | null {
     };
 }
 
-// SECURITY: a logged-out visitor's boot payload must carry
-// ONLY the Discord OAuth client id (needed to build the login link) — never the
-// internal newRequest/intel/eam channel ids that stripSecrets otherwise keeps on
-// discordConfig. Authenticated paths still receive the full config.
+// A logged-out visitor's boot payload carries ONLY the Discord OAuth client id
+// (needed to build the login link) — never the internal newRequest/intel/eam
+// channel ids that stripSecrets otherwise keeps on discordConfig. Authenticated
+// paths still receive the full config.
 function bootDiscordConfig(discordConfig: unknown): { clientId: string | undefined } {
     const clientId = (discordConfig as { clientId?: string } | null | undefined)?.clientId;
     return { clientId: clientId || process.env.DISCORD_CLIENT_ID };
 }
 
-// SECURITY: a logged-out visitor's boot payload carries ONLY what the login /
+// A logged-out visitor's boot payload carries ONLY what the login /
 // first-time-setup screens render — name + icon. The full brandingConfig
 // (sound URLs, hero/login styling, ToS text) ships post-auth.
 function bootBrandingConfig(brandingConfig: unknown): { name: string; iconUrl: string } {
@@ -40,7 +40,7 @@ function bootBrandingConfig(brandingConfig: unknown): { name: string; iconUrl: s
     };
 }
 
-// SECURITY: pre-auth platform settings are maintenance-screen fields only —
+// Pre-auth platform settings are maintenance-screen fields only —
 // force_logout_timestamp and any future operational keys stay post-auth.
 function bootPlatformSettings(platformSettings: unknown): { maintenance_mode: boolean; maintenance_message: string | null } {
     const p = (platformSettings || {}) as { maintenance_mode?: unknown; maintenance_message?: unknown };
@@ -51,11 +51,10 @@ function bootPlatformSettings(platformSettings: unknown): { maintenance_mode: bo
 }
 
 // --- READ-PATH AUTHORIZATION ---
-// The GET /api/query state surface historically enforced ONLY org membership and
-// never per-resource permissions, so any authenticated org member (including a
-// low-privilege Client) could read sensitive subsets. Map the sensitive subsets to
-// the same permission strings used by the api/services.ts dispatcher and the UI nav
-// gates. Subsets not listed here remain readable by any authenticated org member.
+// Map sensitive /api/query subsets to the same permission strings used by the
+// api/services.ts dispatcher and the UI nav gates, so a low-privilege member
+// can't read them. Subsets not listed here are readable by any authenticated
+// org member.
 const SUBSET_REQUIRED_PERMISSION: Record<string, string> = {
     warrants: 'warrant:view',
     // Realtime slice subset — same gate as the 'warrants' list it patches.
@@ -79,7 +78,7 @@ const SUBSET_REQUIRED_PERMISSION: Record<string, string> = {
     hr_templates: 'hr:view',
     hr_transfers: 'hr:view',
     hr_positions: 'hr:view',
-    // M9: gate the remaining restricted subsets. Each maps to a permission the
+    // Gate the remaining restricted subsets. Each maps to a permission the
     // seeded Member role holds (so members are unaffected) while blocking the
     // lower-privilege Client tier — and any role without the corresponding nav
     // permission — from reading the raw subset directly.
@@ -111,6 +110,9 @@ const SUBSET_REQUIRED_PERMISSION: Record<string, string> = {
     warehouse_catalog: 'warehouse:view',
     warehouse_stock: 'warehouse:view',
     warehouse_requests: 'warehouse:view',
+    marketplace: 'marketplace:view',
+    marketplace_listings: 'marketplace:view',
+    marketplace_contracts: 'marketplace:view',
 };
 
 // Mirror the BOLA permission check in api/services.ts: org-owner bypass, then a
@@ -180,11 +182,10 @@ export function stripSecrets(state: any): any {
     // read it could claim the org Admin role.
     delete cleaned.admin_setup_code;
 
-    // SECURITY: the active EAM body is audience-restricted (staff or
-    // user:receive:eam) but rode the settings blob to EVERY authenticated
-    // member. Strip it at the wire — authorized clients fetch it via the
-    // gated broadcast:get_active_eam RPC (triggered by the id-only
-    // eam_broadcast realtime ping).
+    // The active EAM body is audience-restricted (staff or user:receive:eam)
+    // but rides the settings blob to EVERY authenticated member. Strip it at the
+    // wire — authorized clients fetch it via the gated broadcast:get_active_eam
+    // RPC (triggered by the id-only eam_broadcast realtime ping).
     delete cleaned.active_eam;
 
     // systemConfig (appUrl / welcomeMessage) rides the settings blob but no client
@@ -342,8 +343,7 @@ async function handleInitialState(req: Request, res: Response) {
     let setupCompleted = false;
     try { setupCompleted = await db.isSetupCompleted(); } catch { /* default false (e.g. db down) */ }
 
-    // Check if system is set up
-    // Wrap in try/catch to handle DB connection errors (fresh install / wrong env vars)
+    // Wrapped in try/catch to handle DB connection errors (fresh install / wrong env vars).
     let adminCount = 0;
     try {
         // Single-org: does any Admin user exist at all? Find the Admin system role
@@ -393,10 +393,30 @@ async function handleInitialState(req: Request, res: Response) {
     if (token) {
         const decoded = verifyToken(token);
         if (decoded) {
+            // The force-logout gate in the main router is skipped for
+            // target=initial-state so the app can still boot a maintenance/logout
+            // screen — but a revoked-but-unexpired session must NOT silently
+            // re-boot into full getState content and mint a fresh realtime token.
+            // Fail closed BEFORE loading the user / getState / signing a token.
+            let sessionRevoked = false;
             try {
-                currentUser = await db.getUserById(decoded.userId);
+                const platformSettings = await db.getPlatformSettings();
+                if (platformSettings?.force_logout_timestamp &&
+                    isSessionForceLoggedOut(decoded, platformSettings.force_logout_timestamp)) {
+                    return res.status(401).json({ message: 'Session expired. Please log in again.', force_logout: true });
+                }
             } catch (e) {
-                log.error('failed to fetch current user', { err: e });
+                // Fail closed: if we cannot confirm the session is still valid, do
+                // not boot into authenticated state — drop to the logged-out branch.
+                log.warn('failed to check force-logout on initial-state', { err: e });
+                sessionRevoked = true;
+            }
+            if (!sessionRevoked) {
+                try {
+                    currentUser = await db.getUserById(decoded.userId);
+                } catch (e) {
+                    log.error('failed to fetch current user', { err: e });
+                }
             }
         }
     }
@@ -433,10 +453,10 @@ async function handleInitialState(req: Request, res: Response) {
             (state as any).users = stripSensitiveUserFieldsBulk((state as any).users, requesterFromUser(currentUser));
         }
 
-        // SECURITY (M5): the self record carried as `currentUser` keeps the
-        // viewer's own personnel notes / conduct / markers (personal tabs) but
-        // must not echo admin-only adminNotes back to a non-admin self. Strip with
-        // the user as their own requester (mirrors the login return).
+        // The self record carried as `currentUser` keeps the viewer's own
+        // personnel notes / conduct / markers (personal tabs) but must not echo
+        // admin-only adminNotes back to a non-admin self. Strip with the user as
+        // their own requester (mirrors the login return).
         const safeCurrentUser = stripSensitiveUserFields(currentUser as any, requesterFromUser(currentUser));
 
         return res.status(200).json(stripSecrets({
@@ -455,8 +475,8 @@ async function handleInitialState(req: Request, res: Response) {
         }));
     } catch (e: any) {
         log.error('failed to fetch full state', { err: e });
-        // Return minimal state to prevent frontend crash. SECURITY (M5): even on
-        // the error fallback the self record must be stripped of admin-only fields.
+        // Return minimal state to prevent a frontend crash. Even on the error
+        // fallback the self record must be stripped of admin-only fields.
         return res.status(200).json({
             config: clientConfig,
             needsSetup: false,
@@ -504,38 +524,31 @@ async function handleState(req: Request, res: Response) {
         let state;
         switch (subset) {
             case 'main': {
-                // Fetch the settings blob alongside main so a 'main' refresh carries the
-                // config keys (radioConfig, discordConfig, governmentsConfig flags, …).
-                // The realtime layer re-pulls 'main' on reconnect (e.g. after a deploy)
-                // and on settings_update; getMainState alone omits these, which left
-                // radioConfig stuck at its client default ("not configured") until a full
-                // reload. Parallel fetch; shared code below decorates discordConfig.
+                // Fetch the settings blob alongside main so a 'main' refresh
+                // carries the config keys (radioConfig, discordConfig, etc.).
+                // The realtime layer re-pulls 'main' on reconnect and on
+                // settings_update; getMainState alone omits these.
                 const [mainState, settings] = await Promise.all([
                     db.getMainState(),
                     db.getAllSettings(),
                 ]);
-                // Strip sensitive per-user fields based on the requester's
-                // permissions. Bulk roster path: every member fetches every
-                // other member's record, so non-privileged callers must not
-                // see other users' adminNotes / personnelNotes / conductRecord
-                // / limitingMarkers (the lite USER_LIST_SELECT_QUERY trims the
-                // last two anyway, but this also covers anyone who switches
-                // back to the full query path in the future).
+                // Bulk roster: every member fetches every other member's record,
+                // so non-privileged callers must not see others' adminNotes /
+                // personnelNotes / conductRecord / limitingMarkers.
                 if (mainState && Array.isArray(mainState.users)) {
                     mainState.users = stripSensitiveUserFieldsBulk(mainState.users as any, requesterFromUser(currentUser)) as any;
                 }
                 state = { ...mainState, ...settings };
                 break;
             }
-            // SECURITY (BOLA): request visibility is scoped per-caller inside
+            // Request visibility is scoped per-caller inside
             // getRequestsState/getRequestDetail — duty-permission holders see
             // the full log, everyone else only their own requests.
             case 'requests': state = await db.getRequestsState(currentUser); break;
             // Realtime slice path: user_update broadcasts carry the affected
-            // user id(s); the client refetches ONLY those roster rows instead
-            // of the whole 'main' bundle. Same exposure level as 'main' (lite
-            // list shape; the generic stripSensitiveUserFieldsBulk below runs
-            // because this case flows to the shared return, NOT an early one).
+            // user id(s); the client refetches ONLY those roster rows instead of
+            // the whole 'main' bundle. Same exposure as 'main' — the shared
+            // stripSensitiveUserFieldsBulk below runs (this case isn't early-return).
             case 'users_slice': {
                 const rawIds = req.query.ids;
                 // Express yields string for ?ids=1,2 but string[] for
@@ -572,7 +585,7 @@ async function handleState(req: Request, res: Response) {
             // longer refetch the whole ops list just to pick up a template
             // change — templates are a tiny standalone slice.
             case 'operation_templates': {
-                state = { operationTemplates: await db.listOperationTemplates() };
+                state = { operationTemplates: await db.listOperationTemplates(currentUser) };
                 break;
             }
             case 'user_detail': {
@@ -593,9 +606,9 @@ async function handleState(req: Request, res: Response) {
             case 'request_detail': {
                 const { id } = req.query;
                 if (!id) return res.status(400).json({ message: "Missing id parameter" });
-                // SECURITY (BOLA): null when absent OR not visible to this
-                // caller (non-duty callers may only fetch their own request) —
-                // both surface as 404, indistinguishable.
+                // null when absent OR not visible to this caller (non-duty
+                // callers may only fetch their own request) — both surface as an
+                // indistinguishable 404.
                 state = await db.getRequestDetail(id as string, currentUser);
                 if (!state) return res.status(404).json({ message: "Request not found" });
                 return res.status(200).json(state);
@@ -618,10 +631,9 @@ async function handleState(req: Request, res: Response) {
             // Realtime slice subsets: hr_update broadcasts and the hr
             // postgres_changes tables route per-array, so one HR mutation
             // refetches one array instead of all six. Responses keep the
-            // { hr: { <array> } } envelope (the client's HR slice setter
-            // applies keys independently). SECURITY (H2): applicants /
-            // interviews / transfers re-apply the SAME viewer redaction as
-            // the full bundle via the shared helpers — never raw rows.
+            // { hr: { <array> } } envelope. applicants / interviews / transfers
+            // re-apply the SAME viewer redaction as the full bundle via the
+            // shared helpers — never raw rows.
             case 'hr_applicants': {
                 const recruiter = db.isHrRecruiter(currentUser);
                 state = { hr: { applicants: db.redactApplicantsForViewer(await db.getHRApplications(), recruiter) } };
@@ -640,16 +652,15 @@ async function handleState(req: Request, res: Response) {
             case 'hr_jobs': state = { hr: { jobs: await db.getJobPostings() } }; break;
             case 'hr_templates': state = { hr: { templates: await db.getHRInterviewTemplates() } }; break;
             case 'hr_positions': state = { hr: { positions: await db.getPersonnelPositions() } }; break;
-            // SECURITY (H3): wiki pages carry classification + limiting markers.
-            // The 'wiki' subset is gated at wiki:view above; additionally filter
-            // page bodies by the requester's clearance so below-clearance members
-            // (or members lacking a page's marker) never receive classified SOPs.
+            // Wiki pages carry classification + limiting markers. The 'wiki'
+            // subset is gated at wiki:view above; additionally filter page bodies
+            // by the requester's clearance so below-clearance members (or members
+            // lacking a page's marker) never receive classified SOPs.
             case 'wiki': state = { wikiPages: filterByClearance(await db.getWikiPages(), currentUser) }; break;
             // Realtime slice subset: wiki_update broadcasts carry the pageId;
-            // the client refetches ONLY that page (bodies are heavy TipTap
-            // JSON). SECURITY (H3): the EXACT same filterByClearance gate as
-            // the bulk path above — same default bypass semantics (Admin
-            // only); null when filtered/absent → the client removes the row.
+            // the client refetches ONLY that page (bodies are heavy TipTap JSON).
+            // Same filterByClearance gate as the bulk path above; null when
+            // filtered/absent → the client removes the row.
             case 'wiki_page_slice': {
                 const { id: pageId } = req.query;
                 if (!pageId || typeof pageId !== 'string') return res.status(400).json({ message: 'Missing id parameter' });
@@ -682,14 +693,28 @@ async function handleState(req: Request, res: Response) {
                 state = { warehouseRequests: await db.listWithdrawalRequests({ status: 'open' }) };
                 break;
             }
+            // Marketplace: the board (active listings + categories) is org-wide;
+            // contracts are scoped to the caller (party-only) inside the db layer.
+            case 'marketplace': {
+                state = await db.getMarketplaceState(currentUser.id);
+                break;
+            }
+            case 'marketplace_listings': {
+                state = { marketplaceListings: await db.browseMarketplaceListings({}) };
+                break;
+            }
+            case 'marketplace_contracts': {
+                state = { marketplaceContracts: await db.getMyMarketplaceContracts(currentUser.id) };
+                break;
+            }
             case 'intel': state = await db.getIntelState(currentUser); break;
             // Realtime slice subsets: intel_update {kind:'report'} refetches
             // ONLY the report aggregates (index + hub stats — full-recompute
             // by nature); bulletin broadcasts refetch ONE clearance-filtered
             // bulletin row instead of the whole bundle.
             case 'intel_summary': {
-                // SECURITY: same per-viewer clearance ceiling as the 'intel'
-                // bundle — the aggregates must not reveal classified targets.
+                // Same per-viewer clearance ceiling as the 'intel' bundle — the
+                // aggregates must not reveal classified targets.
                 const [intelTargetIndex, intelHubStats] = await Promise.all([
                     db.getIntelTargetIndex(currentUser),
                     db.getIntelHubStats(currentUser),
@@ -700,8 +725,8 @@ async function handleState(req: Request, res: Response) {
             case 'bulletin_slice': {
                 const { id: bulletinId } = req.query;
                 if (!bulletinId || typeof bulletinId !== 'string') return res.status(400).json({ message: 'Missing id parameter' });
-                // SECURITY (H3): re-applies the same clearance/marker filter
-                // as the bulk activeBulletins path — null when filtered.
+                // Re-applies the same clearance/marker filter as the bulk
+                // activeBulletins path — null when filtered.
                 state = { bulletin: await db.getBulletinByIdForViewer(bulletinId, currentUser) };
                 break;
             }
@@ -819,7 +844,10 @@ export default async function handler(req: Request, res: Response) {
                 const token = authHeader && (authHeader as string).split(' ')[1];
                 if (token) {
                     const decoded = verifyToken(token);
-                    if (decoded && tokenIssuedAt(decoded).toISOString() < platformSettings.force_logout_timestamp) {
+                    // Use the shared predicate (not a hand-rolled copy) so the
+                    // read path can't drift from the dispatcher if the revocation
+                    // rule changes.
+                    if (decoded && isSessionForceLoggedOut(decoded, platformSettings.force_logout_timestamp)) {
                         return res.status(401).json({ message: 'Session expired. Please log in again.', force_logout: true });
                     }
                 }

@@ -30,11 +30,9 @@ const OpAdministerTab: React.FC<OpAdministerTabProps> = ({ operation, canManage,
     } = useOperations();
     const { addToast, confirm } = useNotification();
 
-    // ---- Discord announcement (re)post ---------------------------------------
-    // The first time, the picker shows the org default channel (if set) and a
-    // dropdown of guild channels. Once a message is posted, the same controls
-    // can edit-in-place (preserves reactions) or change channels (delete + post
-    // fresh).
+    // Discord announcement (re)post. First post shows the org default channel + a guild-channel
+    // dropdown; once posted, the same controls edit in place (preserves reactions) or change
+    // channels (delete + post fresh).
     const [discordChannels, setDiscordChannels] = useState<{ id: string; name: string; type: number }[]>([]);
     const [discordChannelsLoading, setDiscordChannelsLoading] = useState(false);
     const [discordChannelsError, setDiscordChannelsError] = useState<string | null>(null);
@@ -91,7 +89,6 @@ const OpAdministerTab: React.FC<OpAdministerTabProps> = ({ operation, canManage,
             setReposting(false);
         }
     }, [rpcAction, operation.id, pickerChannelId, addToast, onRefresh]);
-    // ---------------------------------------------------------------------------
 
     // Resolve the template-of-origin name (if any) from the cached templates list.
     // Falls back silently if the template was deleted (FK is ON DELETE SET NULL).
@@ -119,7 +116,7 @@ const OpAdministerTab: React.FC<OpAdministerTabProps> = ({ operation, canManage,
                 );
                 return;
             }
-            await createOperationTemplate({ name: name.trim(), payload });
+            await createOperationTemplate({ name: name.trim(), payload, sourceOperationId: operation.id });
             addToast('Template saved', <i className="fa-solid fa-check"></i>, 'bg-green-500/10 text-green-400 border-green-500/30');
         } catch (err: any) {
             addToast(
@@ -133,7 +130,6 @@ const OpAdministerTab: React.FC<OpAdministerTabProps> = ({ operation, canManage,
         }
     };
 
-    // Edit state
     const [isEditing, setIsEditing] = useState(false);
     const [editName, setEditName] = useState('');
     const [editDescription, setEditDescription] = useState('');
@@ -153,7 +149,7 @@ const OpAdministerTab: React.FC<OpAdministerTabProps> = ({ operation, canManage,
     const [editLocationId, setEditLocationId] = useState('');
     const [saving, setSaving] = useState(false);
 
-    // Joint ops: invite ally (alliance P3 — peer-keyed)
+    // Joint ops: invite ally (peer-keyed).
     const [invitePeerId, setInvitePeerId] = useState('');
     const [invitingAlly, setInvitingAlly] = useState(false);
     const [eligiblePeers, setEligiblePeers] = useState<{ id: string; label: string; peerOrgName?: string | null }[]>([]);
@@ -169,8 +165,6 @@ const OpAdministerTab: React.FC<OpAdministerTabProps> = ({ operation, canManage,
         }).catch(() => { if (!cancelled) setEligiblePeers([]); });
         return () => { cancelled = true; };
     }, [operation.isJoint, rpcAction, hasPermission]);
-
-    // toLocalDatetimeValue/formatOpDateTimeWithZone come from lib/time.ts — see imports.
 
     const startEdit = () => {
         setEditName(operation.name);
@@ -264,7 +258,6 @@ const OpAdministerTab: React.FC<OpAdministerTabProps> = ({ operation, canManage,
 
     return (
         <div className="p-6 lg:p-8 space-y-6">
-            {/* Action bar */}
             <div className="flex items-center justify-between p-4 bg-linear-to-r from-slate-800/60 to-slate-900/40 rounded-xl border border-slate-700/40 animate-fade-in-down">
                 <p className="text-[10px] text-slate-500 uppercase font-black tracking-[0.15em] flex items-center gap-2">
                     <i className="fa-solid fa-gear text-purple-400/70"></i> Operation Administration
@@ -285,7 +278,6 @@ const OpAdministerTab: React.FC<OpAdministerTabProps> = ({ operation, canManage,
                         </p>
                     </div>
                     <div className="p-6 space-y-6">
-                        {/* Core Details */}
                         <div className="space-y-4">
                             <p className="text-[10px] text-slate-500 uppercase font-black tracking-widest flex items-center gap-2"><i className="fa-solid fa-info-circle"></i> Core Details</p>
                             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -330,7 +322,6 @@ const OpAdministerTab: React.FC<OpAdministerTabProps> = ({ operation, canManage,
                             </div>
                         </div>
 
-                        {/* Schedule */}
                         <div className="border-t border-slate-700/30 pt-5 space-y-4">
                             <p className="text-[10px] text-amber-400/70 uppercase font-black tracking-widest flex items-center gap-2"><i className="fa-solid fa-clock"></i> Schedule</p>
                             <div className="grid grid-cols-2 gap-4">
@@ -345,7 +336,6 @@ const OpAdministerTab: React.FC<OpAdministerTabProps> = ({ operation, canManage,
                             </div>
                         </div>
 
-                        {/* Configuration Flags */}
                         <div className="border-t border-slate-700/30 pt-5 space-y-4">
                             <p className="text-[10px] text-purple-400/70 uppercase font-black tracking-widest flex items-center gap-2"><i className="fa-solid fa-sliders"></i> Configuration</p>
                             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -391,7 +381,6 @@ const OpAdministerTab: React.FC<OpAdministerTabProps> = ({ operation, canManage,
                             )}
                         </div>
 
-                        {/* Security */}
                         <div className="border-t border-slate-700/30 pt-5 space-y-4">
                             <p className="text-[10px] text-red-400/70 uppercase font-black tracking-widest flex items-center gap-2"><i className="fa-solid fa-shield-halved"></i> Security Classification</p>
                             <div className="grid grid-cols-2 gap-4">
@@ -423,7 +412,6 @@ const OpAdministerTab: React.FC<OpAdministerTabProps> = ({ operation, canManage,
                             </div>
                         </div>
 
-                        {/* Save / Cancel */}
                         <div className="flex gap-3 justify-end pt-3 border-t border-slate-700/30">
                             <button onClick={() => setIsEditing(false)} className="px-5 py-2.5 text-xs font-bold uppercase text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors">Cancel</button>
                             <button onClick={handleSave} disabled={saving || !editName.trim()}
@@ -435,7 +423,6 @@ const OpAdministerTab: React.FC<OpAdministerTabProps> = ({ operation, canManage,
                 </div>
             ) : (
                 <div className="space-y-6">
-                    {/* Operation Info Display */}
                     <div className={cardClass}>
                         <div className="px-5 py-3 bg-slate-800/40 border-b border-slate-700/30">
                             <p className="text-[10px] text-slate-500 uppercase font-black tracking-[0.15em] flex items-center gap-2">
@@ -455,7 +442,6 @@ const OpAdministerTab: React.FC<OpAdministerTabProps> = ({ operation, canManage,
                         </div>
                     </div>
 
-                    {/* Flags */}
                     <div className={cardClass}>
                         <div className="px-5 py-3 bg-slate-800/40 border-b border-slate-700/30">
                             <p className="text-[10px] text-slate-500 uppercase font-black tracking-[0.15em] flex items-center gap-2">
@@ -475,7 +461,6 @@ const OpAdministerTab: React.FC<OpAdministerTabProps> = ({ operation, canManage,
                         </div>
                     </div>
 
-                    {/* Allied Organizations */}
                     {operation.isJoint && (
                         <div className={cardClass}>
                             <div className="px-5 py-3 bg-cyan-950/20 border-b border-cyan-500/10 flex items-center justify-between">
@@ -522,7 +507,6 @@ const OpAdministerTab: React.FC<OpAdministerTabProps> = ({ operation, canManage,
                 </div>
             )}
 
-            {/* Mission Control */}
             {onAction && (
                 <div className={cardClass}>
                     <div className="px-5 py-3 bg-slate-800/40 border-b border-slate-700/30">
@@ -559,7 +543,6 @@ const OpAdministerTab: React.FC<OpAdministerTabProps> = ({ operation, canManage,
                 </div>
             )}
 
-            {/* Save as Template */}
             {canManage && hasPermission('operations:create') && (
                 <div className="bg-purple-950/10 rounded-xl border border-purple-500/15 overflow-hidden">
                     <div className="px-5 py-3 bg-purple-950/20 border-b border-purple-500/10">
@@ -592,7 +575,6 @@ const OpAdministerTab: React.FC<OpAdministerTabProps> = ({ operation, canManage,
                 </div>
             )}
 
-            {/* Discord Announcement */}
             {canManage && discordConfig?.clientId && (
                 <div className="bg-indigo-950/10 rounded-xl border border-indigo-500/15 overflow-hidden">
                     <div className="px-5 py-3 bg-indigo-950/20 border-b border-indigo-500/10">
@@ -663,7 +645,6 @@ const OpAdministerTab: React.FC<OpAdministerTabProps> = ({ operation, canManage,
                 </div>
             )}
 
-            {/* Danger Zone */}
             <div className="bg-red-950/10 rounded-xl border border-red-500/15 overflow-hidden">
                 <div className="px-5 py-3 bg-red-950/20 border-b border-red-500/10">
                     <p className="text-[10px] text-red-400/80 uppercase font-black tracking-[0.15em] flex items-center gap-2">
@@ -685,7 +666,6 @@ const OpAdministerTab: React.FC<OpAdministerTabProps> = ({ operation, canManage,
     );
 };
 
-// Helper components
 const InfoItem: React.FC<{ label: string; value: string }> = ({ label, value }) => (
     <div className="bg-slate-800/30 rounded-lg p-3 border border-slate-700/20">
         <p className="text-[9px] text-slate-500 uppercase font-black tracking-widest mb-1">{label}</p>

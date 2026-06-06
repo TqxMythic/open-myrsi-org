@@ -24,9 +24,7 @@ interface AdminUserDetailViewProps {
     openAddConductEntryModal: (user: User) => void;
 }
 
-// Dynamic clearance accent — preserves the colour signal from the legacy
-// header badge (green/sky/amber/orange/red) but maps to the shared accent
-// system used by HeroStat.
+// Maps a clearance level to the shared HeroStat accent colour.
 const clearanceAccent = (level?: number): AccentKey => {
     switch (level) {
         case 1: return 'emerald';
@@ -38,9 +36,8 @@ const clearanceAccent = (level?: number): AccentKey => {
     }
 };
 
-// Section card chrome shared with ProfileView, MyUnitView, MyServiceRecordView,
-// AdminClientDetailView. Local copy to avoid a new shared dep; promote later
-// if a 5th caller appears.
+// Section card chrome shared with other detail views. Local copy to avoid a
+// new shared dependency.
 const SectionCard: React.FC<{
     title: string;
     icon: string;
@@ -93,9 +90,8 @@ const AdminUserDetailView: React.FC<AdminUserDetailViewProps> = ({
     const { addToast, confirm } = useNotification();
     const { openGenericCaseFileModal, openSecurityVettingModal } = useModalRegistry();
 
-    // The roster cache (allUsers) holds the LITE user record — heavy nested
-    // arrays (certifications, commendations, conductRecord, limitingMarkers)
-    // are trimmed from the bulk query for egress reasons. Lazy-fetch the
+    // The roster cache (allUsers) holds only the lite user record; heavy nested
+    // arrays are trimmed from the bulk query for egress reasons. Lazy-fetch the
     // fully-hydrated user via the user_detail endpoint.
     const cachedLite = useMemo(
         () => allUsers.find(u => u.id === user.id) || user,

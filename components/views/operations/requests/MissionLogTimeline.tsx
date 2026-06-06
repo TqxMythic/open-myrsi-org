@@ -34,7 +34,6 @@ export default function MissionLogTimeline({ entries, emptyMessage = 'No log ent
 
     return (
         <ol className="relative space-y-5">
-            {/* spine */}
             <div className="absolute left-[15px] top-2 bottom-2 w-px bg-linear-to-b from-white/5 via-white/10 to-white/5" aria-hidden />
 
             {entries.map((entry, idx) => {
@@ -48,7 +47,6 @@ export default function MissionLogTimeline({ entries, emptyMessage = 'No log ent
                         className="relative flex gap-4 animate-fade-in"
                         style={{ animationDelay: `${Math.min(idx * 40, 400)}ms`, animationFillMode: 'backwards' }}
                     >
-                        {/* node column */}
                         <div className="relative shrink-0 z-10">
                             <div className={`relative w-8 h-8 rounded-full overflow-hidden bg-slate-900 border-2 ${a.border} shadow-lg`}>
                                 {entry.updatedBy?.avatarUrl ? (
@@ -67,7 +65,6 @@ export default function MissionLogTimeline({ entries, emptyMessage = 'No log ent
                             </div>
                         </div>
 
-                        {/* content */}
                         <div className="flex-1 min-w-0 pb-1">
                             <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 mb-1.5">
                                 <span className="text-xs font-black text-white tracking-tight">

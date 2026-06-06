@@ -40,7 +40,6 @@ const TermsOfServiceView: React.FC<TermsOfServiceViewProps> = ({ onBack }) => {
 
     return (
         <div className="h-full flex flex-col overflow-hidden animate-fade-in">
-            {/* Hero */}
             <div className="shrink-0 relative overflow-hidden border-b border-white/5 bg-linear-to-b from-sky-950/30 via-slate-950/80 to-slate-950">
                 <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[400px] bg-sky-500/10 rounded-full blur-[120px] pointer-events-none" aria-hidden />
 
@@ -67,7 +66,6 @@ const TermsOfServiceView: React.FC<TermsOfServiceViewProps> = ({ onBack }) => {
                 </div>
             </div>
 
-            {/* Content */}
             <div className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 max-w-4xl mx-auto w-full">
                 <div className="bg-slate-900/80 backdrop-blur-md border border-slate-700/50 rounded-xl p-6 md:p-10 shadow-lg">
                     <div className="text-center mb-8 border-b border-white/5 pb-6">

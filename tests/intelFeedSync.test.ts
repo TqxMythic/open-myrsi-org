@@ -53,16 +53,23 @@ vi.mock('../lib/db/common', () => {
                 if (inFilter) data = (h.tables[table] ?? []).filter(r => inFilter.includes(r.pairing_state));
                 const idFilter = state.filters['in:id'] as unknown[] | undefined;
                 if (idFilter) data = data.filter(r => idFilter.includes(r.id));
+                const codeFilter = state.filters['in:code'] as unknown[] | undefined;
+                // Re-fetch from the table (rows() above mistreats the in:code key as a
+                // regular column filter and empties the result — mirror in:pairing_state).
+                if (codeFilter) data = (h.tables[table] ?? []).filter(r => codeFilter.includes(r.code));
                 return Promise.resolve({ data: mode === 'single' ? (data[0] ?? null) : data, error: null });
             }
             if (state.op === 'insert') {
                 if (h.failInsert?.(table, state.values!)) {
                     return Promise.resolve({ data: null, error: { message: 'simulated insert failure' } });
                 }
-                const row = { id: `gen-${h.nextId++}`, ...(state.values as Record<string, unknown>) };
-                (h.tables[table] = h.tables[table] ?? []).push(row);
-                h.mutations.push({ table, op: 'insert', values: row, filters: {} });
-                return Promise.resolve({ data: state.returning ? { id: row.id } : null, error: null });
+                // Handle BOTH single-object and array inserts (the latter used by the
+                // report/bulletin limiting-marker junction writes).
+                const vals = Array.isArray(state.values) ? state.values : [state.values];
+                const list = (h.tables[table] = h.tables[table] ?? []);
+                const newRows = vals.map((v) => ({ id: `gen-${h.nextId++}`, ...(v as Record<string, unknown>) }));
+                for (const r of newRows) { list.push(r); h.mutations.push({ table, op: 'insert', values: r, filters: {} }); }
+                return Promise.resolve({ data: state.returning ? { id: newRows[0]?.id } : null, error: null });
             }
             h.mutations.push({ table, op: state.op, values: state.values, filters: { ...state.filters } });
             if (state.op === 'update') for (const r of rows()) Object.assign(r, state.values);
@@ -83,7 +90,12 @@ vi.mock('../lib/db/common', () => {
     };
 });
 
-vi.mock('../lib/ssrf', () => ({ assertResolvesToPublicHost: async () => {} }));
+// ssrfSafeFetch is the production outbound path; in tests it delegates
+// to the stubbed global fetch so the existing fetch-based assertions hold.
+vi.mock('../lib/ssrf', () => ({
+    assertResolvesToPublicHost: async () => [],
+    ssrfSafeFetch: (url: string, init?: Record<string, unknown>) => (globalThis.fetch as typeof fetch)(url, init as RequestInit),
+}));
 vi.mock('../lib/crypto', () => ({ decryptSecret: (s: string) => s, encryptSecret: (s: string) => s }));
 vi.mock('../lib/db/system', () => ({
     verifyApiKey: async () => null,
@@ -187,6 +199,61 @@ describe('cursor semantics (peer-clock + overlap)', () => {
     });
 });
 
+describe('feed ingest sanitization + caps (M6)', () => {
+    it('strips HTML from ingested report free-text fields', async () => {
+        stubFetch({ ...emptyPayload, reports: [{ id: 'r1', target_id: 'Bad<script>x</script>Guy', summary: '<b>danger</b> ahead', affiliated_org: '<i>ORG</i>', threat_level: 'High', subject_type: 'Person' }] });
+        await syncTrustedFeeds();
+        const row = h.tables.intel_reports[0];
+        expect(String(row.summary)).not.toContain('<');
+        expect(String(row.target_id)).not.toContain('<script');
+        expect(String(row.affiliated_org ?? '')).not.toContain('<');
+    });
+    it('strips HTML from ingested warrant + bulletin fields', async () => {
+        stubFetch({
+            ...emptyPayload,
+            warrants: [{ id: 'w1', target_rsi_handle: 'Bad<b>Guy</b>', reason: '<script>evil()</script>piracy', action: 'Detain', uec_reward: 1, status: 'Active' }],
+            bulletins: [{ title: '<b>Alert</b>', body: '<script>x</script>incoming', threat_level: 'High' }],
+        });
+        await syncTrustedFeeds();
+        expect(String(h.tables.warrants[0].reason)).not.toContain('<script');
+        expect(String(h.tables.warrants[0].target_rsi_handle)).not.toContain('<');
+        expect(String(h.tables.intel_bulletins[0].body)).not.toContain('<script');
+        expect(String(h.tables.intel_bulletins[0].title)).not.toContain('<');
+    });
+    it('caps the number of ingested reports per channel', async () => {
+        const many = Array.from({ length: 1005 }, (_, i) => ({ id: `r${i}`, target_id: `T${i}`, summary: `s${i}`, threat_level: 'Low', subject_type: 'Person' }));
+        stubFetch({ ...emptyPayload, reports: many });
+        const res = await syncTrustedFeeds();
+        expect(res.totalReports).toBe(1000); // MAX_FEED_ITEMS
+    });
+    it('content-match dedup uses the SANITIZED values (no re-insert of an HTML-laden duplicate)', async () => {
+        // The cleaned target/summary feed BOTH the content-match dedup AND the
+        // insert. A markup-laden feed report whose CLEANED form matches a
+        // pre-existing internal report must LINK to it, not insert a second
+        // copy. Under a revert (dedup-on-raw, insert-clean) the raw
+        // '<b>Bandit</b>' wouldn't match the stored 'Bandit' → re-insert.
+        h.tables.intel_reports = [{ id: 'r-local', target_id: 'Bandit', summary: 'spotted at HUR', external_id: null, source_feed_id: null }];
+        stubFetch({ ...emptyPayload, reports: [{ id: 'feed-r-1', target_id: '<b>Bandit</b>', summary: '<i>spotted</i> at HUR', threat_level: 'High', subject_type: 'Person' }] });
+        const res = await syncTrustedFeeds();
+        expect(res.totalReports).toBe(0);                 // linked, not newly inserted
+        expect(h.tables.intel_reports).toHaveLength(1);   // no duplicate row
+        expect(h.tables.intel_reports[0].external_id).toBe('feed-r-1'); // linked to the feed
+    });
+    it('refuses an oversized response body before parsing', async () => {
+        // text() returns a >8MB string → the byte ceiling rejects it (no parse, no ingest).
+        const huge = 'x'.repeat(8 * 1024 * 1024 + 10);
+        vi.stubGlobal('fetch', async () => ({
+            ok: true, status: 200, statusText: 'X',
+            headers: { get: () => 'application/json' },
+            text: async () => huge,
+            json: async () => ({}),
+        }));
+        const res = await syncTrustedFeeds();
+        expect(res.feedResults.some(r => r.status === 'error' && /too large/i.test(r.message ?? ''))).toBe(true);
+        expect(h.tables.intel_reports).toHaveLength(0);
+    });
+});
+
 describe('warrant ingest (nullable issued_by + external_id dedup)', () => {
     const warrant = (over: Record<string, unknown> = {}) => ({
         id: 'w-ext-1', target_rsi_handle: 'Bandit', reason: 'Piracy', action: 'Detain',
@@ -261,5 +328,36 @@ describe('report + bulletin nudges', () => {
         // Loop guard provenance stamped on the ingested bulletin.
         expect(h.tables.intel_bulletins[0].source_organization_id).toBe('feedA');
         expect(h.tables.intel_bulletins[0].shared_with_allies).toBe(false);
+    });
+});
+
+describe('bulletin ingest clearance ceiling + markers (IMP-D1)', () => {
+    it('drops an ally bulletin ABOVE the feed inbound_max_clearance, ingests one AT the ceiling', async () => {
+        h.tables.alliance_peers = [feedRow({ inbound_max_clearance: 2 })];
+        stubFetch({
+            ...emptyPayload,
+            bulletins: [
+                { title: 'TopSecret', body: 'x', classification_level: 4 }, // above ceiling → dropped
+                { title: 'AtCeiling', body: 'y', classification_level: 2 },  // at ceiling → ingested
+            ],
+        });
+        const res = await syncTrustedFeeds();
+        expect(res.totalBulletins).toBe(1);
+        expect(h.tables.intel_bulletins.map(b => b.title)).toEqual(['AtCeiling']);
+    });
+
+    it('attaches the ingested bulletin\'s limiting markers by code (compartment preserved)', async () => {
+        h.tables.alliance_peers = [feedRow({ inbound_max_clearance: 5 })];
+        h.tables.security_limiting_markers = [{ id: 9, code: 'GAMMA' }];
+        h.tables.intel_bulletin_limiting_markers = [];
+        stubFetch({
+            ...emptyPayload,
+            bulletins: [{ title: 'Compartmented', body: 'z', classification_level: 1, limiting_markers: ['GAMMA'] }],
+        });
+        await syncTrustedFeeds();
+        const bId = h.tables.intel_bulletins[0].id;
+        expect(h.tables.intel_bulletin_limiting_markers).toContainEqual(
+            expect.objectContaining({ bulletin_id: bId, marker_id: 9 }),
+        );
     });
 });

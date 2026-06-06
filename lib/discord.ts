@@ -6,6 +6,7 @@ import { supabase, handleSupabaseError } from './db/common.js';
 import { cache } from './cache.js';
 
 import { getOrgSecret } from './secrets.js';
+import { stripHtmlSingleLine } from './textSanitize.js';
 import { log as baseLog } from './log.js';
 
 const log = baseLog.child({ module: 'lib.discord' });
@@ -269,9 +270,11 @@ export async function syncDiscordRoles() {
     handleSupabaseError({ error: deleteError, message: 'Failed to clear old discord roles' });
 
     if (roles.length > 0) {
+        // Discord role names are external strings — strip markup + cap before
+        // persisting.
         const mappedRoles = roles.map(r => ({
             id: r.id,
-            name: r.name,
+            name: stripHtmlSingleLine(r.name, 100) || r.id,
             color: r.color
         }));
 

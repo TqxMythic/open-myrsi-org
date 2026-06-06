@@ -13,6 +13,7 @@ import {
 } from '../../lib/discord.js';
 import { log as baseLog } from '../../lib/log.js';
 import { passesClearance } from '../../lib/clearance.js';
+import { assertAiRateLimit } from '../../lib/aiRateLimit.js';
 import type {
     OperationPayoutMode,
     OperationTemplatePayload,
@@ -101,7 +102,7 @@ interface OperationUpdates {
 
 interface GetDetailsPayload { operationId: string; user?: { id?: number; role?: string; permissions?: string[]; clearanceLevel?: { level?: number } | null; limitingMarkers?: unknown[] } }
 interface DeletePayload { operationId: string; userId: number }
-interface UpdatePayload { operationId: string; updates: OperationUpdates; userId: number }
+interface UpdatePayload { operationId: string; updates: OperationUpdates; userId: number; user?: Parameters<typeof db.updateOperationDetails>[3] }
 interface RepostAnnouncementPayload { operationId: string; channelId?: string }
 interface UpdateStatusPayload { operationId: string; status: string; userId: number }
 interface JoinPayload { operationId: string; userId: number; joinCode?: string }
@@ -152,7 +153,7 @@ interface ReopenAarPayload { operationId: string; userId: number }
 interface GenerateAarSummaryPayload { operationId: string }
 interface TemplateListPayload { [key: string]: unknown }
 interface TemplateGetPayload { id: number }
-interface TemplateCreatePayload { name: string; description?: string | null; payload: OperationTemplatePayload; userId: number }
+interface TemplateCreatePayload { name: string; description?: string | null; payload: OperationTemplatePayload; userId: number; sourceOperationId?: string }
 interface TemplateUpdatePayload { id: number; name?: string; description?: string | null; payload?: OperationTemplatePayload }
 interface TemplateDeletePayload { id: number }
 interface TemplateFromOperationPayload { operationId: string }
@@ -320,10 +321,10 @@ export const operationActions = {
     'operation:get_details': async ({ operationId, user }: GetDetailsPayload) => {
         const op = await db.getFullOperationDetails(operationId);
         if (!op) return op;
-        // SECURITY (H3): the operations LIST filters by clearance, but the detail
-        // path did not — exposing ROE / commander notes / tasks / board for ops
-        // above the caller's clearance. Re-apply the same gate here. Owner and
-        // operations:manage holders bypass (mirrors getOperations()).
+        // The operations LIST filters by clearance, so the detail path must too
+        // — otherwise ROE / commander notes / tasks / board leak for ops above
+        // the caller's clearance. Owner and operations:manage holders bypass
+        // (mirrors getOperations()).
         const isOwner = op.ownerId === user?.id;
         if (!isOwner && !passesClearance(user, op.clearanceLevel, op.limitingMarkers, ['operations:manage'])) {
             throw new Error('Insufficient clearance to view this operation.');
@@ -344,8 +345,12 @@ export const operationActions = {
         }
         return db.deleteOperation(operationId, userId);
     },
-    'operation:update': async ({ operationId, updates, userId }: UpdatePayload) => {
-        const result = await db.updateOperationDetails(operationId, updates, userId) as unknown as OperationMutationResult | null;
+    'operation:update': async ({ operationId, updates, userId, user }: UpdatePayload) => {
+        // Pass the acting user so updateOperationDetails can apply the
+        // author-clearance clamp (assertCanClassify) + current-visibility guard
+        // (passesClearance against the live row) — operations:create alone is not a
+        // clearance bypass, and the op-owner dispatcher bypass makes this reachable.
+        const result = await db.updateOperationDetails(operationId, updates, userId, user) as unknown as OperationMutationResult | null;
 
         // Mirror amendments onto the linked Discord scheduled event + announcement
         // embed, if either are linked. Soft dependency: failures surface as a
@@ -457,14 +462,14 @@ export const operationActions = {
         return { ok: true, messageId: post.messageId, channelId: targetChannel, mode: 'posted' };
     },
     'operation:update_status': ({ operationId, status, userId }: UpdateStatusPayload) => db.updateOperationStatus(operationId, status, userId),
-    // SECURITY: these operations:view-gated sub-resource actions re-apply the
-    // per-op clearance predicate (assertOpVisibleToUser) — without it a member
-    // could join/write to ops the list/detail gates hide from them.
+    // These operations:view-gated sub-resource actions re-apply the per-op
+    // clearance predicate (assertOpVisibleToUser) — without it a member could
+    // join/write to ops the list/detail gates hide from them.
     'operation:join': async ({ operationId, userId, joinCode, user }: JoinPayload & { user?: Parameters<typeof db.assertOpVisibleToUser>[1] }) => {
         await db.assertOpVisibleToUser(operationId, user);
         return db.joinOperation(operationId, userId, joinCode);
     },
-    'operation:leave': ({ operationId, targetUserId, userId, user }: LeavePayload) => {
+    'operation:leave': async ({ operationId, targetUserId, userId, user }: LeavePayload) => {
         const tid = targetUserId || userId;
         if (tid !== userId) {
             // Removing another participant requires operations:manage. The action
@@ -475,6 +480,14 @@ export const operationActions = {
             if (!canManage) {
                 throw new Error('Forbidden: removing other participants requires operations:manage.');
             }
+        } else {
+            // The self-leave path writes a LEAVE log + broadcast on the op —
+            // mirror the join/rsvp siblings and gate on the per-op visibility
+            // predicate so a member with operations:view but insufficient
+            // clearance/marker can't probe a hidden op via leave. (The
+            // admin-leave branch above is already gated by operations:manage,
+            // which is the read-side bypass — no extra visibility check needed.)
+            await db.assertOpVisibleToUser(operationId, user);
         }
         return db.leaveOperation(operationId, tid);
     },
@@ -493,7 +506,16 @@ export const operationActions = {
         await db.assertOpVisibleToUser(operationId, user);
         return db.toggleParticipantReady(operationId, userId);
     },
-    'operation:update_participant_live_status': ({ operationId, userId, liveStatus }: UpdateParticipantLiveStatusPayload) => db.updateParticipantLiveStatus(operationId, userId, liveStatus),
+    'operation:update_participant_live_status': async ({ operationId, userId, liveStatus, user }: UpdateParticipantLiveStatusPayload & { user?: Parameters<typeof db.assertOpVisibleToUser>[1] }) => {
+        // Mirror the join/rsvp/toggle_ready siblings — gate on the FULL per-op
+        // visibility predicate, not existence-only verifyOperationAccess.
+        // Without it a member with operations:view but insufficient clearance/marker
+        // could write a status + STATUS_CHANGE log onto a hidden op (existence
+        // oracle + attributable log injection). The status text is HTML-stripped in
+        // the db layer.
+        await db.assertOpVisibleToUser(operationId, user);
+        return db.updateParticipantLiveStatus(operationId, userId, liveStatus);
+    },
     'operation:reset_readiness': ({ operationId }: ResetReadinessPayload) => db.resetOperationReadiness(operationId),
     'operation:join_with_role': async ({ operationId, userId, roleRequested, shipUtilized, joinCode, shipId, userShipId, user }: JoinWithRolePayload & { user?: Parameters<typeof db.assertOpVisibleToUser>[1] }) => {
         await db.assertOpVisibleToUser(operationId, user);
@@ -506,8 +528,12 @@ export const operationActions = {
     },
 
     // Participant fleet lookup
-    'operation:get_participant_ships': async ({ operationId, userIds }: GetParticipantShipsPayload) => {
-        await db.verifyOperationAccess(operationId);
+    'operation:get_participant_ships': async ({ operationId, userIds, user }: GetParticipantShipsPayload & { user?: Parameters<typeof db.assertOpVisibleToUser>[1] }) => {
+        // Existence-only verifyOperationAccess would let a member with
+        // operations:view but insufficient clearance/missing marker read the
+        // participant roster + ship loadouts of a hidden op. Use the per-op
+        // visibility predicate (clearance level + every marker + owner/manage).
+        await db.assertOpVisibleToUser(operationId, user);
         // Validate that the requested user IDs are actual participants
         const op = await db.getFullOperationDetails(operationId);
         if (!op) throw new Error('Operation not found');
@@ -527,7 +553,7 @@ export const operationActions = {
     },
     'operation:update_phase': async ({ phaseId, data, operationId, userId }: UpdatePhasePayload) => {
         await db.verifyOperationAccess(operationId);
-        const cascade = await db.updateOperationPhase(phaseId, data);
+        const cascade = await db.updateOperationPhase(phaseId, data, operationId);
         if (data?.status === 'Completed' && (cascade.cascadedTasks > 0 || cascade.cascadedMilestones > 0)) {
             const parts = [];
             if (cascade.cascadedTasks > 0) parts.push(`${cascade.cascadedTasks} task(s)`);
@@ -552,7 +578,7 @@ export const operationActions = {
     },
     'operation:update_schedule_entry': async ({ entryId, data, operationId }: UpdateScheduleEntryPayload) => {
         await db.verifyOperationAccess(operationId);
-        await db.updateScheduleEntry(entryId, data);
+        await db.updateScheduleEntry(entryId, data, operationId);
         await db.broadcastOpChange(operationId);
     },
     'operation:delete_schedule_entry': async ({ entryId, operationId }: DeleteScheduleEntryPayload) => {
@@ -570,7 +596,7 @@ export const operationActions = {
     },
     'operation:update_task': async ({ taskId, data, operationId }: UpdateTaskPayload) => {
         await db.verifyOperationAccess(operationId);
-        await db.updateOperationTask(taskId, data);
+        await db.updateOperationTask(taskId, data, operationId);
         await db.broadcastOpChange(operationId);
     },
     'operation:delete_task': async ({ taskId, operationId }: DeleteTaskPayload) => {
@@ -588,7 +614,7 @@ export const operationActions = {
     },
     'operation:update_command_node': async ({ nodeId, data, operationId }: UpdateCommandNodePayload) => {
         await db.verifyOperationAccess(operationId);
-        await db.updateCommandNode(nodeId, data);
+        await db.updateCommandNode(nodeId, data, operationId);
         await db.broadcastOpChange(operationId);
     },
     'operation:delete_command_node': async ({ nodeId, operationId }: DeleteCommandNodePayload) => {
@@ -601,7 +627,7 @@ export const operationActions = {
     // Board edits broadcast a delta on the per-op channel `op-board-{operationId}`
     // (lib/db/ops.ts) instead of `operation_update` on the org-wide channel —
     // narrower fan-out + the client merges the delta directly without a
-    // get_details refetch. See the realtime-quota memory.
+    // get_details refetch.
     'operation:add_board_element': async ({ operationId, data, clientNonce }: AddBoardElementPayload) => {
         await db.verifyOperationAccess(operationId);
         const row = await db.addBoardElement(operationId, data);
@@ -611,7 +637,7 @@ export const operationActions = {
     },
     'operation:update_board_element': async ({ elementId, data, operationId }: UpdateBoardElementPayload) => {
         await db.verifyOperationAccess(operationId);
-        await db.updateBoardElement(elementId, data);
+        await db.updateBoardElement(elementId, data, operationId);
         await db.broadcastBoardUpdate(operationId, elementId, data);
     },
     'operation:delete_board_element': async ({ elementId, operationId }: DeleteBoardElementPayload) => {
@@ -634,7 +660,7 @@ export const operationActions = {
     },
     'operation:update_logistics': async ({ itemId, data, operationId }: UpdateLogisticsPayload) => {
         await db.verifyOperationAccess(operationId);
-        await db.updateLogisticsItem(itemId, data);
+        await db.updateLogisticsItem(itemId, data, operationId);
         await db.broadcastOpChange(operationId);
     },
     'operation:delete_logistics': async ({ itemId, operationId }: DeleteLogisticsPayload) => {
@@ -644,7 +670,7 @@ export const operationActions = {
     },
     'operation:fulfill_logistics': async ({ itemId, quantity, userId, operationId, user }: FulfillLogisticsPayload & { user?: Parameters<typeof db.assertOpVisibleToUser>[1] }) => {
         await db.assertOpVisibleToUser(operationId, user);
-        await db.fulfillLogisticsItem(itemId, quantity, userId);
+        await db.fulfillLogisticsItem(itemId, quantity, userId, operationId);
         await db.broadcastOpChange(operationId);
     },
 
@@ -695,7 +721,8 @@ export const operationActions = {
         await db.logOperationEntry(operationId, 'NOTE', 'AAR reopened for editing.', userId);
         await db.broadcastOpChange(operationId);
     },
-    'operation:generate_aar_summary': async ({ operationId }: GenerateAarSummaryPayload) => {
+    'operation:generate_aar_summary': async ({ operationId, userId }: GenerateAarSummaryPayload & { userId?: number }) => {
+        assertAiRateLimit(userId); // per-user Gemini throttle
         const result = await db.generateAARDraftForOperation(operationId);
         await db.broadcastOpChange(operationId);
         return result;
@@ -704,10 +731,18 @@ export const operationActions = {
     // Operation Templates — structure-only (phases/milestones/tasks).
     // Realtime: changes broadcast on the db-changes channel under
     // 'operation_templates_changed' so DataContext can refresh the subset.
-    'operation:template:list': async (_payload: TemplateListPayload) => db.listOperationTemplates(),
-    'operation:template:get': async ({ id }: TemplateGetPayload) => db.getOperationTemplate(id),
-    'operation:template:create': async ({ name, description, payload, userId }: TemplateCreatePayload) => {
-        const tpl = await db.createOperationTemplate(userId, name, description ?? null, payload);
+    'operation:template:list': async ({ user }: TemplateListPayload & { user?: Parameters<typeof db.listOperationTemplates>[0] }) => db.listOperationTemplates(user),
+    'operation:template:get': async ({ id, user }: TemplateGetPayload & { user?: Parameters<typeof db.getOperationTemplate>[1] }) => db.getOperationTemplate(id, user),
+    'operation:template:create': async ({ name, description, payload, userId, sourceOperationId, user }: TemplateCreatePayload & { user?: Parameters<typeof db.assertOpVisibleToUser>[1] }) => {
+        // When saving an extracted template, the clearance is read from the source
+        // op server-side (after re-verifying the author may see it) — never taken
+        // from the client — so the template inherits the op's restriction.
+        let clearance: { classificationLevel: number; markerIds: number[] } | undefined;
+        if (sourceOperationId) {
+            await db.assertOpVisibleToUser(sourceOperationId, user);
+            clearance = await db.getOperationClassification(sourceOperationId);
+        }
+        const tpl = await db.createOperationTemplate(userId, name, description ?? null, payload, clearance);
         await db.broadcastToOrg('operation_templates_changed', { id: tpl.id });
         return tpl;
     },
@@ -722,7 +757,13 @@ export const operationActions = {
     },
     // Builds (but does not persist) a payload from an existing operation. The
     // client typically follows up with operation:template:create to save it.
-    'operation:template:from_operation': async ({ operationId }: TemplateFromOperationPayload) => {
+    'operation:template:from_operation': async ({ operationId, user }: TemplateFromOperationPayload & { user?: Parameters<typeof db.assertOpVisibleToUser>[1] }) => {
+        // Extracting a template pulls the op's full plan (phase/task/milestone
+        // names + descriptions) — the same content get_details gates by
+        // clearance. operations:create alone is not a clearance/marker check, so
+        // a member lacking the op's clearance could otherwise exfiltrate its plan
+        // via this path. Gate on the canonical per-op visibility predicate first.
+        await db.assertOpVisibleToUser(operationId, user);
         return db.extractTemplatePayloadFromOperation(operationId);
     },
     // JSON import: client supplies a parsed payload (and optional name/description).

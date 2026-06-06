@@ -19,9 +19,7 @@ const getClearanceColor = (level: number) => {
     }
 };
 
-// Local SectionCard helper — same chrome as AdminUserDetailView /
-// AdminClientDetailView / MyServiceRecordView. Promote to components/shared/ui
-// if a 5th caller appears.
+// Local SectionCard helper — same chrome as the other detail views.
 const SectionCard: React.FC<{
     title: string;
     icon: string;

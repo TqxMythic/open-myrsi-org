@@ -99,7 +99,6 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
     const [volume, setVolume] = useState(50);
     const [toasts, setToasts] = useState<Toast[]>([]);
 
-    // Load volume from local storage
     useEffect(() => {
         const storedVolume = localStorage.getItem('myrsi_volume');
         if (storedVolume) {
@@ -107,7 +106,6 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
         }
     }, []);
 
-    // Save volume
     useEffect(() => {
         localStorage.setItem('myrsi_volume', volume.toString());
     }, [volume]);
@@ -165,7 +163,6 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
         }
     }, [playSound, removeToast]);
 
-    // --- CONFIRM DIALOG LOGIC ---
     const [confirmState, setConfirmState] = useState<ConfirmState>({
         isOpen: false,
         options: { title: '', message: '' },

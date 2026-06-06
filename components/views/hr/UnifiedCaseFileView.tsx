@@ -87,10 +87,9 @@ const UnifiedCaseFileView: React.FC<UnifiedCaseFileViewProps> = ({ applicationId
         }
     }, [hrApplicants, hrInterviews, applicationId]);
 
-    // Vetting data is lazy-loaded (no longer shipped in the bulk hrApplicants list —
-    // it's recruiter-grade PII rendered one case at a time). vettingLoading guards the
-    // save handler so a save fired before the fetch lands can't overwrite the real
-    // vetting record with the empty default.
+    // Vetting data is lazy-loaded per case (it's recruiter-grade PII, not shipped in
+    // the bulk list). vettingLoading guards the save handler so a save fired before
+    // the fetch lands can't overwrite the real record with the empty default.
     useEffect(() => {
         if (!applicationId) return;
         let cancelled = false;

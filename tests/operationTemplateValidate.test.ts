@@ -117,6 +117,61 @@ describe('validateTemplatePayload — rejection paths', () => {
     });
 });
 
+describe('validateTemplatePayload — count caps (IMP-S1 DoS guard)', () => {
+    it('rejects more than 50 phases', () => {
+        expect(() => validateTemplatePayload({ phases: Array.from({ length: 51 }, () => ({ name: 'p' })) }))
+            .toThrow(/too many phases.*max 50/i);
+    });
+    it('rejects more than 200 tasks in a phase', () => {
+        expect(() => validateTemplatePayload({ phases: [{ name: 'p', tasks: Array.from({ length: 201 }, () => ({ title: 't' })) }] }))
+            .toThrow(/too many tasks.*max 200/i);
+    });
+    it('rejects more than 200 milestones in a phase', () => {
+        expect(() => validateTemplatePayload({ phases: [{ name: 'p', milestones: Array.from({ length: 201 }, () => ({ label: 'm' })) }] }))
+            .toThrow(/too many milestones.*max 200/i);
+    });
+    it('accepts exactly the cap (inclusive — no off-by-one against legit large templates)', () => {
+        const r = validateTemplatePayload({
+            phases: [{ name: 'p', tasks: Array.from({ length: 200 }, (_, i) => ({ title: `t${i}` })), milestones: Array.from({ length: 200 }, (_, i) => ({ label: `m${i}` })) }],
+        });
+        expect(r.phases[0].tasks).toHaveLength(200);
+        expect(r.phases[0].milestones).toHaveLength(200);
+    });
+});
+
+describe('validateTemplatePayload — free-text sanitize + no arbitrary fields (IMP-S2/IMP-S3)', () => {
+    it('strips HTML from phase/task/milestone free-text', () => {
+        const r = validateTemplatePayload({
+            phases: [{
+                name: '<b>Approach</b>', description: '<script>x</script>brief',
+                tasks: [{ title: '<i>Engage</i>' }],
+                milestones: [{ label: '<u>Stack</u>', notes: '<img src=x onerror=1>note' }],
+            }],
+        });
+        expect(r.phases[0].name).not.toContain('<');
+        expect(r.phases[0].description ?? '').not.toContain('<');
+        expect(r.phases[0].tasks![0].title).not.toContain('<');
+        expect(r.phases[0].milestones![0].label).not.toContain('<');
+        expect(r.phases[0].milestones![0].notes ?? '').not.toContain('<');
+    });
+    it('caps an over-length phase name', () => {
+        const r = validateTemplatePayload({ phases: [{ name: 'P'.repeat(500) }] });
+        expect(r.phases[0].name.length).toBe(200);
+    });
+    it('rejects a name that collapses to empty after stripping', () => {
+        expect(() => validateTemplatePayload({ phases: [{ name: '<br>' }] })).toThrow(/non-empty name/i);
+    });
+    it('drops arbitrary/injected fields (id, operation_id, __proto__) — strict re-projection', () => {
+        const r = validateTemplatePayload({ phases: [{ name: 'p', id: 99, operation_id: 'x', created_by: 5, evil: true }] });
+        const phase = r.phases[0] as unknown as Record<string, unknown>;
+        expect('id' in phase).toBe(false);
+        expect('operation_id' in phase).toBe(false);
+        expect('created_by' in phase).toBe(false);
+        expect('evil' in phase).toBe(false);
+        expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    });
+});
+
 describe('validateTemplatePayload — round-trip stability', () => {
     it('is idempotent: validating an already-valid payload returns the same shape', () => {
         const input = {

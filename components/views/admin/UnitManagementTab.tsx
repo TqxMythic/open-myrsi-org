@@ -8,7 +8,6 @@ import { TabPageHeader } from '../../shared/ui';
 import { useNotification } from '../../../contexts/NotificationContext';
 import { useModalRegistry } from '../../../contexts/ModalRegistryContext';
 
-// Recursive type for tree structure
 type UnitNode = OrganizationalUnit & { children: UnitNode[], memberCount: number };
 
 const UnitManagementTab: React.FC = () => {
@@ -32,14 +31,12 @@ const UnitManagementTab: React.FC = () => {
             }
         });
 
-        // Create map of ID -> Node
         const nodesById = new Map<number, UnitNode>(
             units.map(u => [u.id, { ...u, children: [], memberCount: memberCounts.get(u.id) || 0 }])
         );
 
         const roots: UnitNode[] = [];
 
-        // Build relationships
         units.forEach(u => {
             const node = nodesById.get(u.id)!;
             if (u.parentUnitId && nodesById.has(u.parentUnitId)) {
@@ -49,7 +46,6 @@ const UnitManagementTab: React.FC = () => {
             }
         });
 
-        // Helper to sort recursively by sortOrder then name
         const sortNodes = (node: UnitNode) => {
             node.children.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0) || a.name.localeCompare(b.name));
             node.children.forEach(sortNodes);
@@ -61,7 +57,6 @@ const UnitManagementTab: React.FC = () => {
         return roots;
     }, [units, allUsers]);
 
-    // Filter the tree based on search
     const filteredTree = useMemo(() => {
         if (!searchTerm.trim()) return unitTree;
 
@@ -154,7 +149,8 @@ const UnitManagementTab: React.FC = () => {
     const handleDragLeave = (e: React.DragEvent) => {
         e.preventDefault();
         e.stopPropagation();
-        // setDropTarget(null); // Flickers if reset immediately when moving between elements
+        // Intentionally left empty: resetting the drop target here flickers when
+        // moving between elements; it is cleared on drop or drag end.
     };
 
     const handleDrop = async (e: React.DragEvent, targetUnit: UnitNode) => {
@@ -177,21 +173,18 @@ const UnitManagementTab: React.FC = () => {
             }
             // Case 2: Reordering (Before/After)
             else {
-                // Determine new parent (same as target)
                 const newParentId = targetUnit.parentUnitId;
 
-                // Get siblings
                 const siblings = units
                     .filter(u => u.parentUnitId === newParentId && u.id !== draggedUnit.id)
                     .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0) || a.name.localeCompare(b.name));
 
-                // Insert dragged unit into siblings array at correct spot
                 const targetIndex = siblings.findIndex(u => u.id === targetUnit.id);
                 const insertionIndex = dropTarget.position === 'before' ? targetIndex : targetIndex + 1;
 
                 siblings.splice(insertionIndex, 0, draggedUnit);
 
-                // Recalculate sort orders for all siblings
+                // Renumber sort orders across the affected siblings.
                 const updates = siblings.map((u, index) => updateUnit({
                     ...u,
                     parentUnitId: newParentId, // Ensure parent matches

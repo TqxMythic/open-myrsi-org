@@ -1,7 +1,7 @@
 
 import express from 'express';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import compression from 'compression';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { randomBytes } from 'node:crypto';
@@ -11,19 +11,14 @@ import { log as baseLog } from './lib/log.js';
 
 const log = baseLog.child({ module: 'server' });
 
-// =============================================================================
-// Security: scanner-path early 404 + per-IP abuse blackhole. Lives at the top
-// of the middleware stack so probes never reach body parsing, static, or any
-// downstream handler. Client IP extraction is in lib/clientIp.ts (shared with
-// the services dispatcher's per-action rate limit).
-// =============================================================================
+// Scanner-path early 404 + per-IP abuse blackhole. Lives at the top of the
+// middleware stack so probes never reach body parsing, static, or any
+// downstream handler. Client IP extraction is in lib/clientIp.ts.
 
 /**
- * Paths matched here are returned 404 immediately with no logging beyond a
- * deduped one-liner per IP per minute. They are scanner / probe paths that
- * have no legitimate use on this site (we don't run WordPress, expose .git,
- * etc.). Update sparingly — false positives cost less than false negatives
- * here, but adding a path that overlaps a real route would 404 real users.
+ * Paths matched here are returned 404 immediately with deduped logging. They
+ * are scanner/probe paths with no legitimate use on this site. Update
+ * sparingly — a path that overlaps a real route would 404 real users.
  */
 const SCANNER_PATH_RE = /^\/(wp-|wordpress|xmlrpc\.php|\.git\b|\.env\b|\.aws\b|\.svn\b|cgi-bin|phpmyadmin|phpMyAdmin|admin\.php|setup\.php|server-status|server-info|wp\d*\/|blog\/wp-|web\/wp-|website\/wp-|news\/wp-|shop\/wp-|cms\/wp-|sito\/wp-|test\/wp-|site\/wp-|wp\/wp-|\d{4}\/wp-)/i;
 
@@ -61,13 +56,10 @@ function bumpAbuseCounter(ip: string): void {
     const now = Date.now();
     let t = ipAbuseTracker.get(ip);
     if (!t) {
-        // Evict the oldest entry to make room when the cap is hit. Previously we
-        // returned early, which silently stopped tracking *every* new IP for up
-        // to 60s — an attacker could fill the map with spray traffic and pin
-        // out everyone else's protection. Map iteration order is insertion
-        // order, so the first key is the oldest. Prefer evicting an entry whose
-        // block has already expired so an actively-blocked IP isn't released
-        // simply because it happens to be the oldest.
+        // Evict to make room when the cap is hit rather than stop tracking new
+        // IPs (which a spray attack could exploit to pin out everyone's
+        // protection). Prefer evicting an already-expired block; otherwise drop
+        // the oldest entry (Map iteration is insertion order).
         if (ipAbuseTracker.size >= MAX_TRACKER_ENTRIES) {
             let evicted = false;
             for (const [oldIp, oldT] of ipAbuseTracker) {
@@ -101,10 +93,8 @@ function isBlocked(ip: string): boolean {
     return !!t && t.blockedUntil > Date.now();
 }
 
-// Import Handlers
-// Note: We need to import the built versions or ensure ts-node is used. 
-// Since we are compiling to dist-server, these relative imports will be resolved relative to dist-server/server.js
-// api/index -> ./api/index.js
+// Handler imports use .js extensions: we compile to dist-server/, so these
+// relative imports resolve against the compiled output (Node16 resolution).
 import handlerFn from './api/index.js';
 import servicesFn, { validatePermissionMap } from './api/services.js';
 import queryFn from './api/query.js';
@@ -113,9 +103,9 @@ import publicFn from './api/public.js';
 import { respondToPair as allianceRespondToPair, getAllianceSelfProfile as allianceGetSelfProfile, verifyApiKey as allianceVerifyApiKey, getAlliancePeerByInboundKey as allianceGetPeerByInboundKey, getAllianceShareableData as allianceGetShareableData,
     getOperationSnapshotForPeer, getOperationManifestForPeer, acceptInviteForPeer, declineInviteForPeer, upsertAlliedParticipant, removeAlliedParticipant,
     receiveMirrorInvite, receiveMirrorPush, receiveMirrorRevoke,
-    getAllyRosterProjection, getAllyFleetProjection, getUserById, importOrgData } from './lib/db.js';
+    getAllyRosterProjection, getAllyFleetProjection, getUserById, importOrgData, getPlatformSettings } from './lib/db.js';
 import { runFirstBootCheck } from './lib/firstBoot.js';
-import { verifyToken, signToken } from './lib/auth.js';
+import { verifyToken, signToken, isSessionForceLoggedOut } from './lib/auth.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -128,10 +118,9 @@ if (process.env.NODE_ENV === 'production') {
     const requiredEnvVars: Array<[string, string]> = [
         ['SUPABASE_URL', 'The Supabase project URL — the server cannot reach the database without it.'],
         ['SUPABASE_SERVICE_ROLE_KEY', 'The Supabase service-role key — required for all server-side database access.'],
-        // SECURITY: encryption-at-rest for admin-entered secrets
-        // (Discord/LiveKit/Gemini keys) is mandatory. encryptSecret() now fails
-        // closed without this key, so boot would otherwise defer the failure to the
-        // first secret save — surface it at startup instead.
+        // Encryption-at-rest for admin-entered secrets is mandatory; encryptSecret
+        // fails closed without this key. Surface the failure at boot rather than
+        // deferring it to the first secret save.
         ['SECRETS_ENCRYPTION_KEY', 'Required to encrypt admin-entered secrets at rest. Generate with `node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"`.'],
     ];
     const missing = requiredEnvVars.filter(([name]) => !process.env[name]);
@@ -141,10 +130,25 @@ if (process.env.NODE_ENV === 'production') {
         }
         throw new Error(`Startup aborted: missing required env vars: ${missing.map(m => m[0]).join(', ')}`);
     }
+    // The encryption key derives the AES-256-GCM master key (scrypt, fixed
+    // salt), so a short/low-entropy value weakens every encrypted secret —
+    // reject < 32 chars at boot. The salt is fixed (baked into every existing
+    // ciphertext); rotating it would make stored secrets undecryptable.
+    const encKey = process.env.SECRETS_ENCRYPTION_KEY || '';
+    if (encKey.length < 32) {
+        log.error('SECRETS_ENCRYPTION_KEY too short', { length: encKey.length, hint: 'Use >= 32 chars. Generate with `node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"`.' });
+        throw new Error('Startup aborted: SECRETS_ENCRYPTION_KEY must be at least 32 characters.');
+    }
 }
 
 const app = express();
-app.set('trust proxy', 1);
+// `trust proxy` controls how req.ip resolves X-Forwarded-For, and req.ip backs
+// every IP-keyed control (see lib/clientIp.ts). Default 1 = the single
+// TLS-terminating reverse proxy the deployment guide prescribes. Deeper chains
+// set TRUST_PROXY_HOPS to the real depth; a directly-exposed Node (no proxy)
+// MUST set 0, or the socket peer can spoof one X-Forwarded-For hop.
+const trustProxyHops = Number(process.env.TRUST_PROXY_HOPS ?? '1');
+app.set('trust proxy', Number.isInteger(trustProxyHops) && trustProxyHops >= 0 ? trustProxyHops : 1);
 const port = process.env.PORT || 3000;
 
 // --- Early scanner / blackhole gate ---
@@ -185,18 +189,18 @@ app.use((req, res, next) => {
     res.setHeader('X-XSS-Protection', '1; mode=block');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
 
-    // Per-request CSP nonce. The SSR handler (api/index.ts) stamps this onto the
-    // <script> tags it serves so script-src can drop 'unsafe-inline' — any XSS
-    // sink that bypasses DOMPurify can no longer execute injected inline script.
-    // HTML responses are no-store, so the nonce is always fresh per document.
-    // style-src keeps 'unsafe-inline' for now: React inline styles and the boot
-    // splash's many style="" attributes can't carry a nonce (CSP nonces apply to
-    // <script>/<style> elements, not style attributes). The vestigial Tailwind
-    // CDN allowance is dropped — Tailwind v4 is compiled via @tailwindcss/vite.
+    // Per-request CSP nonce. The SSR handler (api/index.ts) stamps it onto the
+    // <script> tags it serves so script-src can drop 'unsafe-inline'. HTML
+    // responses are no-store, so the nonce is fresh per document. style-src
+    // keeps 'unsafe-inline' because React inline styles and the boot splash's
+    // style="" attributes can't carry a nonce.
     const cspNonce = randomBytes(16).toString('base64');
     res.locals.cspNonce = cspNonce;
 
-    res.setHeader('Content-Security-Policy', `default-src 'self'; script-src 'self' 'nonce-${cspNonce}' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; img-src 'self' data: https:; connect-src 'self' https: wss://*.supabase.co wss://*.livekit.cloud; font-src 'self' data: https://cdnjs.cloudflare.com; frame-src https://www.youtube.com https://www.youtube-nocookie.com https://player.vimeo.com https://docs.google.com https://drive.google.com https://calendar.google.com https://www.google.com https://open.spotify.com https://codepen.io https://stackblitz.com; media-src 'self' blob: https:; manifest-src 'self';`);
+    // base-uri 'self' blocks an injected <base> from re-rooting relative URLs;
+    // form-action 'self' blocks an injected form from exfiltrating to an
+    // attacker origin. Neither falls back to default-src.
+    res.setHeader('Content-Security-Policy', `default-src 'self'; base-uri 'self'; form-action 'self'; script-src 'self' 'nonce-${cspNonce}' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; img-src 'self' data: https:; connect-src 'self' https: wss://*.supabase.co wss://*.livekit.cloud; font-src 'self' data: https://cdnjs.cloudflare.com; frame-src https://www.youtube.com https://www.youtube-nocookie.com https://player.vimeo.com https://docs.google.com https://drive.google.com https://calendar.google.com https://www.google.com https://open.spotify.com https://codepen.io https://stackblitz.com; media-src 'self' blob: https:; manifest-src 'self';`);
     // Only set HSTS if using HTTPS in production
     if (process.env.NODE_ENV === 'production') {
         res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
@@ -266,8 +270,16 @@ app.use(express.static(distPath, {
     }
 }));
 
-// Rate Limiting
-const apiLimiter = rateLimit({ windowMs: 60_000, max: 100, standardHeaders: true });
+// Rate limiting. Every IP-keyed control shares getClientIp (the single
+// trusted-proxy-aware resolver) so no limiter can be sidestepped by spoofing a
+// header another control trusts. Callers resolving to 'unknown' collapse into
+// one shared bucket (acceptable: only when there is no socket address at all).
+const apiLimiter = rateLimit({
+    windowMs: 60_000,
+    max: 100,
+    standardHeaders: true,
+    keyGenerator: (req) => ipKeyGenerator(getClientIp(req as express.Request)),
+});
 app.use('/api', apiLimiter);
 
 // Public page endpoints — unauth, GET-only, tighter per-(ip+slug) rate limit.
@@ -279,7 +291,7 @@ const publicLimiter = rateLimit({
     standardHeaders: true,
     // ipKeyGenerator handles IPv6 properly; using raw req.ip would let IPv6
     // clients bypass the limit by varying the trailing 64 bits of their addr.
-    keyGenerator: (req, res) => `${ipKeyGenerator((req as any).ip || '')}:${(req.query?.slug as string) || ''}`,
+    keyGenerator: (req) => `${ipKeyGenerator(getClientIp(req as express.Request))}:${(req.query?.slug as string) || ''}`,
 });
 app.get('/api/public', publicLimiter, async (req, res) => {
     try {
@@ -300,19 +312,15 @@ function noStore(res: express.Response): void {
     res.setHeader('Vary', 'Authorization, Cookie');
 }
 
-// Auth actions (Discord OAuth callback, initial setup finalisation) ride
-// the global 100 req/min/IP cap, which leaves enough headroom for
-// credential-stuffing-style probing across many user accounts via the
-// callback. This limiter caps auth:* dispatches at 10/min/IP — well above
-// any legitimate retry pattern, well below useful probing throughput.
-// Applied as a per-route middleware that inspects the parsed JSON body
-// and only triggers when action.startsWith('auth:'), so non-auth RPCs are
-// unaffected and continue to hit the global limiter alone.
+// Extra cap on auth:* dispatches (Discord OAuth callback, setup finalisation)
+// at 10/min/IP — above legitimate retries, below useful probing throughput.
+// Applied as per-route middleware that only triggers when the parsed body's
+// action starts with 'auth:', so non-auth RPCs hit only the global limiter.
 const authActionLimiter = rateLimit({
     windowMs: 60_000,
     max: 10,
     standardHeaders: true,
-    keyGenerator: (req) => ipKeyGenerator((req as any).ip || ''),
+    keyGenerator: (req) => ipKeyGenerator(getClientIp(req as express.Request)),
     message: { message: 'Too many authentication attempts. Please wait a minute and try again.' },
 });
 app.use('/api/services', (req, res, next) => {
@@ -357,6 +365,14 @@ app.post('/api/admin/import-stream', express.text({ type: () => true, limit: '64
         const token = authHeader && authHeader.split(' ')[1];
         const decoded = token ? verifyToken(token) : null;
         if (!decoded) { res.status(401).json({ error: 'Unauthorized' }); return; }
+        // Mirror the dispatcher's force-logout enforcement (api/services.ts): a
+        // force-logged-out admin's still-unexpired JWT must not stream a full
+        // org import on this sibling route.
+        const platformSettings = await getPlatformSettings();
+        if (isSessionForceLoggedOut(decoded, platformSettings?.force_logout_timestamp)) {
+            res.status(401).json({ error: 'Session expired. Please log in again.', force_logout: true });
+            return;
+        }
         const user = await getUserById(decoded.userId);
         const isAdmin = !!user && (user.role === 'Admin' || (Array.isArray(user.permissions) && user.permissions.includes('admin:access')));
         if (!isAdmin) { res.status(403).json({ error: 'Forbidden' }); return; }
@@ -408,7 +424,7 @@ const allianceLimiter = rateLimit({
     windowMs: 60_000,
     max: 20,
     standardHeaders: true,
-    keyGenerator: (req) => ipKeyGenerator((req as any).ip || ''),
+    keyGenerator: (req) => ipKeyGenerator(getClientIp(req as express.Request)),
 });
 const ALLIANCE_PAIR_DENIED = new Set([
     'no_pending_pairing', 'pairing_expired', 'handshake_verification_failed',
@@ -490,7 +506,7 @@ function handleOpFedError(res: express.Response, e: unknown, label: string): voi
 // Host inbound — the live-sync reconcile manifest: every op the CALLING peer
 // was invited to, with current versions for accepted ones, in one call
 // (replaces N per-op polls; doubles as the peer's health probe). Built solely
-// from that peer's own operation_allied_orgs rows — SECURITY L6 holds.
+// from that peer's own operation_allied_orgs rows, so it stays peer-scoped.
 app.get('/api/alliance/op-manifest', allianceLimiter, async (req, res) => {
     noStore(res);
     try {
@@ -506,7 +522,7 @@ app.get('/api/alliance/op/:opId', allianceLimiter, async (req, res) => {
         const peer = await allianceCaller(req);
         if (!peer) return res.status(403).json({ error: 'forbidden' });
         const since = typeof req.query.since === 'string' ? Number(req.query.since) : undefined;
-        res.json(await getOperationSnapshotForPeer(req.params.opId, peer.id, Number.isFinite(since as number) ? since : undefined));
+        res.json(await getOperationSnapshotForPeer(String(req.params.opId), peer.id, Number.isFinite(since as number) ? since : undefined));
     } catch (e) { handleOpFedError(res, e, 'alliance op snapshot'); }
 });
 app.post('/api/alliance/op/:opId/accept', allianceLimiter, async (req, res) => {
@@ -514,7 +530,7 @@ app.post('/api/alliance/op/:opId/accept', allianceLimiter, async (req, res) => {
     try {
         const peer = await allianceCaller(req);
         if (!peer) return res.status(403).json({ error: 'forbidden' });
-        res.json(await acceptInviteForPeer(req.params.opId, peer.id));
+        res.json(await acceptInviteForPeer(String(req.params.opId), peer.id));
     } catch (e) { handleOpFedError(res, e, 'alliance op accept'); }
 });
 app.post('/api/alliance/op/:opId/decline', allianceLimiter, async (req, res) => {
@@ -522,7 +538,7 @@ app.post('/api/alliance/op/:opId/decline', allianceLimiter, async (req, res) => 
     try {
         const peer = await allianceCaller(req);
         if (!peer) return res.status(403).json({ error: 'forbidden' });
-        await declineInviteForPeer(req.params.opId, peer.id);
+        await declineInviteForPeer(String(req.params.opId), peer.id);
         res.json({ ok: true });
     } catch (e) { handleOpFedError(res, e, 'alliance op decline'); }
 });
@@ -534,9 +550,9 @@ app.post('/api/alliance/op/:opId/rsvp', allianceLimiter, async (req, res) => {
         if (req.body?.removed === true) {
             // RSVP withdrawal: deletes ONLY the calling peer's own participant
             // row (scoped like the upsert key inside removeAlliedParticipant).
-            await removeAlliedParticipant(req.params.opId, peer.id, req.body?.remoteUserHandle);
+            await removeAlliedParticipant(String(req.params.opId), peer.id, req.body?.remoteUserHandle);
         } else {
-            await upsertAlliedParticipant(req.params.opId, peer.id, {
+            await upsertAlliedParticipant(String(req.params.opId), peer.id, {
                 remoteUserHandle: req.body?.remoteUserHandle,
                 displayName: req.body?.displayName, avatarUrl: req.body?.avatarUrl,
                 role: req.body?.role, shipText: req.body?.shipText,
@@ -600,11 +616,96 @@ app.get('/api/alliance/fleet', allianceLimiter, async (req, res) => {
     } catch (e) { handleOpFedError(res, e, 'alliance fleet'); }
 });
 
-// PWA Service Worker — must never be cached by Cloudflare/browser
-app.get('/sw.js', async (req, res) => {
+// PWA Service Worker — must never be cached by Cloudflare/browser.
+//
+// swFn (api/sw.ts) reads branding/openGraph rows from the DB on every call, and
+// this route is unauthenticated and outside /api (not covered by apiLimiter), so
+// it is guarded two ways against DB-read amplification: an in-process TTL cache
+// that replays a captured response, plus a dedicated per-IP limiter. SW-update
+// correctness holds because the cache TTL is short and the SW source carries a
+// process-lifetime DEPLOY_ID that changes (and drops this cache) on redeploy.
+
+interface CapturedSwResponse {
+    status: number;
+    headers: Array<[string, string]>;
+    body: string;
+}
+
+// Small pure TTL memo, exported for unit testing. A get() within the TTL returns
+// the cached value without re-invoking the DB-hitting producer. It also
+// collapses a concurrent burst: while the first producer promise is in flight,
+// further get()s for the same key await it rather than firing their own (a
+// thundering herd of /sw.js hits collapses to one DB read). If the producer
+// rejects, the in-flight slot is cleared so the next call retries.
+export function createTtlCache<T>(ttlMs: number, now: () => number = Date.now) {
+    let entry: { key: string; value: T; expiresAt: number } | null = null;
+    let inflight: { key: string; promise: Promise<T> } | null = null;
+    return {
+        async get(key: string, produce: () => Promise<T>): Promise<T> {
+            const t = now();
+            if (entry && entry.key === key && entry.expiresAt > t) {
+                return entry.value;
+            }
+            if (inflight && inflight.key === key) {
+                return inflight.promise;
+            }
+            const promise = (async () => {
+                const value = await produce();
+                entry = { key, value, expiresAt: now() + ttlMs };
+                return value;
+            })();
+            inflight = { key, promise };
+            try {
+                return await promise;
+            } finally {
+                if (inflight && inflight.promise === promise) inflight = null;
+            }
+        },
+        // test/inspection helper
+        peek(): { key: string; expiresAt: number } | null {
+            return entry ? { key: entry.key, expiresAt: entry.expiresAt } : null;
+        },
+    };
+}
+
+// A few seconds: long enough that a burst of requests collapses to one DB read,
+// short enough that an admin branding edit shows up almost immediately.
+const SW_CACHE_TTL_MS = 10_000;
+const swResponseCache = createTtlCache<CapturedSwResponse>(SW_CACHE_TTL_MS);
+
+// Capture what swFn writes to `res` (setHeader / status / send) without sending,
+// so the rendered bytes can be cached and replayed. swFn only ever uses these
+// three sinks; anything else is ignored (it never reads from the response).
+function captureSwResponse(produce: (res: express.Response) => Promise<void>): Promise<CapturedSwResponse> {
+    const captured: CapturedSwResponse = { status: 200, headers: [], body: '' };
+    const sink = {
+        setHeader(name: string, value: string) { captured.headers.push([name, String(value)]); return sink; },
+        status(code: number) { captured.status = code; return sink; },
+        send(body: unknown) { captured.body = typeof body === 'string' ? body : String(body); return sink; },
+        get headersSent() { return false; },
+    } as unknown as express.Response;
+    return produce(sink).then(() => captured);
+}
+
+const swLimiter = rateLimit({
+    windowMs: 60_000,
+    max: 60,
+    standardHeaders: true,
+    keyGenerator: (req) => ipKeyGenerator(getClientIp(req as express.Request)),
+});
+
+app.get('/sw.js', swLimiter, async (req, res) => {
     try {
+        // Key on the SW source-version constant. DEPLOY_ID lives in api/sw.ts and
+        // is fixed for this process lifetime; a redeploy restarts the process and
+        // drops this cache, so a static key is sufficient here while the short TTL
+        // bounds branding-edit staleness.
+        const cached = await swResponseCache.get('sw', () => captureSwResponse((r) => swFn(req, r)));
+        for (const [name, value] of cached.headers) res.setHeader(name, value);
+        // Always re-assert no-store at the edge regardless of what was captured —
+        // the SW script must never be cached by Cloudflare/browser.
         res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-        await swFn(req, res);
+        res.status(cached.status).send(cached.body);
     } catch (e) {
         log.error('sw error', { err: e });
         if (!res.headersSent) res.status(500).send('SW Error');
@@ -654,21 +755,23 @@ app.get(/(.*)/, async (req, res) => {
     }
 });
 
-// Cron Jobs
-//
-// These run in-process here, but each is wrapped in withCronLease (a table-based
-// lease, see lib/cronLock.ts) so they are safe under multi-instance deploys —
-// only the instance holding the unexpired lease runs a given job per tick. The
-// lease (not a separate worker process) is what provides the per-job exclusion;
-// a dedicated worker process is an optional,
-// ops-driven follow-up and is not required for correctness.
+// Cron jobs run in-process, each wrapped in withCronLease (a table-based lease,
+// see lib/cronLock.ts) so they are safe under multi-instance deploys: only the
+// instance holding the unexpired lease runs a given job per tick.
 import cron from 'node-cron';
 import { cleanupInactiveDutyUsers } from './lib/db/users.js';
 import { cleanupExpiredBulletins } from './lib/db/intel.js';
 import { allianceSyncTick } from './lib/db/allianceSync.js';
 import { withCronLease } from './lib/cronLock.js';
 
-const server = app.listen(Number(port), '0.0.0.0', () => {
+// Only bind the port / register cron + signal handlers when this module is the
+// process entrypoint (node dist-server/server.js). When it is merely imported
+// (e.g. a unit test importing the exported createTtlCache helper) we skip the
+// side-effecting bootstrap so importing the module doesn't open a socket. In
+// production process.argv[1] is this file, so boot runs exactly as before.
+const isMainModule = !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+const server = isMainModule ? app.listen(Number(port), '0.0.0.0', () => {
     log.info('server running', { port });
     log.info('deployment timestamp', { timestamp: new Date().toISOString() });
     log.info('serving static files', { distPath });
@@ -694,7 +797,6 @@ const server = app.listen(Number(port), '0.0.0.0', () => {
         log.info('permission map ok');
     }
 
-    // Schedule Duty Status Cleanup (Every 1 minute)
     cron.schedule('* * * * *', async () => {
       await withCronLease('duty_cleanup', 50, async () => {
         const t0 = Date.now();
@@ -709,7 +811,7 @@ const server = app.listen(Number(port), '0.0.0.0', () => {
       });
     });
 
-    // Schedule Intel Bulletin Cleanup (Every 5 minutes) - Fallback for pg_cron
+    // Intel bulletin cleanup — fallback for pg_cron.
     cron.schedule('*/5 * * * *', async () => {
       await withCronLease('bulletin_cleanup', 270, async () => {
         const t0 = Date.now();
@@ -740,12 +842,12 @@ const server = app.listen(Number(port), '0.0.0.0', () => {
     });
 
     log.info('cron jobs initialized');
-});
+}) : null;
 
 // Graceful Shutdown
 const gracefulShutdown = (signal: string) => {
     log.info('signal received, starting graceful shutdown', { signal });
-    server.close(() => {
+    server?.close(() => {
         log.info('all connections drained, server closed cleanly');
         process.exit(0);
     });
@@ -756,5 +858,7 @@ const gracefulShutdown = (signal: string) => {
     }, 30_000);
 };
 
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+if (isMainModule) {
+    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+    process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+}

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// Ally directory cache tests (lib/db/alliances.ts, live-sync D2 slow lane):
+// Ally directory cache tests (lib/db/alliances.ts, the slow-lane directory fetch):
 //   - sanitize-at-WRITE: a hostile peer cannot park javascript:/data: avatar
 //     URLs in our DB (stored-XSS class)
 //   - cache-or-live-fetch: fresh cache served without a wire call; stale +
@@ -55,7 +55,12 @@ vi.mock('../lib/db/common', () => {
         getSystemRoles: async () => ({}),
     };
 });
-vi.mock('../lib/ssrf', () => ({ assertResolvesToPublicHost: async () => {} }));
+// ssrfSafeFetch is the production outbound path; in tests it delegates
+// to the stubbed global fetch so the existing fetch-based assertions hold.
+vi.mock('../lib/ssrf', () => ({
+    assertResolvesToPublicHost: async () => [],
+    ssrfSafeFetch: (url: string, init?: Record<string, unknown>) => (globalThis.fetch as typeof fetch)(url, init as RequestInit),
+}));
 vi.mock('../lib/crypto', () => ({ decryptSecret: (s: string) => s, encryptSecret: (s: string) => s }));
 vi.mock('../lib/db/system', () => ({
     verifyApiKey: async () => null,

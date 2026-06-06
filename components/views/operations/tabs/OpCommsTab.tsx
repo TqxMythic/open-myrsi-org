@@ -93,7 +93,6 @@ const OpCommsTab: React.FC<OpCommsTabProps> = ({ operation, canManage, isPartici
                 )}
             </div>
 
-            {/* Timeline Input */}
             {(isParticipant || canManage) && operation.status !== OperationStatus.Concluded && (
                 <form onSubmit={handleTimelineSubmit} className="p-4 bg-slate-900/80 border-t border-slate-700/50 flex gap-3 backdrop-blur-md shrink-0">
                     <input type="text" value={timelineInput} onChange={(e) => setTimelineInput(e.target.value)} placeholder="Add entry to mission log..."

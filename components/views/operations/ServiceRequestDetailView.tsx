@@ -168,8 +168,6 @@ const SectionCard: React.FC<SectionCardProps> = ({ id, icon, title, accent = 'sl
     );
 };
 
-/* ──────────────────────────────────────────────────────────────────────────── */
-
 const ServiceRequestDetailView: React.FC<ServiceRequestDetailViewProps> = ({
     request: initialRequest,
     onBack,
@@ -314,9 +312,8 @@ const ServiceRequestDetailView: React.FC<ServiceRequestDetailViewProps> = ({
     /* Eligibility flags for primary action resolution */
     const canAssign = hasPermission('request:dispatch') && [ServiceRequestStatus.Submitted, ServiceRequestStatus.Triaged].includes(request.status);
     const canAcceptMission = hasPermission('request:accept') && [ServiceRequestStatus.Submitted, ServiceRequestStatus.Triaged].includes(request.status);
-    // 'request:dispatch' is the permission; 'request:dispatch_members' is an
-    // action name (gated server-side by request:dispatch) and was never a
-    // grantable permission, so the button was dead for everyone.
+    // Gate on 'request:dispatch' (the permission); 'request:dispatch_members' is an
+    // action name gated server-side by request:dispatch, not a grantable permission.
     const canDispatchUnit = hasPermission('request:dispatch') && [ServiceRequestStatus.Submitted, ServiceRequestStatus.Triaged].includes(request.status);
     const canLaunch = (hasPermission('request:start') || isLead) && request.status === ServiceRequestStatus.Accepted;
     const canManageResponders = (hasPermission('request:manage_responders') || hasPermission('request:set_lead') || isLead) && isActiveMission;
@@ -356,11 +353,8 @@ const ServiceRequestDetailView: React.FC<ServiceRequestDetailViewProps> = ({
 
     const statusA = ACCENTS[statusAccent(request.status)];
 
-    /* ── Render ────────────────────────────────────────────────────────────── */
-
     return (
         <div className="flex flex-col h-full bg-slate-950 overflow-hidden">
-            {/* HERO HEADER */}
             <header className={`shrink-0 relative overflow-hidden border-b border-white/5 ${statusA.heroGrad}`}>
                 <div className={`absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[400px] ${statusA.heroOrb} rounded-full blur-[120px] pointer-events-none`} aria-hidden />
                 <div className="relative px-4 sm:px-8 pt-4 sm:pt-6 pb-4">
@@ -412,7 +406,6 @@ const ServiceRequestDetailView: React.FC<ServiceRequestDetailViewProps> = ({
                 </div>
             </header>
 
-            {/* COMMAND BAR */}
             <div className="shrink-0 sticky top-0 z-30 backdrop-blur-md bg-slate-950/80 border-b border-white/5">
                 <div className="max-w-7xl mx-auto w-full px-4 sm:px-8 py-3 flex flex-wrap items-center gap-2">
                     {canAssign && (
@@ -480,12 +473,9 @@ const ServiceRequestDetailView: React.FC<ServiceRequestDetailViewProps> = ({
                 </div>
             </div>
 
-            {/* BODY */}
             <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
                 <div className="max-w-7xl mx-auto w-full px-4 sm:px-8 py-6 grid grid-cols-1 lg:grid-cols-3 gap-4 lg:gap-6">
-                    {/* LEFT COLUMN */}
                     <div className="space-y-4 lg:space-y-6">
-                        {/* Client */}
                         <SectionCard id="client" icon="fa-user-circle" title="Client Identity" accent="sky" collapsedIds={collapsedIds} onToggle={toggleSection}>
                             <div className="flex items-start gap-3">
                                 {request.client?.avatarUrl ? (
@@ -553,7 +543,6 @@ const ServiceRequestDetailView: React.FC<ServiceRequestDetailViewProps> = ({
                             </SectionCard>
                         )}
 
-                        {/* Team */}
                         <SectionCard
                             id="team"
                             icon="fa-people-group"
@@ -622,7 +611,6 @@ const ServiceRequestDetailView: React.FC<ServiceRequestDetailViewProps> = ({
                             })()}
                         </SectionCard>
 
-                        {/* Party Manifest */}
                         {((request.secondaryClientHandles && request.secondaryClientHandles.length > 0) || request.partyInfo) && (
                             <SectionCard id="party" icon="fa-users" title="Party Manifest" accent="purple" collapsedIds={collapsedIds} onToggle={toggleSection}>
                                 {request.partyInfo && <p className="text-xs text-slate-400 mb-3 italic leading-relaxed">&ldquo;{request.partyInfo}&rdquo;</p>}
@@ -638,7 +626,6 @@ const ServiceRequestDetailView: React.FC<ServiceRequestDetailViewProps> = ({
                             </SectionCard>
                         )}
 
-                        {/* Outcome */}
                         {[ServiceRequestStatus.Success, ServiceRequestStatus.Failed, ServiceRequestStatus.GameError, ServiceRequestStatus.Aborted].includes(request.status) && (
                             <SectionCard id="outcome" icon="fa-flag-checkered" title="Mission Outcome" accent={request.status === ServiceRequestStatus.Success ? 'emerald' : 'red'} collapsedIds={collapsedIds} onToggle={toggleSection}>
                                 <div className="space-y-3">
@@ -680,9 +667,7 @@ const ServiceRequestDetailView: React.FC<ServiceRequestDetailViewProps> = ({
                         )}
                     </div>
 
-                    {/* RIGHT COLUMN */}
                     <div className="lg:col-span-2 space-y-4 lg:space-y-6">
-                        {/* Parameters */}
                         <SectionCard id="parameters" icon="fa-map-location-dot" title="Mission Parameters" accent="sky" collapsedIds={collapsedIds} onToggle={toggleSection}>
                             <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 text-sm mb-4">
                                 <dt className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2 pt-0.5">
@@ -724,7 +709,6 @@ const ServiceRequestDetailView: React.FC<ServiceRequestDetailViewProps> = ({
                             </div>
                         </SectionCard>
 
-                        {/* Mission Log */}
                         <SectionCard
                             id="log"
                             icon="fa-timeline"
@@ -747,7 +731,6 @@ const ServiceRequestDetailView: React.FC<ServiceRequestDetailViewProps> = ({
                 </div>
             </div>
 
-            {/* Keyboard cheat-sheet */}
             {showCheatsheet && (
                 <div className="fixed bottom-6 right-6 z-40 w-72 rounded-xl border border-white/10 bg-slate-950/95 backdrop-blur-md shadow-2xl p-4 animate-fade-in-up">
                     <div className="flex items-center justify-between mb-3">

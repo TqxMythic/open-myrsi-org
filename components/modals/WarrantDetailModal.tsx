@@ -64,9 +64,9 @@ const WarrantDetailModal: React.FC<WarrantDetailModalProps> = ({ isOpen, onClose
 
     const formatDate = (dateStr: string) => fmt(dateStr);
 
-    // #11: Notes thread state. Loaded on open + when the realtime broadcast
-    // fires. The legacy `warrant.notes` column is shown as the cached "latest
-    // note" while the thread loads and as a fallback for pre-migration tenants
+    // Notes thread state. Loaded on open and when the realtime broadcast fires.
+    // The legacy `warrant.notes` column is shown as the cached "latest note"
+    // while the thread loads and as a fallback for pre-migration deployments
     // that don't have a warrant_notes table populated yet.
     const [notes, setNotes] = useState<WarrantNote[]>([]);
     const [loadingNotes, setLoadingNotes] = useState(false);
@@ -124,10 +124,9 @@ const WarrantDetailModal: React.FC<WarrantDetailModalProps> = ({ isOpen, onClose
         }
     };
 
-    // #11: Intel dossier shortcut. Visible only when this warrant's target
-    // matches a known intel target (via the IntelTargetIndex Map). Dispatches
-    // a custom event so the Intel hub view can mount the dossier — mirror of
-    // the existing 'app:warrants-open-warrant' pattern from the dossier view.
+    // Intel dossier shortcut. Visible only when this warrant's target matches a
+    // known intel target (via the IntelTargetIndex Map). Dispatches a custom
+    // event so the Intel hub view can mount the dossier.
     const targetKey = (warrant.targetRsiHandle || '').trim().toLowerCase();
     const hasIntelDossier = !!targetKey && intelTargetIndex.has(targetKey);
     const handleOpenDossier = () => {
@@ -238,7 +237,7 @@ const WarrantDetailModal: React.FC<WarrantDetailModalProps> = ({ isOpen, onClose
                         </div>
                     )}
 
-                    {/* Notes Thread (#11) */}
+                    {/* Notes Thread */}
                     <div>
                         <div className="flex items-center justify-between mb-2">
                             <p className="text-[10px] uppercase font-black text-slate-500 tracking-wider">

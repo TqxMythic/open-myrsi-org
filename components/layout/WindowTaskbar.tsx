@@ -18,7 +18,6 @@ const WindowTaskbar: React.FC = () => {
 
     if (minimizedWindows.length === 0) return null;
 
-    // Group windows by type for intelligent grouping
     const grouped = minimizedWindows.reduce((acc, win) => {
         const group = win.type.split('-')[0]; // 'intel', 'bulletin', etc.
         if (!acc[group]) acc[group] = [];

@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Announcement } from '../../types';
 import Notice from '../ui/Notice';
 
-// NOTE: OrgPublicPage is rendered BEFORE the user is authenticated and BEFORE
+// OrgPublicPage is rendered BEFORE the user is authenticated and BEFORE
 // DataContext is populated. It must not use useAuth/useData. All data comes
 // from window.__PUBLIC_PAGE__ (SSR-injected) and /api/public (unauth endpoints).
 
@@ -11,7 +11,7 @@ interface PublicPagePayload {
     org: { name: string; iconUrl: string };
     motto: string;
     blurb: string;
-    // #14: Server-emitted sanitized HTML rendering of the rich blurb. Empty
+    // Server-emitted sanitized HTML rendering of the rich blurb. Empty
     // string when the stored blurb is plain text — fall back to `blurb`.
     blurbHtml?: string;
     heroImageUrl?: string;
@@ -165,14 +165,13 @@ const NoticesCard: React.FC<{ announcements: Announcement[] }> = ({ announcement
 
 // --- Blurb card ---
 
-// #14: Renders blurb. Prefers server-emitted sanitized HTML when present
-// (rich-text editor save). Falls back to plain text rendering for legacy
-// blurbs and orgs that haven't touched the field since the editor upgrade.
+// Renders blurb. Prefers server-emitted sanitized HTML when present (rich-text
+// editor save); falls back to plain text for legacy blurbs.
 //
-// SAFETY: blurbHtml is generated server-side by the JSON-to-safe-HTML walker
-// in lib/tiptapValidate.ts. The walker only emits an allowlisted set of tags
-// and HTML-escapes every text node — so dangerouslySetInnerHTML here is XSS-
-// safe by construction. Do NOT swap to a different source without re-evaluating.
+// blurbHtml is generated server-side by the JSON-to-safe-HTML walker in
+// lib/tiptapValidate.ts, which only emits an allowlisted set of tags and
+// HTML-escapes every text node — so dangerouslySetInnerHTML here is XSS-safe by
+// construction. Do NOT swap to a different source without re-evaluating.
 const BlurbCard: React.FC<{ text: string; html?: string }> = ({ text, html }) => (
     <CardPanel as="section" aria-labelledby="about-heading">
         <CardHeader icon="fa-solid fa-circle-info" title="About" id="about-heading" />

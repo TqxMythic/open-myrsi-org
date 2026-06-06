@@ -125,9 +125,8 @@ export async function upsertGovernmentConfig(config: Partial<GovernmentConfig>):
         government_type: config.governmentType || 'custom',
         name: config.name || 'Government',
         description: config.description || null,
-        // #14: constitution is edited via the WikiEditor (Tiptap JSON);
-        // sanitize on save to drop disallowed nodes/marks and reject unsafe
-        // link/image URLs.
+        // Constitution is edited via the WikiEditor (Tiptap JSON); sanitize on
+        // save to drop disallowed nodes/marks and reject unsafe link/image URLs.
         constitution_content: config.constitutionContent
             ? sanitizeTiptapJson(config.constitutionContent, 'wiki')
             : null,

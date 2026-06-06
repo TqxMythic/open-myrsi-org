@@ -384,14 +384,13 @@ export const RadioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                     setIsTransmitting(false);
                     await room.localParticipant.setMicrophoneEnabled(false);
                     stopMicMeter();
-                    // Only play squelch on own PTT release if we want local feedback
-                    // Usually squelch is for incoming, but local cue is good too
+                    // Local squelch cue on own PTT release.
                     playSound(brandingConfig.radioSquelchUrl);
                 }
             }
         } catch (e) {
             console.error("PTT Action Failed:", e);
-            // If PTT fails (e.g. connection lost), we might want to reset transmitting state
+            // Reset transmitting state on failure (e.g. connection lost).
             setIsTransmitting(false);
             stopMicMeter();
         }

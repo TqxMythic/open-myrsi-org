@@ -1,36 +1,19 @@
-// MembersContext owns the Members domain slices and CRUD methods that were
-// previously embedded in DataContext. This is Phase 3a of the context refactor
-// — a behavior-preserving extraction. The shim invariant is: useData() still
-// exposes every Members field with identical names and types, so the 220
-// consumer files that import useData() continue to work without changes.
+// MembersContext owns the Members slices (users, ranks, units, roles,
+// clearances, markers, specializations, certifications, commendations, Discord
+// role-sync maps) plus their CRUD and user-admin methods.
 //
-// Provider order: DataCoreProvider > MembersProvider > DataProvider.
-// Members must mount OUTSIDE Data so DataContext can call useMembers() inside
-// its body and re-expose the Members fields on its own context value.
+// Mounts OUTSIDE DataProvider so DataContext can call useMembers() inside its
+// body and re-expose the Members fields on its own context value, keeping the
+// useData() surface unchanged.
 //
-// State slices owned here (12):
-//   allUsers, ranks, units, roles, securityClearances, limitingMarkers,
-//   specializationTags, certifications, commendations, syncedDiscordRoles,
-//   rankMappings, roleMappings
+// `members` is the derived list of staff users (Member, Dispatcher, Admin).
 //
-// Derived value:
-//   members = filter(allUsers, role in {Member, Dispatcher, Admin})
+// Hydration: registers a slice setter per slice with DataCore, populated when
+// applyStateData(data) runs after a 'main'/'discord'/etc subset fetch.
 //
-// CRUD methods (21): see the inline groupings below.
-//
-// Realtime / state hydration: Members registers a slice setter with DataCore
-// for each of its 12 slices (Phase 0b plumbing). When DataContext calls
-// applyStateData(data) after fetching the 'main' / 'discord' / etc subset,
-// those registered setters fire and populate Members's local state. This
-// replaces the per-slice inline assignments that used to live in DataContext's
-// setStateFromData() switch for these fields.
-//
-// Refresh callback: CRUD methods need to call fetchDataSubset('main') after
-// their RPC succeeds. Since Members lives OUTSIDE Data, it can't read
-// useData() directly (would cycle). Instead, DataContext registers its
-// refreshMainState function with Members at mount via registerRefreshMainState,
-// and Members's CRUD methods call refreshMainStateRef.current?.() after the
-// RPC completes. This matches DataCore's registration pattern.
+// CRUD methods refresh the relevant subset after their RPC. refreshMainState/
+// refreshDiscord are defined in DataContext and registered here via register*
+// callbacks so CRUD can refresh without depending on useData() (would cycle).
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useDataCore } from './DataCoreContext';
@@ -41,7 +24,6 @@ import {
 } from '../types';
 
 export interface MembersContextValue {
-    // --- State slices (12) ---
     allUsers: User[];
     ranks: Rank[];
     units: OrganizationalUnit[];
@@ -55,12 +37,10 @@ export interface MembersContextValue {
     rankMappings: Record<string, string>;
     roleMappings: Record<string, string>;
 
-    // --- Derived ---
     members: User[];
 
-    // --- State setters (exposed for DataContext's optimisticUpdate branches
-    //     that handle 'ranks' and 'organizational_units'; DataContext is INSIDE
-    //     Members, so it consumes these setters via useMembers().) ---
+    // Exposed for DataContext's optimisticUpdate ('ranks', 'organizational_units')
+    // branches.
     setAllUsers: React.Dispatch<React.SetStateAction<User[]>>;
     setRanks: React.Dispatch<React.SetStateAction<Rank[]>>;
     setUnits: React.Dispatch<React.SetStateAction<OrganizationalUnit[]>>;
@@ -74,7 +54,6 @@ export interface MembersContextValue {
     setRankMappings: React.Dispatch<React.SetStateAction<Record<string, string>>>;
     setRoleMappings: React.Dispatch<React.SetStateAction<Record<string, string>>>;
 
-    // --- CRUD methods (21) ---
     addUnit: (data: any) => Promise<void>;
     updateUnit: (data: any) => Promise<void>;
     deleteUnit: (id: number) => Promise<void>;
@@ -107,7 +86,7 @@ export interface MembersContextValue {
      *  ride the boot payload — DiscordSettingsTab calls this on mount. */
     refreshDiscord: () => Promise<void>;
 
-    // --- User admin methods (Phase 4d — moved from SessionContext) ---
+    // User admin methods
     updateUserRecord: (id: number, data: any) => Promise<void>;
     adjustUserReputation: (id: number, amount: number, reason: string) => Promise<void>;
     awardCertification: (userId: number, certId: number) => Promise<void>;
@@ -118,15 +97,10 @@ export interface MembersContextValue {
     updateUserClearance: (userId: number, levelId: number | null, markerIds: number[]) => Promise<void>;
     promoteUserToMember: (id: number) => Promise<void>;
 
-    // --- Refresh registration ---
-    /** DataContext calls this in a useEffect once its `refreshMainState` is
-     *  defined. Members's CRUD methods invoke the registered fn after their
-     *  RPC completes so consumers see the new state without waiting for a
-     *  realtime broadcast (websocket-reconnect fallback, same intent as the
-     *  existing chained fetchDataSubset('main') pattern). */
+    /** DataContext registers its refreshMainState callback here once defined;
+     *  Members's CRUD methods invoke it after their RPC completes. */
     registerRefreshMainState: (fn: () => Promise<void> | void) => () => void;
-    /** Same pattern, but for the 'discord' subset — used by syncDiscordRoles
-     *  and updateRankMapping which historically refreshed the discord subset. */
+    /** Same, for the 'discord' subset — used by syncDiscordRoles and updateRankMapping. */
     registerRefreshDiscord: (fn: () => Promise<void> | void) => () => void;
 }
 
@@ -135,7 +109,6 @@ const MembersContext = createContext<MembersContextValue | null>(null);
 export const MembersProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const { rpcAction, registerSliceSetter } = useDataCore();
 
-    // --- 12 state slices ---
     const [allUsers, setAllUsers] = useState<User[]>([]);
     const [ranks, setRanks] = useState<Rank[]>([]);
     const [units, setUnits] = useState<OrganizationalUnit[]>([]);
@@ -157,11 +130,8 @@ export const MembersProvider: React.FC<{ children: React.ReactNode }> = ({ child
         [allUsers],
     );
 
-    // --- Refresh-callback registration plumbing ---
-    // DataContext defines refreshMainState/refreshDiscord and registers them
-    // here on mount; Members's CRUD methods call the registered fn via ref to
-    // avoid re-creating callbacks on every Data render. Using a ref also lets
-    // CRUD method identities stay stable across refresh-fn changes.
+    // DataContext registers refreshMainState/refreshDiscord here on mount; held
+    // in refs so CRUD method identities stay stable across refresh-fn changes.
     const refreshMainStateRef = useRef<(() => Promise<void> | void) | null>(null);
     const refreshDiscordRef = useRef<(() => Promise<void> | void) | null>(null);
 
@@ -187,12 +157,8 @@ export const MembersProvider: React.FC<{ children: React.ReactNode }> = ({ child
         if (fn) await fn();
     }, []);
 
-    // --- Slice-setter registration (Phase 0b plumbing) ---
-    // Each setter applies its slice of a bulk-state payload. When DataContext
-    // (or any caller) invokes applyStateData(data) on DataCore, every
-    // registered setter runs — populating Members state from the response of
-    // a 'main' / 'discord' / etc subset fetch. This replaces the per-slice
-    // inline assignments that used to live in DataContext.setStateFromData().
+    // Each setter applies its slice when applyStateData(data) runs after a
+    // 'main'/'discord'/etc subset fetch.
     useEffect(() => {
         const cleanups = [
             registerSliceSetter('users', (data: any) => { if (data.users) setAllUsers(data.users); }),
@@ -211,37 +177,18 @@ export const MembersProvider: React.FC<{ children: React.ReactNode }> = ({ child
         return () => cleanups.forEach(unreg => unreg());
     }, [registerSliceSetter]);
 
-    // --- CRUD methods (21) ---
-    // These mirror the originals 1:1: same RPC action, same payload shape,
-    // same post-call refresh. The only structural change is that they call
-    // refreshMain() (registered by DataContext) instead of an in-scope
-    // fetchDataSubset('main') — semantically equivalent.
-    //
-    // Note: optimistic updates for ranks/units were previously called via
-    // DataContext's optimisticUpdate('ranks'|'organizational_units', ...).
-    // We DON'T do those optimistic writes here because DataContext's
-    // optimisticUpdate still wraps these CRUD methods at the call sites
-    // (updateUnit/deleteUnit/updateRank/deleteRank). DataContext's
-    // optimisticUpdate gets the relevant setters (setRanks, setUnits) from
-    // useMembers() and writes through them directly. See DataContext.tsx
-    // optimisticUpdate for the post-refactor wiring.
-    //
-    // Wait — that's NOT correct. The original DataContext CRUD methods called
-    // optimisticUpdate(...) INSIDE the CRUD body before the RPC. If we leave
-    // those calls in DataContext (where they were), DataContext's optimisticUpdate
-    // would no longer be called because the CRUD methods now live here. So
-    // the optimistic-write logic for ranks/units MUST live here (in the CRUD
-    // body) and use the local setters directly. The DataContext.optimisticUpdate
-    // branches for ranks/organizational_units remain as a public utility but
-    // are no longer the one driving the optimistic write inside these CRUDs.
+    // CRUD methods refresh the 'main' subset after their RPC. The optimistic
+    // writes for ranks/units live here in the CRUD body (using the local setters
+    // directly); DataContext.optimisticUpdate's rank/unit branches remain a
+    // public utility but no longer drive these CRUDs.
 
-    // --- Units ---
+    // Units
     const addUnit = useCallback((data: any) =>
         rpcAction('admin:add_unit', data).then(() => refreshMain()),
     [rpcAction, refreshMain]);
 
     const updateUnit = useCallback((data: any) => {
-        // Optimistic write: mirror the prior optimisticUpdate('organizational_units', id, data, 'update') behavior.
+        // Optimistic write before the RPC.
         setUnits(prev => prev.map(item => item.id === data.id ? { ...item, ...data } : item));
         return rpcAction('admin:update_unit', data).then(() => refreshMain());
     }, [rpcAction, refreshMain]);
@@ -254,7 +201,7 @@ export const MembersProvider: React.FC<{ children: React.ReactNode }> = ({ child
             .catch(err => { void refreshMain(); throw err; });
     }, [rpcAction, refreshMain]);
 
-    // --- Ranks ---
+    // Ranks
     const addRank = useCallback((data: any) =>
         rpcAction('admin:add_rank', data).then(() => refreshMain()),
     [rpcAction, refreshMain]);
@@ -269,7 +216,7 @@ export const MembersProvider: React.FC<{ children: React.ReactNode }> = ({ child
         return rpcAction('admin:delete_rank', { rankId: id }).then(() => refreshMain());
     }, [rpcAction, refreshMain]);
 
-    // --- Roles ---
+    // Roles
     const addRole = useCallback((data: any) =>
         rpcAction('admin:add_role', { roleData: data }).then(() => refreshMain()),
     [rpcAction, refreshMain]);
@@ -290,7 +237,7 @@ export const MembersProvider: React.FC<{ children: React.ReactNode }> = ({ child
         rpcAction('admin:update_role_permissions', { roleId: id, permissionNames: perms }).then(() => refreshMain()),
     [rpcAction, refreshMain]);
 
-    // --- Specialization Tags ---
+    // Specialization Tags
     const addSpecializationTag = useCallback((tagData: any) =>
         rpcAction('admin:add_specialization', { tagData }).then(() => refreshMain()),
     [rpcAction, refreshMain]);
@@ -303,7 +250,7 @@ export const MembersProvider: React.FC<{ children: React.ReactNode }> = ({ child
         rpcAction('admin:delete_specialization', { tagId }).then(() => refreshMain()),
     [rpcAction, refreshMain]);
 
-    // --- Certifications ---
+    // Certifications
     const addCertification = useCallback((certData: any) =>
         rpcAction('admin:add_certification', { certData }).then(() => refreshMain()),
     [rpcAction, refreshMain]);
@@ -316,7 +263,7 @@ export const MembersProvider: React.FC<{ children: React.ReactNode }> = ({ child
         rpcAction('admin:delete_certification', { certId }).then(() => refreshMain()),
     [rpcAction, refreshMain]);
 
-    // --- Commendations ---
+    // Commendations
     const addCommendation = useCallback((commendData: any) =>
         rpcAction('admin:add_commendation', { commendData }).then(() => refreshMain()),
     [rpcAction, refreshMain]);
@@ -329,17 +276,14 @@ export const MembersProvider: React.FC<{ children: React.ReactNode }> = ({ child
         rpcAction('admin:delete_commendation', { commendId }).then(() => refreshMain()),
     [rpcAction, refreshMain]);
 
-    // --- Discord sync ---
+    // Discord sync
     const syncDiscordRoles = useCallback(async () => {
         await rpcAction('admin:sync_discord_roles', {});
         await refreshDiscord();
     }, [rpcAction, refreshDiscord]);
 
-    // updateRankMapping is special: it does an optimistic LOCAL write (to
-    // both rankMappings AND roleMappings if a roleId was provided) BEFORE
-    // dispatching the RPC, then refreshes on success OR failure. The
-    // local-write/refresh-on-error pattern preserves the original behavior
-    // line-for-line — now using the natively-owned setters here.
+    // Optimistic local write to rankMappings (and roleMappings if a roleId is
+    // given) before the RPC, then refresh on success or failure.
     const updateRankMapping = useCallback(async (discordRoleId: string, rankId: string, roleId?: string) => {
         setRankMappings(prev => ({ ...prev, [discordRoleId]: rankId }));
         if (roleId !== undefined) setRoleMappings(prev => ({ ...prev, [discordRoleId]: roleId }));
@@ -352,12 +296,7 @@ export const MembersProvider: React.FC<{ children: React.ReactNode }> = ({ child
         }
     }, [rpcAction, refreshDiscord]);
 
-    // --- User admin methods (Phase 4d) ---
-    // Moved from SessionContext. Each is a thin simpleAction wrapper that the
-    // server-side admin handler implements, followed by a 'main' subset
-    // refresh — semantically identical to the originals, with simpleAction →
-    // rpcAction (equivalent when no refresh arg is passed).
-
+    // User admin methods — thin RPC wrappers followed by a 'main' subset refresh.
     const updateUserRecord = useCallback((userId: number, data: any) =>
         rpcAction('admin:update_user', { targetUserId: userId, ...data }).then(() => refreshMain()),
     [rpcAction, refreshMain]);
@@ -390,27 +329,20 @@ export const MembersProvider: React.FC<{ children: React.ReactNode }> = ({ child
         rpcAction('admin:update_user_clearance', { targetUserId: userId, levelId, markerIds }).then(() => refreshMain()),
     [rpcAction, refreshMain]);
 
-    // Note: the original simpleAction passed `true` as the third arg, which
-    // triggered SessionContext.refreshUser() (a full getInitialState). For
-    // the realistic use case (admin promotes another user from Client to
-    // Member), refreshMain() pulls the updated allUsers list and is the same
-    // effective behavior at a lighter cost. Self-promotion isn't a real
-    // scenario — admins are already at the top role.
+    // Refreshes only the 'main' subset (updated allUsers), not the full session:
+    // an admin promotes another user, so the actor's own record is unchanged.
     const promoteUserToMember = useCallback((id: number) =>
         rpcAction('admin:promote_user', { targetUserId: id }).then(() => refreshMain()),
     [rpcAction, refreshMain]);
 
     const value = useMemo<MembersContextValue>(() => ({
-        // State
         allUsers, ranks, units, roles,
         securityClearances, limitingMarkers, specializationTags, certifications, commendations,
         syncedDiscordRoles, rankMappings, roleMappings,
         members,
-        // Setters (consumed by DataContext.optimisticUpdate)
         setAllUsers, setRanks, setUnits, setRoles,
         setSecurityClearances, setLimitingMarkers, setSpecializationTags, setCertifications, setCommendations,
         setSyncedDiscordRoles, setRankMappings, setRoleMappings,
-        // CRUD
         addUnit, updateUnit, deleteUnit,
         addRank, updateRank, deleteRank,
         addRole, updateRole, deleteRole, getRoleDetails, updateRolePermissions,
@@ -418,12 +350,10 @@ export const MembersProvider: React.FC<{ children: React.ReactNode }> = ({ child
         addCertification, updateCertification, deleteCertification,
         addCommendation, updateCommendation, deleteCommendation,
         syncDiscordRoles, updateRankMapping, refreshDiscord,
-        // User admin methods (Phase 4d)
         updateUserRecord, adjustUserReputation,
         awardCertification, awardCommendation, addConductEntry,
         revokeCertification, revokeCommendation,
         updateUserClearance, promoteUserToMember,
-        // Refresh registration
         registerRefreshMainState, registerRefreshDiscord,
     }), [
         allUsers, ranks, units, roles,

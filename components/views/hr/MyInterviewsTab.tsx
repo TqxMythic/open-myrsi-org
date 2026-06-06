@@ -9,7 +9,7 @@ import { useModalRegistry } from '../../../contexts/ModalRegistryContext';
 
 const MyInterviewsTab: React.FC = () => {
     const { refreshHR } = useData();
-    const { hrInterviews } = useHR(); // Use hrInterviews
+    const { hrInterviews } = useHR();
     const { currentUser } = useAuth();
     const fmt = useFormatDate();
     const { openConductInterviewModal, openScheduleInterviewModal, openEditInterviewModal } = useModalRegistry();
@@ -21,7 +21,6 @@ const MyInterviewsTab: React.FC = () => {
 
     const myInterviews = useMemo(() => {
         if (!currentUser) return [];
-        // Filter by interviewer ID
         return hrInterviews
             .filter(int => int.interviewerId === currentUser.id)
             .sort((a, b) => new Date(a.scheduledAt || 0).getTime() - new Date(b.scheduledAt || 0).getTime());

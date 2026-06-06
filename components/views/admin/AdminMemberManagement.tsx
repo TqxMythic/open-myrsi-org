@@ -23,8 +23,7 @@ type RosterMode = 'hierarchy' | 'flat';
 type FlatSortKey = 'name' | 'rank' | 'position' | 'unit' | 'isDuty';
 type SortDir = 'asc' | 'desc';
 
-// Module-scope so usePersistentState's `serialize` reference is stable
-// across renders (it's used inside a useCallback dependency).
+// Module-scope so the serializer reference is stable across renders.
 const SET_SERIALIZER = {
     serialize: (v: Set<number>): string => JSON.stringify(Array.from(v)),
     deserialize: (s: string): Set<number> => new Set(JSON.parse(s)),
@@ -35,7 +34,6 @@ interface AdminMemberManagementProps {
     scrollId?: string;
 }
 
-// Helper types for the flattened list
 type RosterItemType = 'unit' | 'member';
 
 interface RosterItem {
@@ -58,10 +56,8 @@ const AdminMemberManagement: React.FC<AdminMemberManagementProps> = ({ onManageU
     const { selected, toggle, isSelected, clear, setMany, count } = useBulkSelection<number>();
     const [bulkAction, setBulkAction] = useState<BulkActionKey | null>(null);
 
-    // Roster shape & filters — persisted across reloads under the
-    // `adminRoster_*` keyspace so admins doing repetitive work don't have
-    // to re-apply the same filters every page load. Sets need a custom
-    // serializer since JSON has no native Set encoding.
+    // Roster shape & filters — persisted across reloads so admins don't have to
+    // re-apply them each page load. Sets need a custom serializer (JSON has none).
     const [rosterMode, setRosterMode] = usePersistentState<RosterMode>(
         'adminRoster_mode',
         'hierarchy',
@@ -107,16 +103,9 @@ const AdminMemberManagement: React.FC<AdminMemberManagementProps> = ({ onManageU
         [ranks],
     );
 
-    // Sanity-prune stale ids from persisted filters. If the admin had a
-    // unit or rank selected, then it was deleted (or renamed-and-re-id'd)
-    // while they were away, the stored Set still references the gone id
-    // and the roster would render "0 matches" with no obvious cause.
-    // Drop any ids not present in the live data; the persistent-state
-    // setter writes the cleaned Set back to localStorage automatically.
-    //
-    // Guard on `units.length > 0` / `ranks.length > 0` so we don't prune
-    // mid-load. Orgs that legitimately have zero units/ranks couldn't
-    // have selected any in the first place, so the guard is harmless.
+    // Prune stale ids from persisted filters: a selected unit/rank deleted while
+    // the admin was away would leave the roster showing "0 matches" with no cause.
+    // Drop ids absent from live data. Guard on length > 0 so we don't prune mid-load.
     useEffect(() => {
         if (units.length === 0 || unitFilter.size === 0) return;
         const validIds = new Set(units.map(u => u.id));
@@ -135,9 +124,8 @@ const AdminMemberManagement: React.FC<AdminMemberManagementProps> = ({ onManageU
         }
     }, [ranks, rankFilter, setRankFilter]);
 
-    // Composed predicate — unit filter, rank filter, and search box all
-    // apply in both hierarchy and flat modes. Lifted from DutyRosterView's
-    // memberMatches at lines 109-121.
+    // Composed predicate — unit filter, rank filter, and search box all apply
+    // in both hierarchy and flat modes.
     const memberMatches = useCallback((m: User): boolean => {
         if (unitFilter.size > 0 && (!m.unit || !unitFilter.has(m.unit.id))) return false;
         if (rankFilter.size > 0 && (!m.rank || !rankFilter.has(m.rank.id))) return false;
@@ -162,7 +150,7 @@ const AdminMemberManagement: React.FC<AdminMemberManagementProps> = ({ onManageU
         }
     }, [flatSortKey, setFlatSortDir, setFlatSortKey]);
 
-    // Artificial delay to ensure data hydration and smooth rendering (matching DutyRosterView behavior)
+    // Brief delay to let data hydrate before rendering.
     useEffect(() => {
         const timer = setTimeout(() => {
             setIsLoading(false);
@@ -170,7 +158,6 @@ const AdminMemberManagement: React.FC<AdminMemberManagementProps> = ({ onManageU
         return () => clearTimeout(timer);
     }, []);
 
-    // 1. Build Unit Hierarchy Tree
     const unitTree = useMemo(() => {
         const nodes: UnitNode[] = units.map(u => ({ ...u, children: [] }));
         const nodeMap = new Map(nodes.map(n => [n.id, n]));
@@ -193,11 +180,8 @@ const AdminMemberManagement: React.FC<AdminMemberManagementProps> = ({ onManageU
         return roots;
     }, [units]);
 
-    // 2. Flatten Tree into List with Members.
-    // Two render modes:
-    //   * hierarchy — preserves unit nesting (current behaviour)
-    //   * flat — sortable single-level list (mirrors DutyRoster's flat mode)
-    // Both share `memberMatches` for filtering.
+    // Flatten the tree into a list. Two modes: hierarchy (preserves nesting) and
+    // flat (sortable single-level list). Both filter through `memberMatches`.
     const flattenedRoster = useMemo<RosterItem[]>(() => {
         if (isLoading) return [];
 
@@ -236,7 +220,6 @@ const AdminMemberManagement: React.FC<AdminMemberManagementProps> = ({ onManageU
             }));
         }
 
-        // Hierarchy mode
         const result: RosterItem[] = [];
 
         const processNode = (node: UnitNode, level: number) => {
@@ -244,7 +227,6 @@ const AdminMemberManagement: React.FC<AdminMemberManagementProps> = ({ onManageU
                 .filter(m => m.unit?.id === node.id)
                 .filter(memberMatches);
 
-            // Sort members by Rank Precedence
             unitMembers.sort((a, b) => {
                 const rankA = a.rank?.sortOrder ?? 9999;
                 const rankB = b.rank?.sortOrder ?? 9999;
@@ -252,7 +234,6 @@ const AdminMemberManagement: React.FC<AdminMemberManagementProps> = ({ onManageU
                 return a.name.localeCompare(b.name);
             });
 
-            // Add Unit Header
             result.push({
                 id: `unit-${node.id}`,
                 type: 'unit',
@@ -260,7 +241,6 @@ const AdminMemberManagement: React.FC<AdminMemberManagementProps> = ({ onManageU
                 level
             });
 
-            // Add Members
             unitMembers.forEach(m => {
                 result.push({
                     id: `member-${m.id}`,
@@ -305,17 +285,15 @@ const AdminMemberManagement: React.FC<AdminMemberManagementProps> = ({ onManageU
 
     }, [unitTree, members, memberMatches, isLoading, rosterMode, flatSortKey, flatSortDir]);
 
-    // Resolve full User objects for the selection — modals expect them
-    // for the preview list. Filter out the actor (server tier-guards
-    // also block self-demote, but UX shouldn't even let them try).
+    // Resolve full User objects for the selection (modals need them for the
+    // preview list). Filter out the actor so they can't self-demote.
     const selectedUsers = useMemo<User[]>(
         () => members.filter((m) => isSelected(m.id) && m.id !== currentUser?.id),
         [members, isSelected, currentUser?.id],
     );
 
-    // IDs of currently visible (post-filter) members eligible for bulk actions.
-    // Excludes Admins and the actor — same predicate as the per-row checkbox
-    // visibility rule. Used by the Select-All header checkbox.
+    // Visible (post-filter) members eligible for bulk actions, used by the
+    // Select-All header checkbox. Excludes Admins and the actor.
     const visibleMemberIds = useMemo<number[]>(
         () => flattenedRoster
             .filter(item => item.type === 'member')
@@ -412,7 +390,7 @@ const AdminMemberManagement: React.FC<AdminMemberManagementProps> = ({ onManageU
                 />
             </div>
 
-            {/* Filter row — mode toggle + Unit/Rank multi-select chips. Mirrors DutyRoster. */}
+            {/* Filter row — mode toggle + Unit/Rank multi-select chips. */}
             <div className="mt-4 flex flex-wrap items-center gap-2 shrink-0">
                 <div className="flex bg-slate-900/60 rounded-lg border border-slate-700 p-0.5">
                     {(['hierarchy', 'flat'] as RosterMode[]).map(m => (
@@ -573,8 +551,7 @@ const AdminMemberManagement: React.FC<AdminMemberManagementProps> = ({ onManageU
                                         );
                                     } else {
                                         const member = item.data as User;
-                                        // Admins (and the actor) can't be bulk-demoted via this tool;
-                                        // hide the checkbox to keep the UI honest.
+                                        // Admins and the actor can't be bulk-demoted, so hide the checkbox.
                                         const canSelect = member.role !== 'Admin' && member.id !== currentUser?.id;
                                         return (
                                             <div
@@ -604,7 +581,7 @@ const AdminMemberManagement: React.FC<AdminMemberManagementProps> = ({ onManageU
                                                 <div className="flex-1 flex items-center gap-3 min-w-0">
                                                     <div className="relative shrink-0">
                                                         <img src={member.avatarUrl} className="w-8 h-8 rounded-full border border-slate-600 object-cover group-hover:border-slate-500 transition-colors" alt="" />
-                                                        {/* Presence dot mirrors DutyRoster — green when on-duty, slate otherwise. */}
+                                                        {/* Presence dot — green when on-duty, slate otherwise. */}
                                                         <div className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-slate-800 ${member.isDuty ? 'bg-green-500' : 'bg-slate-600'}`}></div>
                                                     </div>
                                                     <div className="min-w-0">

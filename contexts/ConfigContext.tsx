@@ -1,43 +1,21 @@
-// ConfigContext owns the Config domain slices and CRUD methods that were
-// previously embedded in DataContext. This is Phase 3b of the context refactor
-// — a behavior-preserving extraction. The shim invariant is: useData() still
-// exposes every Config field with identical names and types, so the 220
-// consumer files that import useData() continue to work without changes.
+// ConfigContext owns the Config slices and their CRUD methods.
 //
-// Provider order: DataCoreProvider > MembersProvider > ConfigProvider > DataProvider.
-// Config must mount OUTSIDE Data so DataContext can call useConfig() inside its
-// body and re-expose the Config fields on its own context value.
+// Mounts OUTSIDE DataProvider so DataContext can call useConfig() inside its
+// body and re-expose the Config fields on its own context value, keeping the
+// useData() surface unchanged.
 //
-// State slices owned here (13):
-//   brandingConfig, discordConfig, heroCardConfig, openGraphConfig, radioConfig,
-//   aiConfig, wikiHomeConfig, hrConfig, publicPageConfig, serviceTypes,
-//   externalTools, locations, radioChannels
+// externalTools / locations / radioChannels aren't strictly "configs" but share
+// the admin-managed reference-data lifecycle (server-validated, globally scoped,
+// low write rate), so they're grouped here.
 //
-// Notes on grouping:
-//   - externalTools / locations / radioChannels aren't strictly "configs" but
-//     they share the admin-managed reference-data lifecycle (server-validated,
-//     globally scoped, low write rate). Grouping here keeps the admin domain
-//     cohesive.
-//   - aiConfig is the org-level global AI toggle/model setting.
+// Hydration: registers a slice setter per slice with DataCore, populated when
+// applyStateData(data) runs after a 'main'/'discord'/'external_tools' subset fetch.
 //
-// CRUD methods (18): see the inline groupings below. updateDiscordConfig and
-// reorderExternalTool refresh non-'main' subsets ('discord' and
-// 'external_tools' respectively) — DataContext registers both refresh callbacks.
-//
-// Realtime / state hydration: Config registers a slice setter with DataCore
-// for each of its 13 slices (Phase 0b plumbing). When DataContext calls
-// applyStateData(data) after fetching the 'main' / 'discord' / 'external_tools'
-// subset, those registered setters fire and populate Config's local state.
-// This replaces the per-slice inline assignments that used to live in
-// DataContext's setStateFromData() switch for these fields.
-//
-// Refresh callback: CRUD methods need to call fetchDataSubset('main') or
-// ('discord') / ('external_tools') after their RPC succeeds. Since Config
-// lives OUTSIDE Data, it can't read useData() directly (would cycle).
-// Instead, DataContext registers its refreshMainState/refreshDiscord/
-// refreshExternalTools functions with Config at mount via the register*
-// callbacks, and Config's CRUD methods call them via ref after the RPC
-// completes. Same registration pattern as MembersContext (Phase 3a).
+// CRUD methods refresh the relevant subset after their RPC. refreshMainState/
+// refreshDiscord/refreshExternalTools are defined in DataContext and registered
+// here via register* callbacks so CRUD can refresh without depending on useData()
+// (would cycle). updateDiscordConfig and the external-tool methods refresh their
+// own subsets ('discord', 'external_tools') rather than 'main'.
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useDataCore } from './DataCoreContext';
@@ -47,9 +25,8 @@ import {
     ExternalTool, RadioChannel, TestimonialCandidate,
 } from '../types';
 
-// Re-exports — see types/config.ts for the canonical list. Keeping these here
-// as well lets domain consumers do `import { BrandingConfig } from '../contexts/ConfigContext'`
-// without juggling two import paths when migrating later.
+// Re-exports so domain consumers can import config types from either
+// '../contexts/ConfigContext' or '../types/config'.
 export type {
     BrandingConfig, DiscordConfig, HeroCardConfig, OpenGraphConfig, RadioConfig,
     AIConfig, WikiHomeConfig, HRConfig, PublicPageConfig, ServiceTypeConfig,
@@ -61,7 +38,6 @@ export type {
 const defaultIconUrl = '/media/cross-swords.png';
 
 export interface ConfigContextValue {
-    // --- State slices (13) ---
     brandingConfig: BrandingConfig;
     discordConfig: DiscordConfig;
     heroCardConfig: HeroCardConfig;
@@ -76,9 +52,6 @@ export interface ConfigContextValue {
     locations: any[];
     radioChannels: RadioChannel[];
 
-    // --- State setters (exposed for parity with MembersContext;
-    //     DataContext may consume these from optimisticUpdate or similar
-    //     callers in future phases.) ---
     setBrandingConfig: React.Dispatch<React.SetStateAction<BrandingConfig>>;
     setDiscordConfig: React.Dispatch<React.SetStateAction<DiscordConfig>>;
     setHeroCardConfig: React.Dispatch<React.SetStateAction<HeroCardConfig>>;
@@ -93,27 +66,27 @@ export interface ConfigContextValue {
     setLocations: React.Dispatch<React.SetStateAction<any[]>>;
     setRadioChannels: React.Dispatch<React.SetStateAction<RadioChannel[]>>;
 
-    // --- CRUD: Locations (4) ---
+    // Locations CRUD
     addLocation: (data: any) => Promise<void>;
     updateLocation: (data: any) => Promise<void>;
     deleteLocation: (id: number) => Promise<void>;
     seedDefaultLocations: () => Promise<any>;
 
-    // --- CRUD: Service Types (3) ---
+    // Service Types CRUD
     addServiceType: (data: any) => Promise<void>;
     updateServiceType: (data: any) => Promise<void>;
     deleteServiceType: (id: number) => Promise<void>;
 
-    // --- CRUD: External Tools (4) ---
+    // External Tools CRUD
     addExternalTool: (data: any) => Promise<void>;
     updateExternalTool: (data: any) => Promise<void>;
     deleteExternalTool: (id: number) => Promise<void>;
     reorderExternalTool: (id: number, sortOrder: number) => Promise<void>;
 
-    // --- CRUD: Radio Channels (1) ---
+    // Radio Channels CRUD
     deleteRadioChannel: (channelId: string) => Promise<void>;
 
-    // --- Config update methods (10) ---
+    // Config update methods
     updateDiscordConfig: (config: any) => Promise<void>;
     updateHeroCardConfig: (config: HeroCardConfig) => Promise<void>;
     updateBrandingConfig: (config: any) => Promise<void>;
@@ -125,24 +98,17 @@ export interface ConfigContextValue {
     updatePublicPageConfig: (config: PublicPageConfig) => Promise<void>;
     updateOrgFeatures: (patch: Record<string, any>) => Promise<void>;
 
-    // --- Query (1) ---
     listTestimonialCandidates: (params: { search?: string; limit?: number; offset?: number }) => Promise<{ items: TestimonialCandidate[]; total: number }>;
 
-    // --- Refresh registration ---
-    /** DataContext calls this in a useEffect once its `refreshMainState` is
-     *  defined. Config's CRUD methods invoke the registered fn after their
-     *  RPC completes so consumers see the new state without waiting for a
-     *  realtime broadcast (websocket-reconnect fallback, same intent as the
-     *  existing chained fetchDataSubset('main') pattern). */
+    /** DataContext registers its refreshMainState callback here once defined;
+     *  Config's CRUD methods invoke it after their RPC completes. */
     registerRefreshMainState: (fn: () => Promise<void> | void) => () => void;
-    /** Same pattern, but for the 'discord' subset — used by updateDiscordConfig
-     *  which historically refreshed the discord subset (separate fetch path
-     *  because it pulls additional joined data not in the 'main' bundle). */
+    /** Same, for the 'discord' subset — used by updateDiscordConfig, which
+     *  pulls additional joined data not in the 'main' bundle. */
     registerRefreshDiscord: (fn: () => Promise<void> | void) => () => void;
-    /** Same pattern, but for the 'external_tools' subset — used by the four
-     *  external-tool CRUD methods. External tools are fetched as their own
-     *  subset (separate from 'main') because the realtime postgres_changes
-     *  listener on the external_tools table dispatches to this subset. */
+    /** Same, for the 'external_tools' subset — used by the external-tool CRUD
+     *  methods. External tools are their own subset because the realtime
+     *  postgres_changes listener on the external_tools table dispatches to it. */
     registerRefreshExternalTools: (fn: () => Promise<void> | void) => () => void;
 }
 
@@ -151,7 +117,6 @@ const ConfigContext = createContext<ConfigContextValue | null>(null);
 export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const { rpcAction, registerSliceSetter } = useDataCore();
 
-    // --- 13 state slices ---
     const [brandingConfig, setBrandingConfig] = useState<BrandingConfig>({ name: '', iconUrl: defaultIconUrl });
     const [discordConfig, setDiscordConfig] = useState<DiscordConfig>({});
     const [heroCardConfig, setHeroCardConfig] = useState<HeroCardConfig>({ backgroundImageUrl: '', discordUrl: '', organizationUrl: '', title: '', subtitle: '' });
@@ -175,11 +140,9 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const [locations, setLocations] = useState<any[]>([]);
     const [radioChannels, setRadioChannels] = useState<RadioChannel[]>([]);
 
-    // --- Refresh-callback registration plumbing ---
-    // DataContext defines refreshMainState/refreshDiscord/refreshExternalTools
-    // and registers them here on mount; Config's CRUD methods call the
-    // registered fn via ref to avoid re-creating callbacks on every Data
-    // render. Same pattern as MembersContext.
+    // DataContext registers refreshMainState/refreshDiscord/refreshExternalTools
+    // here on mount; held in refs so CRUD methods can call them without
+    // re-creating callbacks on every render.
     const refreshMainStateRef = useRef<(() => Promise<void> | void) | null>(null);
     const refreshDiscordRef = useRef<(() => Promise<void> | void) | null>(null);
     const refreshExternalToolsRef = useRef<(() => Promise<void> | void) | null>(null);
@@ -215,16 +178,9 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         const fn = refreshExternalToolsRef.current;
         if (fn) await fn();
     }, []);
-    // --- Slice-setter registration (Phase 0b plumbing) ---
-    // Each setter applies its slice of a bulk-state payload. When DataContext
-    // (or any caller) invokes applyStateData(data) on DataCore, every
-    // registered setter runs — populating Config state from the response of
-    // a 'main' / 'discord' / 'external_tools' subset fetch. This replaces the
-    // per-slice inline assignments that used to live in DataContext.setStateFromData().
-    //
-    // The keys here match the field names returned by getInitialState /
-    // getStateSubset on the server — verified against DataContext's original
-    // setStateFromData() switch lines for each Config slice.
+    // Each setter applies its slice when applyStateData(data) runs after a
+    // 'main'/'discord'/'external_tools' subset fetch. Keys match the field names
+    // returned by getInitialState / getStateSubset on the server.
     useEffect(() => {
         const cleanups = [
             registerSliceSetter('brandingConfig', (data: any) => { if (data.brandingConfig) setBrandingConfig(data.brandingConfig); }),
@@ -244,7 +200,7 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         return () => cleanups.forEach(unreg => unreg());
     }, [registerSliceSetter]);
 
-    // --- CRUD: Locations ---
+    // Locations CRUD
     const addLocation = useCallback((data: any) =>
         rpcAction('admin:add_location', data).then(() => refreshMain()),
     [rpcAction, refreshMain]);
@@ -261,7 +217,7 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         rpcAction('admin:seed_default_locations', {}).then(() => refreshMain()),
     [rpcAction, refreshMain]);
 
-    // --- CRUD: Service Types ---
+    // Service Types CRUD
     const addServiceType = useCallback((data: any) =>
         rpcAction('admin:add_service_type', data).then(() => refreshMain()),
     [rpcAction, refreshMain]);
@@ -274,7 +230,7 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         rpcAction('admin:delete_service_type', { id }).then(() => refreshMain()),
     [rpcAction, refreshMain]);
 
-    // --- CRUD: External Tools (refresh the 'external_tools' subset) ---
+    // External Tools CRUD — refresh the 'external_tools' subset, not 'main'.
     const addExternalTool = useCallback((toolData: any) =>
         rpcAction('admin:add_tool', { toolData }).then(() => refreshExternalTools()),
     [rpcAction, refreshExternalTools]);
@@ -291,12 +247,12 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         rpcAction('admin:reorder_tool', { toolId: id, sortOrder }).then(() => refreshExternalTools()),
     [rpcAction, refreshExternalTools]);
 
-    // --- CRUD: Radio Channels ---
+    // Radio Channels CRUD
     const deleteRadioChannel = useCallback((channelId: string) =>
         rpcAction('admin:delete_radio_channel', { channelId }).then(() => refreshMain()),
     [rpcAction, refreshMain]);
 
-    // --- Config update methods ---
+    // Config update methods
     const updateDiscordConfig = useCallback((config: any) =>
         rpcAction('admin:update_discord_config', config).then(() => refreshDiscord()),
     [rpcAction, refreshDiscord]);
@@ -351,26 +307,20 @@ export const ConfigProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     );
 
     const value = useMemo<ConfigContextValue>(() => ({
-        // State
         brandingConfig, discordConfig, heroCardConfig, openGraphConfig, radioConfig,
         aiConfig, wikiHomeConfig, hrConfig, publicPageConfig,
         serviceTypes, externalTools, locations, radioChannels,
-        // Setters
         setBrandingConfig, setDiscordConfig, setHeroCardConfig, setOpenGraphConfig, setRadioConfig,
         setAiConfig, setWikiHomeConfig, setHrConfig, setPublicPageConfig,
         setServiceTypes, setExternalTools, setLocations, setRadioChannels,
-        // CRUD
         addLocation, updateLocation, deleteLocation, seedDefaultLocations,
         addServiceType, updateServiceType, deleteServiceType,
         addExternalTool, updateExternalTool, deleteExternalTool, reorderExternalTool,
         deleteRadioChannel,
-        // Config update
         updateDiscordConfig, updateHeroCardConfig, updateBrandingConfig, updateOpenGraphConfig,
         updateRadioConfig, updateAIConfig, updateWikiHomeConfig, updateSystemConfig,
         updatePublicPageConfig, updateOrgFeatures,
-        // Query
         listTestimonialCandidates,
-        // Refresh registration
         registerRefreshMainState, registerRefreshDiscord, registerRefreshExternalTools,
     }), [
         brandingConfig, discordConfig, heroCardConfig, openGraphConfig, radioConfig,

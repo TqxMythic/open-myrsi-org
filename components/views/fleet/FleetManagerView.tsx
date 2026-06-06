@@ -33,7 +33,6 @@ const FleetManagerView: React.FC = () => {
     const [groupBy, setGroupBy] = useState<'none' | 'member' | 'manufacturer' | 'role'>('none');
     const [searchTerm, setSearchTerm] = useState('');
 
-    // Group management
     const [showGroupModal, setShowGroupModal] = useState(false);
     const [editingGroup, setEditingGroup] = useState<FleetGroup | null>(null);
     const [groupForm, setGroupForm] = useState({ name: '', type: 'Custom' as string, description: '', commanderId: '', parentId: '' });
@@ -76,7 +75,6 @@ const FleetManagerView: React.FC = () => {
         setAssignExpandedOwners(new Set());
     }, [assigningGroup?.id]);
 
-    // Permission flags
     const canManageOwn = hasPermission('fleet:manage_own');
     const canViewFleet = hasPermission('fleet:view');
     const canManageFleet = hasPermission('fleet:manage');
@@ -273,7 +271,6 @@ const FleetManagerView: React.FC = () => {
         }
     }, [rpcAction, refreshFleet, addToast]);
 
-    // Org fleet stats
     const fleetStats = useMemo(() => {
         const byManufacturer: Record<string, number> = {};
         const byRole: Record<string, number> = {};
@@ -288,7 +285,6 @@ const FleetManagerView: React.FC = () => {
         return { byManufacturer, byRole, bySize, total: userShips.length };
     }, [userShips]);
 
-    // Filtered fleet for Org Fleet tab
     const filteredFleet = useMemo(() => {
         return userShips.filter(s => {
             if (filterManufacturer && s.ship?.manufacturer !== filterManufacturer) return false;
@@ -316,7 +312,6 @@ const FleetManagerView: React.FC = () => {
         return userShips.filter(s => !assignedIds.has(s.id));
     }, [userShips, fleetGroups]);
 
-    // Group fleet for display
     const groupedFleet = useMemo(() => {
         if (groupBy === 'none') return { '': filteredFleet };
         const groups: Record<string, UserShip[]> = {};
@@ -432,9 +427,7 @@ const FleetManagerView: React.FC = () => {
                 ))}
             />
 
-            {/* Body */}
             <div className={`flex-1 min-h-0 flex flex-col ${activeTab === 'organization' ? 'overflow-hidden p-4 sm:p-6 gap-6' : 'overflow-y-auto p-4 sm:p-6 space-y-6'}`}>
-                {/* Search & Filter Bar (Hangar + Fleet tabs) */}
                 {(activeTab === 'hangar' || activeTab === 'fleet') && (
                     <div className="flex flex-col lg:flex-row gap-3">
                         <div className="relative flex-1 max-w-2xl">
@@ -493,7 +486,6 @@ const FleetManagerView: React.FC = () => {
                     </div>
                 )}
 
-                {/* Content */}
                 <div className={activeTab === 'organization' ? 'w-full flex-1 min-h-0 flex flex-col' : 'max-w-7xl mx-auto w-full'}>
                 {isInitialLoading ? (
                     <div className="space-y-6 animate-pulse">
@@ -518,7 +510,6 @@ const FleetManagerView: React.FC = () => {
                         </div>
                     </div>
                 ) : <>
-                {/* My Hangar Tab */}
                 {activeTab === 'hangar' && (
                     <div>
                         {myShips.length === 0 ? (
@@ -530,7 +521,7 @@ const FleetManagerView: React.FC = () => {
                                     description="Add ships from the catalog to build your fleet."
                                     action={canManageOwn ? (
                                         <button onClick={() => setShowCatalog(true)}
-                                            className="flex items-center gap-2 px-4 py-2.5 text-xs font-bold uppercase tracking-widest text-white bg-orange-600 hover:bg-orange-500 border border-orange-500/40 rounded-lg shadow-lg shadow-orange-900/30 transition">
+                                            className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-bold uppercase tracking-widest text-white bg-orange-600 hover:bg-orange-500 border border-orange-500/40 rounded-lg shadow-lg shadow-orange-900/30 transition">
                                             <i className="fa-solid fa-book-open"></i>Browse Catalog
                                         </button>
                                     ) : undefined}
@@ -568,10 +559,8 @@ const FleetManagerView: React.FC = () => {
                     </div>
                 )}
 
-                {/* Org Fleet Tab */}
                 {activeTab === 'fleet' && (
                     <div className="space-y-6">
-                        {/* Stats Bar */}
                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                             <HeroStat icon="fa-rocket" label="Total Ships" value={fleetStats.total} accent="orange" />
                             <HeroStat icon="fa-industry" label="Manufacturers" value={Object.keys(fleetStats.byManufacturer).length} accent="sky" />
@@ -725,7 +714,6 @@ const FleetManagerView: React.FC = () => {
                     </div>
                 )}
 
-                {/* Fleet Organization Tab */}
                 {activeTab === 'organization' && (
                     <div className="flex-1 min-h-0 flex flex-col gap-3">
                         {/* Unassigned Ships drawer — only shown to fleet admins when
@@ -795,7 +783,7 @@ const FleetManagerView: React.FC = () => {
                                     description="Create a division or squadron to start organizing ships."
                                     action={canManageFleet ? (
                                         <button onClick={() => { setEditingGroup(null); setGroupForm({ name: '', type: FleetGroupType.Division, description: '', commanderId: '', parentId: '' }); setShowGroupModal(true); }}
-                                            className="flex items-center gap-2 px-4 py-2.5 text-xs font-bold uppercase tracking-widest text-white bg-orange-600 hover:bg-orange-500 border border-orange-500/40 rounded-lg shadow-lg shadow-orange-900/30 transition">
+                                            className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-bold uppercase tracking-widest text-white bg-orange-600 hover:bg-orange-500 border border-orange-500/40 rounded-lg shadow-lg shadow-orange-900/30 transition">
                                             <i className="fa-solid fa-plus"></i>Create Group
                                         </button>
                                     ) : undefined}
@@ -822,10 +810,8 @@ const FleetManagerView: React.FC = () => {
                 </div>
             </div>
 
-            {/* Ship Catalog Browser */}
             <ShipCatalogBrowser isOpen={showCatalog} onSelect={handleAddShips} onClose={() => setShowCatalog(false)} />
 
-            {/* Edit Ship Modal */}
             <WindowFrame
                 title="Edit Ship"
                 subtitle="Hangar Management"
@@ -864,7 +850,6 @@ const FleetManagerView: React.FC = () => {
                 </div>
             </WindowFrame>
 
-            {/* Group Create/Edit Modal */}
             <WindowFrame
                 title={editingGroup ? 'Edit Group' : 'Create Group'}
                 subtitle="Fleet Organization"
@@ -1002,7 +987,6 @@ const FleetManagerView: React.FC = () => {
 
                     return (
                         <div className="flex flex-col" style={{ maxHeight: 'calc(70vh - 60px)' }}>
-                            {/* Search */}
                             {available.length > 0 && (
                                 <div className="p-3 border-b border-slate-800/60 shrink-0">
                                     <div className="relative">
@@ -1039,7 +1023,6 @@ const FleetManagerView: React.FC = () => {
                                 </div>
                             )}
 
-                            {/* Groups */}
                             <div className="flex-1 overflow-y-auto p-3 space-y-2">
                                 {available.length === 0 ? (
                                     <EmptyState

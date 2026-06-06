@@ -72,7 +72,6 @@ const ShipCatalogBrowser: React.FC<ShipCatalogBrowserProps> = ({ isOpen, onSelec
             onClose={onClose}
         >
             <div className="flex flex-col" style={{ maxHeight: 'calc(90vh - 60px)' }}>
-                {/* Filters */}
                 <div className="p-4 border-b border-white/5 bg-slate-900/50">
                     <div className="flex flex-col lg:flex-row gap-2 items-center">
                         <div className="relative flex-1 w-full">
@@ -99,7 +98,6 @@ const ShipCatalogBrowser: React.FC<ShipCatalogBrowserProps> = ({ isOpen, onSelec
                     <p className="text-[10px] text-slate-500 mt-2 px-1 uppercase tracking-widest font-mono">{filtered.length} ships available · Click to select, then add</p>
                 </div>
 
-                {/* Ship Grid */}
                 <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
                     {shipCatalog.length === 0 ? (
                         <EmptyState
@@ -147,7 +145,6 @@ const ShipCatalogBrowser: React.FC<ShipCatalogBrowserProps> = ({ isOpen, onSelec
                     )}
                 </div>
 
-                {/* Action Bar */}
                 <div className="flex items-center justify-between p-4 border-t border-white/5 bg-slate-900/50 rounded-b-xl">
                     <div className="text-sm text-slate-400">
                         {selectedIds.size > 0 ? (

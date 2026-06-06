@@ -6,6 +6,8 @@ import { toUser, toReputationHistoryEntry, toRatingHistoryEntry } from './mapper
 import { getAllSettings } from './system.js';
 import { getDiscordMember, pushDiscordRolesForUser, getDiscordUserById, buildGlobalAvatarUrl } from '../discord.js';
 import { isValidTimezone, isValidDateFormat } from '../time.js';
+import { isAllowedPushEndpoint, MAX_PUSH_SUBSCRIPTIONS_PER_USER } from '../push.js';
+import { canViewAllClassifications, type ClearanceUser } from '../clearance.js';
 import { log as baseLog } from '../log.js';
 
 const log = baseLog.child({ module: 'db.users' });
@@ -57,22 +59,10 @@ export async function logHrPositionChange(
 // which are only read in admin/personal detail views — those views lazy-load
 // via the user_detail query target.
 //
-// What we KEEP and why:
-//  - specializations: DispatchModal and AddResponderModal display the first
-//    2 spec tags inline as soon as the modal opens. Smallest of the joins.
-//  - certifications/commendations as ID-only stubs: bulk-award modals
-//    (AwardCertificationModal, AwardSingleCertificationModal) filter members
-//    who already hold a cert/commendation. They only need the template IDs
-//    for that filter — display of names/dates happens in detail views which
-//    lazy-load full data. Projecting only the ID column keeps payload tiny
-//    while preserving the existing UX.
-//
-// What we DROP and why:
-//  - limitingMarkers: only read in admin clearance UI and SecurityVettingModal,
-//    both of which lazy-load full user data.
-//  - conductRecord: largest free-text contributor; only displayed in the
-//    admin detail view's Conduct tab and personal MyConductTab (which reads
-//    from currentUser, hydrated separately and full).
+// Kept: specializations (DispatchModal/AddResponderModal show the first 2 spec
+// tags inline) and certifications/commendations as ID-only stubs (bulk-award
+// modals filter members who already hold a cert/commendation by template id;
+// names/dates render in lazy-loaded detail views).
 export const USER_LIST_SELECT_QUERY = `
     *,
     role:roles!inner(id, name, description, role_permissions(permission:permissions(name))),
@@ -145,12 +135,18 @@ export async function getUsersByIdsLite(userIds: number[]): Promise<User[]> {
 }
 
 export async function getUserById(userId: number) {
-    const { data, error } = await supabase.from('users').select(USER_SELECT_QUERY).eq('id', userId).single();
+    // Exclude soft-deleted users. This is the session-resolution query on BOTH
+    // api/services.ts (mutations) and api/query.ts (reads) plus op actor/target
+    // resolution, so a soft-deleted user must not keep access for the life of
+    // their JWT. Reactivation flows go through
+    // findUserByDiscordId(includeDeleted)/reactivateUser, not this resolver, so
+    // they are unaffected.
+    const { data, error } = await supabase.from('users').select(USER_SELECT_QUERY).eq('id', userId).is('deleted_at', null).single();
     if (!error) return toUser(data);
     // Full user query failed (possibly due to missing FK/table from a new migration).
     // Try with the lighter list query as a fallback to avoid breaking auth.
     log.warn('full user query failed, trying fallback', { userId, message: error.message });
-    const { data: fallback, error: fbErr } = await supabase.from('users').select(USER_LIST_SELECT_QUERY).eq('id', userId).single();
+    const { data: fallback, error: fbErr } = await supabase.from('users').select(USER_LIST_SELECT_QUERY).eq('id', userId).is('deleted_at', null).single();
     if (!fbErr && fallback) return toUser(fallback);
     return null;
 }
@@ -185,6 +181,23 @@ export async function getAdmins() {
 }
 
 export async function createUser(userData: { discordId: string, name: string, avatarUrl: string, rsiHandle: string, isAdmin: boolean, rsiVerified?: boolean }) {
+    // Block duplicate-row account-squatting on discord_id. The public
+    // auth:finalize_setup path forwards a client-supplied discordId straight here;
+    // without this pre-check an attacker could insert a second users row bound to
+    // a victim's Discord snowflake. Fail closed on any existing non-deleted user
+    // for the same discord_id.
+    if (userData.discordId) {
+        const { data: existing, error: existErr } = await supabase.from('users')
+            .select('id')
+            .eq('discord_id', userData.discordId)
+            .is('deleted_at', null)
+            .maybeSingle();
+        if (existErr) handleSupabaseError({ error: existErr, message: 'Failed to check existing user' });
+        if (existing) {
+            throw new Error('A user with this Discord account already exists.');
+        }
+    }
+
     // 1. Determine role via system role helper (is_system flag + ID order)
     const sysRoles = await getSystemRoles();
 
@@ -219,7 +232,6 @@ export async function createUser(userData: { discordId: string, name: string, av
             .ilike('unregistered_client_rsi_handle', userData.rsiHandle)
             .is('client_id', null);
 
-        // Update org member count (always recalculate for multi-tenant accuracy)
         try {
             /* single-org: no member count recalculation */;
         } catch (err) {
@@ -249,16 +261,13 @@ export async function reactivateUser(userId: number, updates: Partial<Tables<'us
  * Privilege-escalation guard for any code path that mutates a user's role_id.
  *
  * Rules (any failure throws):
- *   1. Actor must hold `admin:user:update_role` (or be the system Admin).
- *      The action `admin:update_user` is gated on `admin:user:update`, which is
- *      a strictly weaker permission used for editing rank/unit/notes — the
- *      role select on the frontend is gated separately. Without this check the
- *      backend silently honoured a `roleId` field on the same payload, letting
- *      anyone with `admin:user:update` (e.g. a custom HR Manager role) promote
+ *   1. Actor must hold `admin:user:update_role` (or be the system Admin). The
+ *      action `admin:update_user` is gated on the strictly weaker
+ *      `admin:user:update` (rank/unit/notes); without this check a `roleId` on
+ *      the same payload would let anyone with `admin:user:update` promote
  *      themselves or others to Admin.
- *   2. Target role must belong to the same org (cross-tenant isolation).
- *   3. The system Admin role can only ever be assigned by another Admin.
- *   4. Actor cannot assign a role whose effective tier exceeds their own —
+ *   2. The system Admin role can only ever be assigned by another Admin.
+ *   3. Actor cannot assign a role whose effective tier exceeds their own —
  *      including custom roles whose permissions imply a higher tier (e.g. a
  *      custom role granting `admin:access`).
  */
@@ -333,9 +342,8 @@ export async function roleTier(roleId: number): Promise<number> {
 
 /**
  * Privilege-escalation guard for WRITING a role's permission set
- * (admin:update_role_permissions). The dispatcher already requires
- * admin:config:roles to reach this, but that alone let a non-Admin "role
- * manager" grant admin:access (or any permission) to their own role and
+ * (admin:update_role_permissions). admin:config:roles alone would let a non-Admin
+ * "role manager" grant admin:access (or any permission) to their own role and
  * become Admin. Enforce, for non-Admin actors:
  *   (a) No amplification — cannot grant a permission the actor doesn't hold.
  *   (b) Tier ceiling — cannot edit a role at or above the actor's own tier
@@ -416,8 +424,16 @@ export async function updateUser(userId: number, updates: UpdateUserInput, actor
     if (updates.rsiHandle) dbUpdates.rsi_handle = updates.rsiHandle;
     if (updates.rankId !== undefined) dbUpdates.rank_id = updates.rankId || null;
     if (updates.unitId !== undefined) dbUpdates.unit_id = updates.unitId || null;
-    // Note: Clearance updates now handled via dedicated function or check if limiting markers passed
-    if (updates.clearanceLevelId !== undefined) dbUpdates.clearance_level_id = updates.clearanceLevelId || null;
+    if (updates.clearanceLevelId !== undefined) {
+        // A clearance write through the generic profile-edit path must be
+        // author-clamped exactly like the dedicated updateUserClearance path —
+        // otherwise admin:update_user (weaker than manage_clearance) becomes a
+        // back door to grant clearance above the actor's own. Only runs when
+        // clearanceLevelId is present (plain profile edits that omit it are
+        // unaffected). updateUser writes no markers here.
+        await assertCanGrantClearance(actor, updates.clearanceLevelId || null, null);
+        dbUpdates.clearance_level_id = updates.clearanceLevelId || null;
+    }
     if (updates.positionId !== undefined) dbUpdates.position_id = updates.positionId || null;
     if (updates.secondaryPositionId !== undefined) dbUpdates.secondary_position_id = updates.secondaryPositionId || null;
 
@@ -503,7 +519,86 @@ export async function getUserPositionHistory(userId: number): Promise<PositionHi
     }));
 }
 
-export async function updateUserClearance(userId: number, adminId: number, levelId: number | null, markerIds: number[]) {
+/**
+ * Author-clearance clamp for user clearance GRANTS.
+ *
+ * A user's clearance level + held limiting markers ARE the read-side visibility
+ * key (passesClearance keys off them). Without a clamp, any holder of
+ * `admin:user:manage_clearance` (or `admin:user:update`) — delegatable granular
+ * catalog permissions, NOT Admin — could grant themselves or a colluder a
+ * clearance level / markers ABOVE the granter's own, then read every classified
+ * report/bulletin/op/wiki via the normal read paths. Write-side mirror of
+ * assertCanClassify, applied to user clearance assignment instead of content
+ * labels.
+ *
+ * Rule (fails closed; only applied when the update actually changes
+ * clearance/markers — a plain profile edit must be unaffected):
+ *   - Admins and holders of an org-wide all-classifications bypass
+ *     (canViewAllClassifications, e.g. `intel:manage`) may grant anything.
+ *   - Everyone else: the target LEVEL must be at/below the actor's own clearance
+ *     level, and every applied markerId must be one the actor personally holds.
+ *
+ * `levelId` is the security_clearances PK (FK), NOT the numeric level — it is
+ * resolved to its numeric `level` here before comparison.
+ */
+const CLEARANCE_GRANT_BYPASS = ['intel:manage'];
+
+async function assertCanGrantClearance(
+    actor: Partial<User> | null | undefined,
+    levelId: number | null | undefined,
+    markerIds: number[] | null | undefined,
+): Promise<void> {
+    if (canViewAllClassifications(actor as ClearanceUser | null | undefined, CLEARANCE_GRANT_BYPASS)) return;
+
+    if (!actor || !actor.id) {
+        throw new Error('Unauthorized: actor identity required to change clearance');
+    }
+
+    const actorLevel = (actor as ClearanceUser).clearanceLevel?.level ?? 0;
+
+    // Resolve the target clearance FK to its numeric level. A null/0 levelId
+    // means "clear clearance" (down to nothing) — always allowed.
+    if (levelId) {
+        const { data: target, error } = await supabase.from('security_clearances')
+            .select('level')
+            .eq('id', levelId)
+            .maybeSingle();
+        if (error || !target) {
+            throw new Error('Target clearance level not found');
+        }
+        const targetLevel = (target as { level?: number | null }).level ?? 0;
+        if (targetLevel > actorLevel) {
+            throw new Error('You cannot grant a clearance level above your own.');
+        }
+    }
+
+    if (markerIds && markerIds.length > 0) {
+        const held = new Set<string>(
+            ((actor as ClearanceUser).limitingMarkers || []).map((m) => {
+                if (m && typeof m === 'object') {
+                    const o = m as Record<string, unknown>;
+                    if (o.id !== undefined && o.id !== null) return String(o.id);
+                    if (o.code !== undefined && o.code !== null) return String(o.code);
+                    if (o.name !== undefined && o.name !== null) return String(o.name);
+                }
+                return String(m);
+            }),
+        );
+        for (const mid of markerIds) {
+            if (mid === undefined || mid === null) continue;
+            if (!held.has(String(mid))) {
+                throw new Error('You cannot grant a limiting marker you do not hold.');
+            }
+        }
+    }
+}
+
+export async function updateUserClearance(userId: number, adminId: number, levelId: number | null, markerIds: number[], actor?: Partial<User>) {
+    // Author-clamp the requested grant against the acting user's own
+    // clearance/markers (Admin / all-classifications bypass exempt).
+    await assertCanGrantClearance(actor, levelId, markerIds);
+
+
     // 1. Get old data for history
     const { data: user } = await supabase.from('users').select('clearance_level_id').eq('id', userId).single();
     if (!user) throw new Error('User not found');
@@ -536,7 +631,7 @@ export async function updateUserClearance(userId: number, adminId: number, level
     await broadcastUserUpdate(userId);
 }
 
-// #17: bulk version of updateUserClearance. Loops the same per-user contract
+// Bulk version of updateUserClearance. Loops the same per-user contract
 // (level update + marker write + clearance_history audit row) so the audit
 // grain stays one-row-per-user. Differences vs the single-user path:
 //   - levelId === undefined leaves the level alone (single-user always sets it)
@@ -550,6 +645,7 @@ export async function bulkUpdateUserClearances(
     levelId: number | null | undefined,
     markerIds: number[],
     markerMode: 'replace' | 'add',
+    actor?: Partial<User>,
 ): Promise<{ updated: number; total: number }> {
     if (!Array.isArray(targetUserIds) || targetUserIds.length === 0) {
         return { updated: 0, total: 0 };
@@ -557,6 +653,12 @@ export async function bulkUpdateUserClearances(
     if (markerMode !== 'replace' && markerMode !== 'add') {
         throw new Error('bulkUpdateUserClearances: markerMode must be "replace" or "add"');
     }
+
+    // Author-clamp the requested grant once up front (the requested level +
+    // markers are constant across the batch). Throws before any write if the actor
+    // is granting above their own clearance / unheld markers. levelId === undefined
+    // means "leave level alone" — no level grant to clamp.
+    await assertCanGrantClearance(actor, levelId ?? null, markerIds);
 
     let updated = 0;
     // Successfully-updated ids only — shipped on the bulk broadcast so clients
@@ -655,16 +757,13 @@ export async function bulkUpdateUserClearances(
 }
 
 /**
- * Demote each of `targetUserIds` to the org's Client role. Used by the
- * over-cap grace banner's "Bulk Demote" tool to bring an org back under
- * its tier's member cap and clear the grace window. Per-user errors are
- * caught and counted as `skipped` rather than aborting the batch — the
- * UI surfaces the partial-success counts to the admin.
+ * Demote each of `targetUserIds` to the org's Client role. Per-user errors are
+ * caught and counted as `skipped` rather than aborting the batch — the UI
+ * surfaces the partial-success counts to the admin.
  *
- * Tier hierarchy guard: `updateUser` invokes `assertCanAssignRole`, which
- * permits demoting downward (Client is tier 1) by any actor at or above
- * tier 2 (Member). Admins demoting other Admins is also blocked there;
- * the modal additionally filters Admins out client-side as a UX safeguard.
+ * Tier hierarchy guard: the per-user updateUser invokes assertCanAssignRole,
+ * which permits demoting downward (Client is tier 1) by any actor at or above
+ * tier 2 (Member) and blocks Admins demoting other Admins.
  */
 // Defensive upper bound on a single bulk call. Clients chunk at 25; 100 is
 // headroom for direct API consumers and a circuit breaker against accidental
@@ -736,9 +835,6 @@ export async function bulkDemoteUsersToClient(
         }
     }
 
-    // Single member-count recompute for the batch. This also re-evaluates the
-    // over-cap grace window — important for the Demote flow since pulling an
-    // org back under cap should clear any active grace timestamp.
     if (updated > 0) {
         try { /* single-org: no member count recalculation */; } catch (e) { log.error('bulkDemoteUsersToClient updateOrgMemberCount failed', { err: e }); }
     }
@@ -749,9 +845,6 @@ export async function bulkDemoteUsersToClient(
 
 /**
  * Promote N selected Client/lower-tier users to the org's Member role.
- *
- * Single member-count recompute for the batch, mirroring
- * bulkDemoteUsersToClient.
  */
 export async function bulkPromoteUsersToMember(
     targetUserIds: number[],
@@ -813,11 +906,9 @@ export async function bulkPromoteUsersToMember(
 
 /**
  * Set the is_affiliate or is_vip flag to a fixed value on a batch of users.
- * Replaces the per-user toggle for bulk: an explicit setter avoids the
- * "mixed-state selection produces inconsistent outcomes" footgun.
- *
- * Per-user guards: BOLA via org-scoped predicate; Client-tier-only (matches
- * the single-user toggle's behaviour); skip no-op writes (already at value).
+ * An explicit setter (rather than a bulk toggle) avoids inconsistent outcomes on
+ * a mixed-state selection. Per-user guards: target must exist; Client-tier-only
+ * (matches the single-user toggle); skip no-op writes (already at value).
  */
 async function bulkSetUsersClientFlag(
     targetUserIds: number[],
@@ -849,7 +940,7 @@ async function bulkSetUsersClientFlag(
                 .maybeSingle();
             if (!user) { skipped++; continue; }
             const userRow = user as { role_id: number | null; is_affiliate?: boolean | null; is_vip?: boolean | null };
-            if (userRow.role_id !== clientRoleId) { skipped++; continue; }   // Client-only guard
+            if (userRow.role_id !== clientRoleId) { skipped++; continue; }   // Client-only
             if (userRow[flag] === value) { skipped++; continue; }              // no-op
             const { error } = await supabase
                 .from('users')
@@ -878,11 +969,9 @@ export async function bulkSetUsersVip(targetUserIds: number[], value: boolean) {
 }
 
 /**
- * Internal helper for assign-unit/rank/position bulk actions. Validates
- * the assigned id belongs to the org once at the top, then loops a
- * direct UPDATE per user. Skips updateOrgMemberCount — these don't
- * change tier — so a 100-user batch is just one validation query and
- * 100 small writes.
+ * Internal helper for assign-unit/rank/position bulk actions. Validates the
+ * assigned id exists once at the top, then loops a direct UPDATE per user — so a
+ * 100-user batch is one validation query and 100 small writes.
  */
 async function bulkAssignUsersScalar(
     targetUserIds: number[],
@@ -988,8 +1077,8 @@ export async function deleteUser(userId: number) {
     const { data: userData } = await supabase.from('users').select('id').eq('id', userId).maybeSingle();
     if (!userData) throw new Error('User not found');
 
-    // Anonymise display identity but retain discord_id and rsi_handle
-    // for abuse prevention (reputation system integrity, ban evasion detection)
+    // Anonymise display identity but retain discord_id and rsi_handle for abuse
+    // prevention (reputation integrity, ban-evasion detection).
     const { error } = await supabase.from('users').update({
         deleted_at: new Date().toISOString(),
         name: 'Deleted User',
@@ -1003,10 +1092,10 @@ export async function deleteUser(userId: number) {
 }
 
 /**
- * Slim presence subset returned for realtime duty-flip refreshes.
- * Caller filters by org; the result is patched into existing allUsers
- * client-side rather than replacing it. Two parallel one-column queries
- * instead of getMainState's 44-column-per-user fan-out.
+ * Slim presence subset returned for realtime duty-flip refreshes. The result is
+ * patched into existing allUsers client-side rather than replacing it. Two
+ * parallel one-column queries instead of getMainState's 44-column-per-user
+ * fan-out.
  */
 export async function getUsersPresenceState(): Promise<{ usersPresence: Array<{ userId: number; isDuty: boolean; lastActiveAt: string | null }> }> {
 
@@ -1043,8 +1132,8 @@ export async function getUsersPresenceState(): Promise<{ usersPresence: Array<{ 
 
 // Visual flags for Client users only (affiliate / VIP). Both columns share the
 // same toggle contract via _toggleClientFlag — the helper enforces the
-// Client-role check against the org's system roles, so direct API callers
-// can't flag staff or other roles. See migrations/add-user-affiliate-vip.sql.
+// Client-role check, so direct API callers can't flag staff or other roles.
+// See migrations/add-user-affiliate-vip.sql.
 export async function toggleUserAffiliateStatus(userId: number) {
     return _toggleClientFlag('is_affiliate', userId);
 }
@@ -1054,7 +1143,6 @@ export async function toggleUserVipStatus(userId: number) {
 
 async function _toggleClientFlag(column: 'is_affiliate' | 'is_vip', userId: number) {
 
-    // BOLA guard: target must be in caller's org. Same shape as toggleUserDutyStatus.
     const { data: user } = await supabase
         .from('users')
         .select(`id, role_id, ${column}`)
@@ -1087,13 +1175,11 @@ async function _toggleClientFlag(column: 'is_affiliate' | 'is_vip', userId: numb
 }
 
 export async function toggleUserDutyStatus(userId: number) {
-    // BOLA guard: target must be in caller's org.
-
     const { data } = await supabase.from('users').select('is_duty')
         .eq('id', userId)
         
         .maybeSingle();
-    if (!data) return; // Silent fail if not found matching org
+    if (!data) return; // silent no-op if not found
 
     const newStatus = !data.is_duty;
 
@@ -1363,7 +1449,6 @@ export async function updateUserPreferences(
 }
 
 export async function updateUserSpecializations(userId: number, specializationIds: number[]) {
-    // FIX: Changed .eq('id', userId) to .eq('user_id', userId) to match table schema
     const { error: deleteError } = await supabase.from('user_specializations').delete().eq('user_id', userId);
     handleSupabaseError({ error: deleteError, message: 'Failed to clear specializations' });
     if (specializationIds.length > 0) {
@@ -1375,9 +1460,7 @@ export async function updateUserSpecializations(userId: number, specializationId
 }
 
 export async function adminAdjustUserReputation(userId: number, newReputation: number, adminId: number, reason: string) {
-    // BOLA guard: target must be in caller's org.
-
-    // Verify user belongs to this organization before adjusting
+    // Verify the user exists before adjusting.
     const { data: user } = await supabase.from('users').select('id').eq('id', userId).maybeSingle();
     if (!user) throw new Error('User not found in this organization');
 
@@ -1415,9 +1498,7 @@ export async function getRatingHistoryForUser(userId: number) {
 }
 
 export async function promoteUserToMember(userId: number) {
-    // BOLA guard: target must be in caller's org.
-
-    // Verify target is in caller's org and fetch current role
+    // Verify target exists and fetch current role.
     const { data: userData } = await supabase.from('users').select('role_id').eq('id', userId).maybeSingle();
     if (!userData) throw new Error('User not found in this organization');
     const oldRoleId: number | null = userData.role_id || null;
@@ -1619,8 +1700,31 @@ export async function savePushSubscription(
     userId: number,
     subscription: { endpoint: string; keys: { p256dh: string; auth: string } },
 ) {
+    // The endpoint is fully client-controlled and the service-role server later
+    // POSTs to it. Reject anything that isn't an https URL on a known Web-Push
+    // vendor host BEFORE it is stored — otherwise it is a stored blind-SSRF
+    // target. Validate keys are present too.
+    if (!isAllowedPushEndpoint(subscription?.endpoint)) {
+        throw new Error('Invalid push subscription endpoint.');
+    }
+    if (!subscription?.keys?.p256dh || !subscription?.keys?.auth) {
+        throw new Error('Invalid push subscription keys.');
+    }
+
     // Delete existing sub for this endpoint to prevent duplicates/stale
     await supabase.from('push_subscriptions').delete().eq('endpoint', subscription.endpoint);
+
+    // Cap subscriptions per user (fan-out amplifier bound). When at/over the cap,
+    // evict the oldest before inserting the new one.
+    const { data: existing } = await supabase.from('push_subscriptions')
+        .select('id, created_at')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: true });
+    if (existing && existing.length >= MAX_PUSH_SUBSCRIPTIONS_PER_USER) {
+        const evictCount = existing.length - MAX_PUSH_SUBSCRIPTIONS_PER_USER + 1;
+        const evictIds = existing.slice(0, evictCount).map((s) => s.id);
+        await supabase.from('push_subscriptions').delete().in('id', evictIds);
+    }
 
     const { error } = await supabase.from('push_subscriptions').insert({
         user_id: userId,

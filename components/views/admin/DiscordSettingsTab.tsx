@@ -39,14 +39,9 @@ const DiscordSettingsTab: React.FC = () => {
     const [isSaving, setIsSaving] = useState(false);
     const [isSaved, setIsSaved] = useState(false);
 
-    // Sync local state from discordConfig. The DataContext only ever calls
-    // setDiscordConfig() once data has actually arrived from the server, so any
-    // referential change to discordConfig (including subsequent realtime
-    // refreshes) means we have a fresh server snapshot — flip configLoaded
-    // immediately. The previous heuristic ("at least one channel populated")
-    // got stuck on Loading after a rolling deploy whenever the discord subset
-    // briefly returned a config with no channel IDs (e.g. before they were
-    // first set, or during a partial refresh window).
+    // Sync local state from discordConfig. Any referential change to discordConfig
+    // means a fresh server snapshot, so flip configLoaded immediately rather than
+    // gating on whether channel IDs are populated.
     useEffect(() => {
         if (!discordConfig) return;
         setNewRequestChannelId(discordConfig.newRequestChannelId || '');

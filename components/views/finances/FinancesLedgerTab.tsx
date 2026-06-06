@@ -75,7 +75,6 @@ export default function FinancesLedgerTab({
 
     return (
         <div className="space-y-4">
-            {/* Filter strip */}
             <div className="flex flex-wrap items-center gap-2">
                 <div className="flex items-center gap-1 bg-slate-900 rounded-lg border border-white/10 p-1">
                     <button
@@ -123,7 +122,6 @@ export default function FinancesLedgerTab({
                 </button>
             </div>
 
-            {/* Rows */}
             {filtered.length === 0 ? (
                 <div className="rounded-xl border border-white/5 bg-slate-900/30 p-10 text-center text-slate-500 text-sm">
                     No entries match the current filters.

@@ -42,7 +42,7 @@ interface RemoveShipsPayload extends ActorFields {
     userShipIds: number[];
 }
 
-// M3: members with only fleet:manage_own may mutate ONLY their own ships. Those
+// Members with only fleet:manage_own may mutate ONLY their own ships. Those
 // with fleet:manage (or Admin) operate org-wide → pass undefined (no scoping).
 function fleetOwnScope(user?: { role?: string; permissions?: string[] }, userId?: number): number | undefined {
     const canManageAll = user?.role === 'Admin' || (Array.isArray(user?.permissions) && user!.permissions!.includes('fleet:manage'));

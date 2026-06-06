@@ -37,7 +37,6 @@ const DraggableWindow: React.FC<DraggableWindowProps> = ({ id, title, initialX, 
         const handleMouseMove = (e: MouseEvent) => {
             if (!isDragging) return;
 
-            // Calculate new position
             const newX = e.clientX - dragStart.current.x;
             const newY = e.clientY - dragStart.current.y;
 

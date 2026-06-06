@@ -10,9 +10,7 @@ import { useModalRegistry } from '../../../contexts/ModalRegistryContext';
 
 interface HRMembersTabProps {
     // Lifted to HRHubView so the "Manage Members" nav item can clear the
-    // detail-view state — clicking the nav while already on this tab would
-    // otherwise be a no-op (activeTab doesn't change), leaving the user
-    // stranded on a member detail with no obvious way back to the roster.
+    // detail-view state and return the user to the roster.
     managingUserId?: number | null;
     setManagingUserId?: (id: number | null) => void;
 }

@@ -166,7 +166,6 @@ export default function AdjustStockDialog({ isOpen, inventory, onClose, onSubmit
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
             <div onClick={onClose} className="absolute inset-0 bg-slate-950/80 backdrop-blur-xs" />
             <div className="relative w-full max-w-lg bg-slate-950/95 border border-white/10 rounded-xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
-                {/* Header */}
                 <div className="flex items-center justify-between px-5 py-4 border-b border-white/10">
                     <div className="min-w-0">
                         <p className="text-[10px] font-black text-slate-500 uppercase tracking-[0.25em]">Adjust Stock</p>
@@ -182,15 +181,12 @@ export default function AdjustStockDialog({ isOpen, inventory, onClose, onSubmit
                     </button>
                 </div>
 
-                {/* Body */}
                 <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4 custom-scrollbar">
-                    {/* Current state */}
                     <div className="flex items-center justify-between rounded-lg bg-slate-900/60 border border-white/5 px-4 py-3">
                         <span className="text-[10px] font-mono uppercase tracking-widest text-slate-500">Current on hand</span>
                         <span className="text-2xl font-black font-mono text-white">{currentQty}</span>
                     </div>
 
-                    {/* Mode toggle */}
                     <div className="flex items-center gap-1 bg-slate-900 rounded-lg border border-white/10 p-1">
                         <button
                             onClick={() => setMode('delta')}
@@ -210,7 +206,6 @@ export default function AdjustStockDialog({ isOpen, inventory, onClose, onSubmit
                         </button>
                     </div>
 
-                    {/* Delta / total input */}
                     {mode === 'delta' ? (
                         <div>
                             <label className="block text-[10px] font-black text-slate-400 uppercase tracking-[0.25em] mb-2">
@@ -241,7 +236,6 @@ export default function AdjustStockDialog({ isOpen, inventory, onClose, onSubmit
                         </div>
                     )}
 
-                    {/* Reason */}
                     <div>
                         <label className="block text-[10px] font-black text-slate-400 uppercase tracking-[0.25em] mb-2">Reason</label>
                         <div className="space-y-1.5">
@@ -273,7 +267,6 @@ export default function AdjustStockDialog({ isOpen, inventory, onClose, onSubmit
                         </div>
                     </div>
 
-                    {/* Notes */}
                     <div>
                         <label className="block text-[10px] font-black text-slate-400 uppercase tracking-[0.25em] mb-2">
                             Notes {reason.notesRequired && <span className="text-red-400">*</span>}
@@ -287,7 +280,6 @@ export default function AdjustStockDialog({ isOpen, inventory, onClose, onSubmit
                         />
                     </div>
 
-                    {/* Projection */}
                     {projectedTotal != null && validationError == null && (
                         <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-200">
                             <i className="fa-solid fa-arrow-right-arrow-left mr-2" />
@@ -302,7 +294,6 @@ export default function AdjustStockDialog({ isOpen, inventory, onClose, onSubmit
                     )}
                 </div>
 
-                {/* Footer */}
                 <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-white/10 bg-slate-900/40">
                     <button
                         onClick={onClose}

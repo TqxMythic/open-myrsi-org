@@ -64,6 +64,7 @@ const Sidebar: React.FC<SidebarProps> = ({
     const financesEnabled = (orgMeta?.features?.finances?.enabled) === true;
     const quartermasterEnabled = (orgMeta?.features?.quartermaster?.enabled) === true;
     const warehouseEnabled = (orgMeta?.features?.warehouse?.enabled) === true;
+    const marketplaceEnabled = (orgMeta?.features?.marketplace?.enabled) === true;
     // Leaderboard and External Tools default ON — absent means enabled.
     const leaderboardEnabled = (orgMeta?.features?.leaderboard?.enabled) !== false;
     const externalToolsEnabled = (orgMeta?.features?.externalTools?.enabled) !== false;
@@ -78,7 +79,7 @@ const Sidebar: React.FC<SidebarProps> = ({
         const v = activeView;
         if (['dashboard', 'requests', 'request-detail', 'dispatch', 'operations', 'operation-detail', 'warrants', 'intel'].includes(v)) return 'command';
         if (['roster', 'member-record', 'leaderboard', 'hr', 'applicant-detail', 'security-vetting', 'case-file-detail', 'internal-transfer-detail', 'internal-job-detail', 'fleet', 'government'].includes(v)) return 'org';
-        if (['finances', 'quartermaster', 'warehouse'].includes(v)) return 'economy';
+        if (['finances', 'quartermaster', 'warehouse', 'marketplace'].includes(v)) return 'economy';
         if (['wiki', 'external-tools', 'radio-control'].includes(v)) return 'resources';
         if (['profile', 'help', 'admin'].includes(v)) return 'system';
         return null;
@@ -254,7 +255,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                                     isMobile={isMobileOpen}
                                 />
                             ) : null;
-                            // #1: Org Chart — top-level browsing surface for all units. Shares
+                            // Org Chart — top-level browsing surface for all units. Shares
                             // the user:view:roster gate with Duty Roster so anyone who can see
                             // members can also see the org structure.
                             const orgChart = hasPermission('user:view:roster') ? (
@@ -337,6 +338,16 @@ const Sidebar: React.FC<SidebarProps> = ({
                                     isMobile={isMobileOpen}
                                 />
                             ) : null;
+                            const marketplace = (hasPermission('marketplace:view') && marketplaceEnabled) ? (
+                                <NavItem
+                                    icon={<i className="fa-solid fa-store fa-fw"></i>}
+                                    label="Marketplace"
+                                    isActive={activeView === 'marketplace'}
+                                    onClick={() => handleNavClick('marketplace')}
+                                    isCollapsed={isSidebarCollapsed}
+                                    isMobile={isMobileOpen}
+                                />
+                            ) : null;
                             const wiki = hasPermission('wiki:view') ? (
                                 <NavItem
                                     icon={<i className="fa-solid fa-book fa-fw"></i>}
@@ -401,7 +412,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                             // Group membership
                             const commandItems = [dashboard, serviceRequests, dispatchConsole, operations, warrants, intel].filter(Boolean);
                             const orgItems = [dutyRoster, orgChart, leaderboard, hr, fleet, government, alliances].filter(Boolean);
-                            const economyItems = [finances, quartermaster, warehouse].filter(Boolean);
+                            const economyItems = [finances, quartermaster, warehouse, marketplace].filter(Boolean);
                             const resourcesItems = [wiki, externalTools, radio].filter(Boolean);
                             const systemItems = [profile, help, admin].filter(Boolean);
 
@@ -547,7 +558,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                         {(!isSidebarCollapsed || isMobileOpen) && (
                             <div className="text-center">
                                 <button onClick={() => handleNavClick('changelog')} className="text-[10px] text-slate-600 hover:text-sky-500 transition-colors font-mono">
-                                    v15.0.0-open (STABLE)
+                                    v15.1.0-open (STABLE)
                                 </button>
                             </div>
                         )}

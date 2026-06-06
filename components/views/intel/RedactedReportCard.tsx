@@ -13,11 +13,9 @@ const RedactedReportCard: React.FC<RedactedReportCardProps> = ({ requiredLevel =
 
     return (
         <div className="relative bg-black border border-red-900/30 rounded-sm h-full flex flex-col overflow-hidden shadow-2xl group select-none transition-all duration-300 grayscale hover:grayscale-0">
-            {/* Background Operational Noise */}
             <div className="absolute inset-0 opacity-[0.05] bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] pointer-events-none"></div>
             <div className="absolute inset-0 bg-[linear-gradient(rgba(220,38,38,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(220,38,38,0.02)_1px,transparent_1px)] bg-size-[10px_10px] pointer-events-none"></div>
             
-            {/* Redacted Header */}
             <div className="px-4 py-2 bg-red-950/10 border-b border-red-900/20 flex justify-between items-center relative z-10">
                 <div className="flex items-center gap-3">
                     <i className="fa-solid fa-triangle-exclamation text-red-700 text-xs animate-pulse"></i>
@@ -28,7 +26,6 @@ const RedactedReportCard: React.FC<RedactedReportCardProps> = ({ requiredLevel =
                 </span>
             </div>
 
-            {/* Redacted Body Content */}
             <div className="p-4 grow grid grid-cols-1 md:grid-cols-12 gap-6 relative z-10 blur-[1.5px] opacity-20 pointer-events-none">
                 <div className="md:col-span-4 space-y-4">
                     <div className="h-10 bg-red-900/20 rounded-sm w-full"></div>
@@ -44,13 +41,11 @@ const RedactedReportCard: React.FC<RedactedReportCardProps> = ({ requiredLevel =
                 </div>
             </div>
 
-            {/* Footer */}
             <div className="px-4 py-2 bg-black border-t border-red-900/20 flex items-center justify-between relative z-10 opacity-10">
                  <div className="h-2 w-32 bg-red-900/20 rounded-sm"></div>
                  <div className="h-2 w-16 bg-red-900/20 rounded-sm"></div>
             </div>
             
-            {/* Center Lock: Gritty Bourne Overlay */}
             <div className="absolute inset-0 flex items-center justify-center z-30 bg-black/40 backdrop-blur-[1px]">
                 <div className="bg-black/90 border border-red-500/40 p-6 rounded-sm shadow-[0_0_50px_rgba(220,38,38,0.2)] flex flex-col items-center gap-4 transform group-hover:scale-105 transition-all duration-700 border-t-2 border-t-red-600">
                     <div className="relative">

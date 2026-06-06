@@ -94,7 +94,6 @@ const TreeNode: React.FC<TreeNodeProps> = ({
                 style={{ paddingLeft: `${depth * 16 + 8}px` }}
                 onClick={() => onSelect(page)}
             >
-                {/* Expand/Collapse */}
                 <button
                     onClick={(e) => {
                         e.stopPropagation();
@@ -107,19 +106,16 @@ const TreeNode: React.FC<TreeNodeProps> = ({
                     <i className={`fa-solid ${isExpanded ? 'fa-chevron-down' : 'fa-chevron-right'}`}></i>
                 </button>
 
-                {/* Page Icon */}
                 <i className={`fa-solid ${hasChildren ? 'fa-folder-open' : 'fa-file-lines'} text-xs ${isSelected ? 'text-sky-400' : 'text-slate-500'}`}></i>
 
-                {/* Title */}
                 <span className="truncate flex-1 font-medium text-xs">{page.title}</span>
 
-                {/* Menu lock indicator (#16). Visual only — sibling reordering
-                    is still permitted; only re-parenting is blocked. */}
+                {/* Menu lock indicator. Visual only — sibling reordering is
+                    still permitted; only re-parenting is blocked. */}
                 {page.menuStructureLocked && (
                     <i className="fa-solid fa-lock text-[9px] text-amber-400/70" title="Menu position locked"></i>
                 )}
 
-                {/* Classification Badge */}
                 {page.classificationLevel > 0 && (
                     <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
                         page.classificationLevel >= 3
@@ -132,7 +128,6 @@ const TreeNode: React.FC<TreeNodeProps> = ({
                     </span>
                 )}
 
-                {/* Add Child Button */}
                 {canEdit && onAddChild && (
                     <button
                         onClick={(e) => {
@@ -150,7 +145,6 @@ const TreeNode: React.FC<TreeNodeProps> = ({
                 <div className="h-0.5 bg-sky-400 rounded-sm mx-2" style={{ marginLeft: `${depth * 16 + 8}px` }} />
             )}
 
-            {/* Children */}
             {isExpanded && hasChildren && (
                 <div>
                     {childPages.map((child) => (
@@ -185,9 +179,9 @@ const WikiPageTree: React.FC<WikiPageTreeProps> = ({ pages, selectedPageId, onSe
     const canReorder = !!onReorder;
     const [dragState, setDragState] = useState<DragState>({ draggedId: null, targetId: null, position: null });
 
-    // Tree starts fully collapsed (#3 of user feedback). The selected page's
-    // ancestors are auto-added so the user always sees their current location;
-    // explicit toggles persist for the lifetime of the component.
+    // Tree starts fully collapsed. The selected page's ancestors are auto-added
+    // so the user always sees their current location; explicit toggles persist
+    // for the lifetime of the component.
     const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
 
     const rootPages = pages.filter((p) => !p.parentPageId).sort((a, b) => a.sortOrder - b.sortOrder);

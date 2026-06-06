@@ -220,13 +220,9 @@ export const requestActions = {
         // Full payload is used ONLY for the admin-configured Discord channel embed.
         const payload = { ...request, client: { name: userData?.name } };
 
-        // SECURITY (H4): broadcast payloads are id-only — the 'db-changes'
-        // channel is now private (authenticated members only), but even
-        // members shouldn't learn request CONTENT from the wire: serviceType
-        // is an admin-authored label describing the activity, so it was
-        // dropped too. Receivers re-fetch through the permission-scoped
-        // /api/query requests path (callFetcher), which now also enforces
-        // per-caller request visibility.
+        // Broadcast payloads are id-only — receivers re-fetch through the
+        // permission-scoped /api/query requests path, which enforces per-caller
+        // request visibility.
         broadcastToOrg('new_request', { id: request.id, clientId: request.clientId });
 
         await notifyDiscordNewRequest(payload);
@@ -236,7 +232,7 @@ export const requestActions = {
         const request = await db.createAdHocServiceRequest(newRequest, userId);
         const payload = { ...request };
 
-        // SECURITY (H4): id-only realtime broadcast (see request:create above).
+        // id-only realtime broadcast (see request:create above).
         broadcastToOrg('new_request', { id: request.id, clientId: request.clientId });
 
         await notifyDiscordNewRequest(payload);
@@ -247,9 +243,9 @@ export const requestActions = {
     'request:accept': ({ requestId, memberId, userId }: AcceptRequestPayload) => db.acceptRequest(requestId, memberId, userId),
     'request:start': ({ requestId, userId }: StartRequestPayload) => db.updateRequestStatus(requestId, ServiceRequestStatus.InProgress, userId, 'Mission started.', undefined, undefined),
     'request:complete': ({ requestId, report, userId }: CompleteRequestPayload) => db.completeRequest(requestId, report, userId),
-    // SECURITY (BOLA): cancel/rate act on a caller-supplied request id and are
-    // held by every Client — verify ownership (or a duty permission) first so
-    // a Client cannot cancel/rate another user's request.
+    // cancel/rate act on a caller-supplied request id and are held by every
+    // Client — verify ownership (or a duty permission) first so a Client cannot
+    // cancel/rate another user's request.
     'request:cancel': async ({ requestId, userId, user }: CancelRequestPayload & { user?: { id: number; role?: string; permissions?: string[] } }) => {
         if (user) await db.assertRequestOwnerOrDuty(requestId, user);
         return db.updateRequestStatus(requestId, ServiceRequestStatus.Cancelled, userId, 'Request cancelled by client.', undefined, undefined);

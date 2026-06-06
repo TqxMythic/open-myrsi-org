@@ -70,10 +70,8 @@ export default function MDTPanel({ target, canViewIntel, onOpenRequest, onChange
     // the overview first rather than lingering on Requests from the last query.
     useEffect(() => { setRapTab('overview'); }, [target]);
 
-    // Highest-severity threat observed in the dossier. Computed here (above
-    // any conditional returns) so the hook count is stable across renders —
-    // rules-of-hooks violation otherwise triggers React error #300 when the
-    // component flips between empty/permission-denied/loaded states.
+    // Highest-severity threat in the dossier. Computed above any conditional returns so the
+    // hook count stays stable across the empty/permission-denied/loaded states.
     const highestThreat: IntelThreatLevel | null = useMemo(() => {
         const reports = dossier?.reports || [];
         const order: IntelThreatLevel[] = ['Critical', 'High', 'Medium', 'Low'] as IntelThreatLevel[];
@@ -82,8 +80,6 @@ export default function MDTPanel({ target, canViewIntel, onOpenRequest, onChange
         }
         return null;
     }, [dossier]);
-
-    // --- Permission + empty states --- //
 
     if (!canViewIntel) {
         return (
@@ -132,8 +128,6 @@ export default function MDTPanel({ target, canViewIntel, onOpenRequest, onChange
         );
     }
 
-    // --- Loaded state --- //
-
     const reports = dossier?.reports || [];
     const warrants = dossier?.warrants || [];
     const requests: HydratedServiceRequest[] = (dossier?.requests || []) as HydratedServiceRequest[];
@@ -144,21 +138,18 @@ export default function MDTPanel({ target, canViewIntel, onOpenRequest, onChange
     return (
         <div className="px-4 sm:px-8 py-6">
             <div className="max-w-5xl mx-auto space-y-6">
-                {/* Subject header */}
                 <RapSheetHeader
                     handle={target}
                     subject={subject}
                     onChangeTarget={onChangeTarget}
                 />
 
-                {/* Alerts */}
                 <RapSheetAlerts
                     activeWarrants={activeWarrants}
                     highestThreat={highestThreat}
                     subject={subject}
                 />
 
-                {/* Stat strip */}
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                     <HeroStat icon="fa-bullseye" label="Warrants" value={warrants.length} accent="red" emphasize={activeWarrants.length > 0} sub={activeWarrants.length > 0 ? `${activeWarrants.length} active` : 'None active'} />
                     <HeroStat icon="fa-folder-open" label="Intel Reports" value={reports.length} accent="rose" emphasize={highestThreat === 'Critical' || highestThreat === 'High'} sub={highestThreat ? `${highestThreat} max` : 'No reports'} />
@@ -173,7 +164,6 @@ export default function MDTPanel({ target, canViewIntel, onOpenRequest, onChange
                     />
                 </div>
 
-                {/* Inner tab strip */}
                 <div className="border-b border-white/5">
                     <div className="flex gap-0 -mb-px overflow-x-auto custom-scrollbar">
                         {(['overview', 'warrants', 'intel', 'requests'] as RapTab[]).map(t => (
@@ -195,7 +185,6 @@ export default function MDTPanel({ target, canViewIntel, onOpenRequest, onChange
                     </div>
                 </div>
 
-                {/* Loading / error / content */}
                 {loading && (
                     <div className="flex items-center justify-center py-16">
                         <i className="fa-solid fa-circle-notch fa-spin text-cyan-400 text-3xl" aria-hidden />
@@ -276,8 +265,7 @@ export default function MDTPanel({ target, canViewIntel, onOpenRequest, onChange
     );
 }
 
-// --- Overview tab — most recent of each + cached summary ---
-
+// Overview tab: most recent of each + cached summary.
 function OverviewTab({
     reports, warrants, requests, summary, summaryDate, onOpenReport, onOpenRequest,
 }: {

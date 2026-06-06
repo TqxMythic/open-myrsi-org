@@ -117,7 +117,6 @@ export default function ReturnManyModal({ member, issuances, onClose, onSubmitte
             width="max-w-xl"
         >
             <div className="p-5 space-y-4">
-                {/* Default outcome */}
                 <div>
                     <span className="text-[10px] font-mono uppercase tracking-widest text-slate-400">
                         Default outcome <span className="text-slate-600">· applies to selected lines</span>
@@ -137,7 +136,6 @@ export default function ReturnManyModal({ member, issuances, onClose, onSubmitte
                     </div>
                 </div>
 
-                {/* Select-all row */}
                 <div className="flex items-center justify-between">
                     <label className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-slate-400 cursor-pointer">
                         <input
@@ -153,7 +151,6 @@ export default function ReturnManyModal({ member, issuances, onClose, onSubmitte
                     </span>
                 </div>
 
-                {/* Line items */}
                 <div className="space-y-1.5">
                     {lines.map((line, idx) => {
                         const iss = byId.get(line.issuanceId);
@@ -217,7 +214,6 @@ export default function ReturnManyModal({ member, issuances, onClose, onSubmitte
                     })}
                 </div>
 
-                {/* Shared notes */}
                 <label className="block">
                     <span className="text-[10px] font-mono uppercase tracking-widest text-slate-400">Notes (optional)</span>
                     <textarea
@@ -230,7 +226,6 @@ export default function ReturnManyModal({ member, issuances, onClose, onSubmitte
                     />
                 </label>
 
-                {/* Actions */}
                 <div className="flex items-center justify-end gap-2 pt-2">
                     <button onClick={onClose} className="px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-widest text-slate-400 hover:text-white">
                         Cancel

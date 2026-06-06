@@ -115,8 +115,7 @@ const LeaderboardView: React.FC = () => {
                     return b.totalMedigel - a.totalMedigel;
                 }
                 if (sortKey === 'totalMissions') {
-                    // Primary: Successes, Secondary: Failures (fewer is better? or just activity?)
-                    // Let's stick to simple successes for primary sort
+                    // Sort by successful missions descending.
                     return b.totalMissions - a.totalMissions;
                 }
                 return b[sortKey] - a[sortKey];
@@ -176,7 +175,6 @@ const LeaderboardView: React.FC = () => {
                 ))}
             />
 
-            {/* Content */}
             <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-3">
                 {sortedData.map((stat, index) => {
                     const avgRating = stat.ratingCount > 0 ? (stat.ratingSum / stat.ratingCount).toFixed(1) : 'N/A';
@@ -184,7 +182,6 @@ const LeaderboardView: React.FC = () => {
 
                     return (
                         <div key={stat.user.id} className={`relative bg-slate-900/80 backdrop-blur-md border rounded-xl p-4 flex flex-col sm:flex-row sm:items-center gap-4 hover:shadow-lg hover:-translate-y-0.5 transition-all duration-300 group ${isTop ? 'border-amber-500/30 hover:shadow-amber-900/20 hover:border-amber-500/50' : 'border-slate-700/50 hover:shadow-amber-900/10 hover:border-amber-500/30'}`}>
-                            {/* Rank & User */}
                             <div className="flex items-center flex-1 min-w-0 gap-4">
                                 <div className="shrink-0">
                                     {getRankIcon(index)}
@@ -198,7 +195,6 @@ const LeaderboardView: React.FC = () => {
                                 </div>
                             </div>
 
-                            {/* Stats Columns */}
                             <div className="flex justify-between sm:justify-end gap-6 sm:gap-12 pt-4 sm:pt-0 border-t sm:border-t-0 border-slate-700/50 w-full sm:w-auto overflow-x-auto">
 
                                 {sortKey === 'medigel' ? (

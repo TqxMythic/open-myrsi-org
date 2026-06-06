@@ -8,7 +8,6 @@ interface OpMissionTabProps {
     onRefresh: () => void;
 }
 
-// --- ROE Section ---
 const ROESection: React.FC<{ operation: HydratedOperation; canManage: boolean; onUpdate: (roe: string) => Promise<any> }> = ({ operation, canManage, onUpdate }) => {
     const [isEditing, setIsEditing] = useState(false);
     const [value, setValue] = useState(operation.roe || '');
@@ -58,7 +57,6 @@ const ROESection: React.FC<{ operation: HydratedOperation; canManage: boolean; o
     );
 };
 
-// --- Commander's Notes Section ---
 const CommanderNotesSection: React.FC<{ operation: HydratedOperation; canManage: boolean; onUpdate: (notes: string) => Promise<any> }> = ({ operation, canManage, onUpdate }) => {
     const [isOpen, setIsOpen] = useState(!!operation.commanderNotes);
     const [isEditing, setIsEditing] = useState(false);
@@ -119,7 +117,6 @@ const OpMissionTab: React.FC<OpMissionTabProps> = ({ operation, canManage, onRef
 
     return (
         <div className="p-6 lg:p-8 space-y-6">
-            {/* Mission Briefing */}
             <div className="bg-slate-900/60 rounded-xl border border-slate-700/30 overflow-hidden">
                 <div className="px-5 py-3 bg-slate-800/40 border-b border-slate-700/30">
                     <p className="text-[10px] text-slate-500 uppercase font-black tracking-[0.15em] flex items-center gap-2">
@@ -133,12 +130,10 @@ const OpMissionTab: React.FC<OpMissionTabProps> = ({ operation, canManage, onRef
                 </div>
             </div>
 
-            {/* ROE Section */}
             {(operation.roe || canManage) && (
                 <ROESection operation={operation} canManage={canManage} onUpdate={(roe) => updateOperationDetails(operation.id, { roe })} />
             )}
 
-            {/* Commander's Notes */}
             {(operation.commanderNotes || canManage) && (
                 <CommanderNotesSection operation={operation} canManage={canManage} onUpdate={(commanderNotes) => updateOperationDetails(operation.id, { commanderNotes })} />
             )}

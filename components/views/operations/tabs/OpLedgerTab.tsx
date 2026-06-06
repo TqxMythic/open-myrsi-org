@@ -28,24 +28,19 @@ const OpLedgerTab: React.FC<OpLedgerTabProps> = ({ operation, canManage, onOpenA
     const fmt = useFormatDate();
     const { setOperationPayoutMode, setOperationPayoutSplits, toggleParticipantPayoutPaid } = useOperations();
     const { addToast } = useNotification();
-    // NOTE: `allUsers` was previously destructured from `useUI() as any`, where
-    // it was always `undefined` (no such field exists on the UI context).
-    // Behavior preserved: any consumers fall through to their `|| []` fallback.
+    // No such field exists on the UI context; consumers fall through to their `|| []` fallback.
     const allUsers: any = undefined;
 
     const concluded = operation.status === OperationStatus.Concluded;
     const editable = canManage && !concluded;
 
-    // ---- Pool math --------------------------------------------------------
     const totalPool = operation.totalUec || 0;
     const totalCosts = operation.totalCosts || 0;
     const netPool = totalPool - totalCosts;
 
-    // ---- Payout rows ------------------------------------------------------
     const payouts: PayoutRow[] = useMemo(() => computePayouts(operation, netPool), [operation, netPool]);
     const pieData = payouts.map(r => ({ name: r.name, value: r.amount }));
 
-    // ---- Custom-split editor ---------------------------------------------
     const isCustom = operation.payoutMode === 'custom';
     const [draftSplits, setDraftSplits] = useState<Record<number, string>>({});
     const [savingSplits, setSavingSplits] = useState(false);
@@ -116,7 +111,6 @@ const OpLedgerTab: React.FC<OpLedgerTabProps> = ({ operation, canManage, onOpenA
         }
     };
 
-    // ---- Transaction log --------------------------------------------------
     const [txFilter, setTxFilter] = useState<TxFilter>('all');
     const txEntries = useMemo(() => {
         const all = (operation.log || []).filter(l => l.entryType === 'UEC_DEPOSIT' || l.entryType === 'UEC_COST');
@@ -129,7 +123,6 @@ const OpLedgerTab: React.FC<OpLedgerTabProps> = ({ operation, canManage, onOpenA
     const paidCount = operation.participants.filter(p => p.payoutPaidAt).length;
     const totalCount = operation.participants.length;
 
-    // ---- Helpers ---------------------------------------------------------
     const userById = useMemo(() => {
         const m = new Map<number, any>();
         (allUsers || []).forEach((u: any) => m.set(u.id, u));
@@ -138,7 +131,6 @@ const OpLedgerTab: React.FC<OpLedgerTabProps> = ({ operation, canManage, onOpenA
 
     return (
         <div className="p-4 md:p-6 space-y-6">
-            {/* Header + actions */}
             <div className="flex flex-wrap items-center justify-between gap-3">
                 <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
                     <i className="fa-solid fa-coins text-slate-500"></i> Financial Ledger
@@ -155,7 +147,6 @@ const OpLedgerTab: React.FC<OpLedgerTabProps> = ({ operation, canManage, onOpenA
                 )}
             </div>
 
-            {/* Hero metric strip */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <MetricTile label="Total Pool" value={totalPool} suffix="aUEC" tone="emerald" icon="fa-arrow-trend-up" />
                 <MetricTile label="Total Costs" value={totalCosts} suffix="aUEC" tone="red" icon="fa-arrow-trend-down" />
@@ -163,7 +154,6 @@ const OpLedgerTab: React.FC<OpLedgerTabProps> = ({ operation, canManage, onOpenA
                 <MetricTile label="Paid Out" value={`${paidCount} / ${totalCount}`} tone="sky" icon="fa-check-double" />
             </div>
 
-            {/* Estimated Payout panel */}
             <div className="bg-slate-900/40 border border-slate-700/50 rounded-xl">
                 <div className="px-5 py-3 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3">
                     <div className="flex items-center gap-2">
@@ -186,7 +176,6 @@ const OpLedgerTab: React.FC<OpLedgerTabProps> = ({ operation, canManage, onOpenA
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-5 p-5">
-                    {/* Participant payout table */}
                     <div className="md:col-span-2 space-y-2 max-h-[420px] overflow-y-auto custom-scrollbar pr-1">
                         {operation.participants.length === 0 ? (
                             <p className="text-xs text-slate-500 italic text-center py-6">No participants on the roster.</p>
@@ -249,7 +238,6 @@ const OpLedgerTab: React.FC<OpLedgerTabProps> = ({ operation, canManage, onOpenA
                                     );
                                 })}
 
-                                {/* Custom-split footer */}
                                 {isCustom && editable && (
                                     <div className="flex flex-wrap items-center justify-between gap-2 px-3 pt-2">
                                         <span className={`text-[10px] font-mono uppercase tracking-widest ${draftValid ? 'text-emerald-300' : 'text-amber-300'}`}>
@@ -269,14 +257,12 @@ const OpLedgerTab: React.FC<OpLedgerTabProps> = ({ operation, canManage, onOpenA
                         )}
                     </div>
 
-                    {/* Pie chart side-companion */}
                     <div className="hidden md:block h-[280px] relative">
                         <PieChart data={pieData} title="Distribution" icon={<i className="fa-solid fa-chart-pie"></i>} unit="aUEC" />
                     </div>
                 </div>
             </div>
 
-            {/* Transaction log */}
             <div className="bg-slate-900/40 border border-slate-700/50 rounded-xl">
                 <div className="px-5 py-3 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3">
                     <div className="flex items-center gap-2">

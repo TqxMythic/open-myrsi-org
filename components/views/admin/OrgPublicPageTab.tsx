@@ -317,11 +317,9 @@ const OrgPublicPageTab: React.FC = () => {
                     </div>
                     <div>
                         <label className="block text-sm font-medium text-slate-300 mb-2">Blurb <span className="text-[10px] text-slate-500 font-mono">({blurbLen}/4000)</span></label>
-                        {/* #14: Tiptap editor (minimal toolbar). Stored as Tiptap
-                            JSON serialized to a string. Legacy plain-text blurbs
-                            are upgraded automatically on first save — the parse
-                            below detects the shape and seeds the editor with a
-                            single paragraph node containing the legacy text. */}
+                        {/* Tiptap editor (minimal toolbar). Stored as Tiptap JSON
+                            serialized to a string; legacy plain-text blurbs are
+                            upgraded automatically on first save. */}
                         <BlurbEditor value={config.blurb || ''} onChange={(v) => update('blurb', v)} />
                         <p className="text-[10px] text-slate-500 mt-1">Bold, italics, headings, lists, and links are supported. Other formatting is stripped on save.</p>
                     </div>
@@ -497,11 +495,9 @@ const OrgPublicPageTab: React.FC = () => {
 
 export default OrgPublicPageTab;
 
-// #14: Public blurb editor wrapper. Bridges between the storage shape
-// (string — either Tiptap JSON serialized OR legacy plain text) and the
-// MinimalRichEditor's content-as-object API. Legacy plain-text blurbs are
-// rendered into a single paragraph node so the user can edit them and the
-// upgrade-to-JSON happens transparently on first save.
+// Public blurb editor wrapper. Bridges the stored string (Tiptap JSON or legacy
+// plain text) and the editor's content-as-object API; legacy text upgrades to
+// JSON transparently on first save.
 const BlurbEditor: React.FC<{ value: string; onChange: (next: string) => void }> = ({ value, onChange }) => {
     const initialContent = useMemo(() => {
         const parsed = tryParseTiptapJson(value);

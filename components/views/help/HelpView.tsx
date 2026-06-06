@@ -64,7 +64,6 @@ const HelpView: React.FC = () => {
 
     return (
         <div className="h-full flex flex-col overflow-hidden animate-fade-in">
-            {/* Hero */}
             <div className="shrink-0 relative overflow-hidden border-b border-white/5 bg-linear-to-b from-sky-950/30 via-slate-950/80 to-slate-950">
                 <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[400px] bg-sky-500/10 rounded-full blur-[120px] pointer-events-none" aria-hidden />
 
@@ -97,11 +96,9 @@ const HelpView: React.FC = () => {
                 </div>
             </div>
 
-            {/* Content */}
             <div className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 max-w-5xl mx-auto w-full">
             <div className="grid grid-cols-1 gap-4">
 
-                {/* 1. INSTALLATION & ALERTS */}
                 <HelpCard title="App Installation & Alerts" icon="fa-solid fa-mobile-screen" iconBgClass="bg-emerald-500/10" iconColorClass="text-emerald-400">
                     <Section title="Why Install?">
                         <p>
@@ -145,7 +142,6 @@ const HelpView: React.FC = () => {
                     </Section>
                 </HelpCard>
 
-                {/* 2. SERVICE REQUESTS — CLIENT */}
                 <HelpCard title="Service Requests (Client)" icon="fa-solid fa-headset" iconBgClass="bg-teal-500/10" iconColorClass="text-teal-400">
                     <Section title="Submitting a Request">
                         <p>Click <strong>New Request</strong> from the sidebar or dashboard. Fill in:</p>
@@ -176,7 +172,6 @@ const HelpView: React.FC = () => {
                     </Section>
                 </HelpCard>
 
-                {/* 3. STAFF DASHBOARD */}
                 <HelpCard title="Staff Dashboard" icon="fa-solid fa-gauge-high" iconBgClass="bg-violet-500/10" iconColorClass="text-violet-400">
                     <Section title="Overview">
                         <p>
@@ -203,7 +198,6 @@ const HelpView: React.FC = () => {
                     </Section>
                 </HelpCard>
 
-                {/* 4. FIELD OPERATIONS & DISPATCH */}
                 <HelpCard title="Field Operations & Dispatch" icon="fa-solid fa-person-military-rifle" iconBgClass="bg-sky-500/10" iconColorClass="text-sky-400">
                     <Section title="Duty Status">
                         <p>
@@ -232,7 +226,6 @@ const HelpView: React.FC = () => {
                     </Section>
                 </HelpCard>
 
-                {/* 5. OPERATIONS CENTER */}
                 <HelpCard title="Operations Center" icon="fa-solid fa-chess-board" iconBgClass="bg-purple-500/10" iconColorClass="text-purple-400">
                     <Section title="When to Use">
                         <p>
@@ -283,7 +276,6 @@ const HelpView: React.FC = () => {
                     </Section>
                 </HelpCard>
 
-                {/* 6. TACTICAL RADIO */}
                 <HelpCard title="Tactical Radio" icon="fa-solid fa-tower-broadcast" iconBgClass="bg-red-500/10" iconColorClass="text-red-400">
                     <Section title="Push-to-Talk">
                         <p>
@@ -317,7 +309,6 @@ const HelpView: React.FC = () => {
                     </Section>
                 </HelpCard>
 
-                {/* 7. INTELLIGENCE & SECURITY */}
                 <HelpCard title="Intelligence & Security" icon="fa-solid fa-eye" iconBgClass="bg-amber-500/10" iconColorClass="text-amber-400">
                     <Section title="Reports & The Dossier">
                         <p>
@@ -372,7 +363,6 @@ const HelpView: React.FC = () => {
                     </Section>
                 </HelpCard>
 
-                {/* 8. PERSONNEL & HR */}
                 <HelpCard title="Personnel & HR" icon="fa-solid fa-id-card" iconBgClass="bg-indigo-500/10" iconColorClass="text-indigo-400">
                     <Section title="Duty Roster">
                         <p>
@@ -421,7 +411,6 @@ const HelpView: React.FC = () => {
                     </Section>
                 </HelpCard>
 
-                {/* 9. GOVERNMENT (gated) */}
                 {governmentEnabled && (
                     <HelpCard title="Government" icon="fa-solid fa-landmark" iconBgClass="bg-blue-500/10" iconColorClass="text-blue-400">
                         <Section title="Six Tabs">
@@ -454,7 +443,6 @@ const HelpView: React.FC = () => {
                     </HelpCard>
                 )}
 
-                {/* 10. FINANCES (gated) */}
                 {financesEnabled && (
                     <HelpCard title="Finances" icon="fa-solid fa-coins" iconBgClass="bg-amber-500/10" iconColorClass="text-amber-400">
                         <Section title="Finances Ledger">
@@ -473,7 +461,6 @@ const HelpView: React.FC = () => {
                     </HelpCard>
                 )}
 
-                {/* 11. FLEET, QM, WAREHOUSE */}
                 <HelpCard title="Fleet, Quartermaster & Warehouse" icon="fa-solid fa-warehouse" iconBgClass="bg-cyan-500/10" iconColorClass="text-cyan-400">
                     <Section title="My Hangar & Org Fleet">
                         <p>
@@ -510,7 +497,6 @@ const HelpView: React.FC = () => {
                     </Section>}
                 </HelpCard>
 
-                {/* 12. WIKI & SEARCH */}
                 <HelpCard title="Wiki & Search" icon="fa-solid fa-book" iconBgClass="bg-emerald-500/10" iconColorClass="text-emerald-400">
                     <Section title="Wiki Pages">
                         <p>
@@ -529,7 +515,6 @@ const HelpView: React.FC = () => {
                     </Section>
                 </HelpCard>
 
-                {/* 13. NOTIFICATIONS & SOUNDS */}
                 <HelpCard title="Notifications & Sounds" icon="fa-solid fa-bell" iconBgClass="bg-pink-500/10" iconColorClass="text-pink-400">
                     <Section title="Volume Control">
                         <p>
@@ -552,7 +537,6 @@ const HelpView: React.FC = () => {
                     </Section>
                 </HelpCard>
 
-                {/* 14. ADMIN */}
                 {hasPermission('admin:access') && (
                     <HelpCard title="System Administration" icon="fa-solid fa-screwdriver-wrench" iconBgClass="bg-slate-500/10" iconColorClass="text-slate-300">
                         <Section title="Admin Panel">

@@ -6,11 +6,8 @@ import { getSupabase } from '../../../../lib/supabaseClient';
 import { buildJoinLink } from '../../../../lib/commsPlanLinks';
 import OpCommsTab from './OpCommsTab';
 
-// ── Provider catalog ──
-// Source-of-truth for icons, colors, and which fields each provider exposes.
-// Used by both the editor (drives which inputs render) and the read view
-// (drives icon/colour and which join button to show).
-
+// Provider catalog — source-of-truth for icons, colors, and which fields each provider exposes.
+// Used by both the editor (drives which inputs render) and the read view (icon/colour + join button).
 interface ProviderMeta {
     label: string;
     icon: string;
@@ -80,11 +77,9 @@ interface OpCommandSignalsTabProps {
 
 type SubTab = 'comms-plan' | 'tactical-board' | 'ops-log';
 
-// ── Comms Plan Section ──
-// v2: provider-aware editor + read view. Backward-compatible with legacy
-// 4-field rows (channel/frequency/callsign/notes) — those render in fallback
-// mode without action buttons until a user edits them.
-
+// Comms Plan section: provider-aware editor + read view. Backward-compatible with legacy
+// 4-field rows (channel/frequency/callsign/notes), which render in fallback mode without
+// action buttons until a user edits them.
 const CommsPlanSection: React.FC<{ operation: HydratedOperation; canManage: boolean; onUpdate: (plan: CommsPlanEntry[]) => Promise<any> }> = ({ operation, canManage, onUpdate }) => {
     const { rpcAction } = useData();
     // Memoise the `|| []` fallback so downstream memos (hasDiscordRow,
@@ -254,7 +249,6 @@ const CommsPlanSection: React.FC<{ operation: HydratedOperation; canManage: bool
     );
 };
 
-// ── Read-view row ──
 const CommsPlanRow: React.FC<{
     entry: CommsPlanEntry;
     channelById: Map<string, DiscordChannelOption>;
@@ -388,7 +382,6 @@ const CommsPlanRow: React.FC<{
     );
 };
 
-// ── Editor ──
 const CommsPlanEditor: React.FC<{
     entries: CommsPlanEntry[];
     saving: boolean;
@@ -533,7 +526,6 @@ const CommsPlanEditor: React.FC<{
     );
 };
 
-// ── Discord channel dropdown ──
 const DiscordChannelPicker: React.FC<{
     expectedType: number[];
     value: string;
@@ -606,7 +598,6 @@ function cryptoUuid(): string {
     return `cp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-// ── Tactical Board (react-konva) ──
 import { Stage, Layer, Rect, Circle, Line, Text as KonvaText, Group, Transformer } from 'react-konva';
 import Konva from 'konva';
 
@@ -736,11 +727,9 @@ const TacticalBoard: React.FC<{ operation: HydratedOperation; canManage: boolean
     const [optimisticElements, setOptimisticElements] = useState<OperationBoardElement[]>([]);
     const nextOptimisticId = useRef(-1);
 
-    // ── Realtime delta state (Tier 2) ──
-    // Board mutations from other tabs land on `op-board-{operationId}` and
-    // merge into liveElements / deletedIds before the next full Tier-1 detail
-    // refetch lands. The originating tab still calls onRefresh() for itself —
-    // remote tabs avoid that round-trip and apply the delta directly.
+    // Realtime delta state. Board mutations from other tabs land on `op-board-{operationId}`
+    // and merge into liveElements / deletedIds before the next full detail refetch. The
+    // originating tab calls onRefresh() for itself; remote tabs apply the delta directly.
     const [liveElements, setLiveElements] = useState<Map<number, OperationBoardElement>>(new Map());
     const [deletedIds, setDeletedIds] = useState<Set<number>>(new Set());
     // IDs the local user is mid-drag on — remote `update` deltas for these
@@ -756,10 +745,8 @@ const TacticalBoard: React.FC<{ operation: HydratedOperation; canManage: boolean
     const baseElementsRef = useRef<OperationBoardElement[]>(baseElements);
     useEffect(() => { baseElementsRef.current = baseElements; }, [baseElements]);
 
-    // Undo/redo history for *position and property edits* only. Tracks forward
-    // (user edits push) and backward (undo pops, pushes to redo). Add/delete
-    // don't enter history in Phase A — server IDs change on re-add, which would
-    // poison the stack.
+    // Undo/redo history for position and property edits only. Add/delete don't enter
+    // history — server IDs change on re-add, which would poison the stack.
     interface HistoryEntry {
         op: 'move' | 'update';
         elementId: number;
@@ -825,10 +812,8 @@ const TacticalBoard: React.FC<{ operation: HydratedOperation; canManage: boolean
     useEffect(() => {
         const supabase = getSupabase();
         if (!supabase) return;
-        // SECURITY: private channel — receipt of board deltas (full element
-        // content) is authorized by the op-visibility RLS policy on
-        // realtime.messages (owner / operations:manage / clearance+markers),
-        // so an anon-key holder can no longer reconstruct live boards.
+        // Private channel: receipt of board deltas (full element content) is authorized by the
+        // op-visibility RLS policy on realtime.messages (owner / operations:manage / clearance+markers).
         const channel = supabase.channel(`op-board-${operation.id}`, { config: { private: true } });
         channel.on('broadcast' as any, { event: 'board_element_update' }, (payload: any) => {
             const d = payload.payload as {
@@ -1174,7 +1159,6 @@ const TacticalBoard: React.FC<{ operation: HydratedOperation; canManage: boolean
 
     const sortedElements = useMemo(() => [...elements, ...optimisticElements].sort((a, b) => a.layer - b.layer || a.sortOrder - b.sortOrder), [elements, optimisticElements]);
 
-    // ── Konva Event Handlers ──
 
     const handleWheel = useCallback((e: Konva.KonvaEventObject<WheelEvent>) => {
         e.evt.preventDefault();
@@ -1887,7 +1871,6 @@ const TacticalBoard: React.FC<{ operation: HydratedOperation; canManage: boolean
     );
 };
 
-// ── Main Component ──
 const OpCommandSignalsTab: React.FC<OpCommandSignalsTabProps> = ({ operation, canManage, isParticipant, onRefresh }) => {
     const { updateOperationDetails } = useOperations();
     const [subTab, setSubTab] = useState<SubTab>('comms-plan');

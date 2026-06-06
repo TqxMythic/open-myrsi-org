@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { Request, Response } from 'express';
 import * as db from '../lib/db.js';
-import { verifyToken, tokenIssuedAt } from '../lib/auth.js';
+import { verifyToken, isSessionForceLoggedOut } from '../lib/auth.js';
 import { isOpaqueServerError } from '../lib/errors.js';
 import { getClientIp } from '../lib/clientIp.js';
 import { checkAuthRateLimit } from '../lib/authRateLimit.js';
@@ -25,6 +25,7 @@ import { governmentActions } from './actions/government.js';
 import { financesActions } from './actions/finances.js';
 import { quartermasterActions } from './actions/quartermaster.js';
 import { warehouseActions } from './actions/warehouse.js';
+import { marketplaceActions } from './actions/marketplace.js';
 import { catalogActions } from './actions/catalog.js';
 import { allianceActions } from './actions/alliances.js';
 import { operationsFederationActions } from './actions/operations-federation.js';
@@ -39,7 +40,26 @@ export const PUBLIC_ACTIONS: readonly string[] = ['auth:discord_callback', 'auth
 // authenticated request to an action with one of these prefixes is gated by
 // the BOLA/permission check below. Actions outside this list (e.g. user:*) are
 // authenticated-but-not-permission-gated.
-export const PROTECTED_PREFIXES: readonly string[] = ['admin:', 'hr:', 'intel:', 'warrant:', 'unit:', 'operation:', 'request:', 'broadcast:', 'api:', 'wiki:', 'fleet:', 'gov:', 'radio:', 'warehouse:', 'finance:', 'qm:', 'system:', 'discord:', 'org:', 'catalog:', 'alliance:', 'mirror:'];
+export const PROTECTED_PREFIXES: readonly string[] = ['admin:', 'hr:', 'intel:', 'warrant:', 'unit:', 'operation:', 'request:', 'broadcast:', 'api:', 'wiki:', 'fleet:', 'gov:', 'radio:', 'warehouse:', 'finance:', 'qm:', 'system:', 'discord:', 'org:', 'catalog:', 'alliance:', 'mirror:', 'marketplace:'];
+
+// The op-owner bypass (isOpOwner) lets an op's owner satisfy the operations:manage
+// gate for owner-appropriate edit/lifecycle actions on their own op. It must NOT
+// extend to finance/payout/alert/participant-mutation/status actions: those carry
+// org-wide financial or command-and-control authority and ALWAYS require the real
+// operations:manage permission, even for the owner. (The owner editing their own
+// op's basic details is separately clamped at the db layer.)
+export const OWNER_BYPASS_EXCLUDED_OPERATION_ACTIONS: ReadonlySet<string> = new Set([
+    'operation:add_uec',
+    'operation:add_cost',
+    'operation:set_payout_mode',
+    'operation:set_payout_splits',
+    'operation:toggle_payout_paid',
+    'operation:reset_readiness',
+    'operation:add_participant',
+    'operation:update_participant',
+    'operation:broadcast_alert',
+    'operation:update_status',
+]);
 
 export const fullPermissionMap: Record<string, string> = {
     // Admin User Management
@@ -250,7 +270,7 @@ export const fullPermissionMap: Record<string, string> = {
     'warrant:update': 'warrant:manage',
     'warrant:delete': 'warrant:manage',
     'warrant:generate_report': 'intel:create',
-    // #11: notes — read for anyone who can view warrants, post for managers.
+    // Notes: read for anyone who can view warrants, post for managers.
     'warrant:add_note': 'warrant:manage',
     'warrant:get_notes': 'warrant:view',
 
@@ -274,7 +294,10 @@ export const fullPermissionMap: Record<string, string> = {
     'intel:bulk_update_affiliation': 'intel:manage',
     'intel:bulk_add_tags': 'intel:manage',
     'intel:bulk_delete_reports': 'intel:manage',
-    'intel:generate_summary': 'intel:view',
+    // Generation writes the global per-target summary cache that only
+    // intel:manage holders can read back — gate generation to the same
+    // population so a non-manager can't forge or trigger it.
+    'intel:generate_summary': 'intel:manage',
     'intel:sync_feeds': 'intel:manage', // Feed Ingest stays in the Intel tab
     // Receive-only feed CRUD moved to the Alliances tab (feeds are alliance_peers rows).
     'admin:get_trusted_feeds': 'alliance:manage',
@@ -370,7 +393,11 @@ export const fullPermissionMap: Record<string, string> = {
     'hr:update_position': 'hr:manage:positions',
     'hr:delete_position': 'hr:manage:positions',
     'hr:add_log': 'hr:recruiter',
-    'hr:get_application_logs': 'hr:view',
+    // Application logs embed recruiter-grade free text and applicant/recruiter
+    // real names verbatim; getHRApplicationLogs takes no requester so it cannot
+    // redact. Gate at hr:recruiter to match its siblings hr:add_log +
+    // hr:get_application_data instead of the default-Member hr:view.
+    'hr:get_application_logs': 'hr:recruiter',
     // Vetting data is recruiter-grade PII (matches the hr:update_application_data
     // write gate and the getHRState non-recruiter redaction).
     'hr:get_application_data': 'hr:recruiter',
@@ -481,7 +508,7 @@ export const fullPermissionMap: Record<string, string> = {
     'wiki:reorder_pages': 'wiki:edit_page',
     // Full unfiltered page dump (bypasses the clearance filter applied to the
     // wiki read path) — restrict to Admin so a clearance-limited wiki editor
-    // can't export above-clearance classified pages (H3 residual).
+    // can't export above-clearance classified pages.
     'wiki:export_pages': 'admin:access',
     'wiki:import_pages': 'admin:access',
 
@@ -567,7 +594,7 @@ export const fullPermissionMap: Record<string, string> = {
     'alliance:fetch_peer_fleet': 'alliance:view',
     'alliance:force_sync': 'alliance:manage',
 
-    // Joint-op federation (P3): host invite/revoke = manage operations; guest
+    // Joint-op federation: host invite/revoke = manage operations; guest
     // accept/decline = diplomacy admin; list/get/rsvp/poll = view operations.
     'operation:invite_ally': 'operations:manage',
     'operation:revoke_ally': 'operations:manage',
@@ -579,6 +606,40 @@ export const fullPermissionMap: Record<string, string> = {
     'mirror:poll': 'operations:view',
     'mirror:rsvp': 'operations:view',
     'mirror:rsvp_remove': 'operations:view',
+
+    // Marketplace — browse/read = view; posting/managing own listings = list;
+    // proposing & running contracts = contract. Per-resource ownership/party
+    // checks are enforced in lib/db/marketplace.ts (single-org: the per-user
+    // boundary is the only authz, so the db layer carries it).
+    'marketplace:get_categories': 'marketplace:view',
+    'marketplace:browse': 'marketplace:view',
+    'marketplace:get_listing': 'marketplace:view',
+    'marketplace:get_rep': 'marketplace:view',
+    'marketplace:get_profile': 'marketplace:view',
+    'marketplace:get_contract_ratings': 'marketplace:view',
+    'marketplace:report': 'marketplace:view',
+    'marketplace:create_listing': 'marketplace:list',
+    'marketplace:update_listing': 'marketplace:list',
+    'marketplace:delete_listing': 'marketplace:list',
+    'marketplace:propose': 'marketplace:contract',
+    'marketplace:accept': 'marketplace:contract',
+    'marketplace:mark_delivered': 'marketplace:contract',
+    'marketplace:confirm_received': 'marketplace:contract',
+    'marketplace:cancel': 'marketplace:contract',
+    'marketplace:rate': 'marketplace:contract',
+    'marketplace:my_contracts': 'marketplace:contract',
+    'marketplace:get_contract': 'marketplace:contract',
+    'marketplace:get_milestones': 'marketplace:contract',
+    'marketplace:toggle_milestone': 'marketplace:contract',
+    'marketplace:delete_milestone': 'marketplace:contract',
+    // Category administration + report moderation — single 'marketplace:admin' bar.
+    'marketplace:admin:list_categories': 'marketplace:admin',
+    'marketplace:admin:create_category': 'marketplace:admin',
+    'marketplace:admin:update_category': 'marketplace:admin',
+    'marketplace:admin:delete_category': 'marketplace:admin',
+    'marketplace:admin:seed_categories': 'marketplace:admin',
+    'marketplace:admin:list_reports': 'marketplace:admin',
+    'marketplace:admin:review_report': 'marketplace:admin',
 };
 
 export const actions: Record<string, ActionHandler> = {
@@ -596,25 +657,23 @@ export const actions: Record<string, ActionHandler> = {
     ...financesActions,
     ...quartermasterActions,
     ...warehouseActions,
+    ...marketplaceActions,
     ...catalogActions,
     ...allianceActions,
     ...operationsFederationActions,
 };
 
 // Validate permission-map coverage against the actions registry.
-// - `missing`: protected, non-public actions with no entry in fullPermissionMap.
-//   These silently 403 in prod (the dispatcher denies any protected action it can't map).
-// - `stale`: map entries that don't correspond to a registered action — dead config
-//   from a rename/delete; harmless but indicates drift.
-// Called once at server boot; results are logged so drift is visible in deploy logs
-// without waiting for a real user to hit the 403.
+// - `missing`: protected, non-public actions with no fullPermissionMap entry.
+//   These silently 403 in prod (the dispatcher denies any unmappable protected action).
+// - `stale`: map entries with no registered action — dead config from a
+//   rename/delete; harmless but indicates drift.
+// Called once at boot; results are logged so drift shows in deploy logs.
 // Actor-identity fields the dispatcher overrides with the authenticated user's
-// id (see "IDENTITY SPOOFING MITIGATION" in the handler below). Hoisted to
-// module scope so the same list drives both the dispatcher mutation and the
-// stripActorFields helper used by handlers that need a clean payload blob.
-// Target-identity fields (targetUserId, assignedUserId, memberId, recruiterId,
-// leadResponderId, newInterviewerId, allyOrgId, etc.) are intentionally NOT
-// in this list — admin actions legitimately act on other users.
+// id (see "IDENTITY SPOOFING MITIGATION" in the handler below). At module scope
+// so the same list drives both the dispatcher mutation and stripActorFields.
+// Target-identity fields (targetUserId, memberId, recruiterId, allyOrgId, etc.)
+// are intentionally NOT here — admin actions legitimately act on other users.
 export const ACTOR_ID_FIELDS: readonly string[] = [
     'userId',
     'adminId',
@@ -631,29 +690,21 @@ export const ACTOR_ID_FIELDS: readonly string[] = [
     'appointedById',
 ];
 
-// Plumbing fields the dispatcher injects on every authenticated request:
-// the populated user object + `interviewerId` for hr:save_interview. Combined
-// with ACTOR_ID_FIELDS, this is the set stripActorFields() removes when a
-// handler wants only the user-supplied data from a payload (e.g. a config
-// blob it's about to write to the DB verbatim).
-//
-// `interviewerId` is in this list because admin/config handlers never want it,
-// and the dispatcher only legitimately injects it for hr:save_interview —
-// which doesn't use stripActorFields(). organizationId is NOT in this list:
-// handlers typically need it as an explicit argument, not embedded in the data
-// blob, and pull it from the original payload before calling the helper.
+// Plumbing fields the dispatcher injects on every authenticated request: the
+// populated user object + `interviewerId`. Combined with ACTOR_ID_FIELDS, this
+// is what stripActorFields() removes when a handler wants only the user-supplied
+// payload data (e.g. a config blob written to the DB verbatim). interviewerId is
+// stripped because config handlers never want it and it's only injected for
+// hr:save_interview (which doesn't use stripActorFields).
 const PLUMBING_FIELDS: readonly string[] = ['user', 'interviewerId'];
 const STRIPPABLE_FIELDS = new Set<string>([...ACTOR_ID_FIELDS, ...PLUMBING_FIELDS]);
 
 /**
  * Return a shallow copy of `payload` with all actor-identity + dispatcher
- * plumbing fields removed. Used by handlers (notably api/actions/admin.ts
- * config-update endpoints) to derive a clean data blob from the payload
- * before passing it to the DB layer. Does not mutate the input.
- *
- * Does NOT strip `organizationId` — handlers usually pass that as a separate
- * argument to the DB function. Callers needing both should destructure
- * organizationId off the original payload before invoking this helper.
+ * plumbing fields removed. Used by handlers (notably admin config-update
+ * endpoints) to derive a clean data blob before passing it to the DB layer.
+ * Does not mutate the input. Does NOT strip `organizationId` — handlers usually
+ * pass that as a separate argument.
  */
 export function stripActorFields<T extends Record<string, any>>(payload: T): Partial<T> {
     const out: Record<string, any> = {};
@@ -683,11 +734,9 @@ export default async function handler(req: Request, res: Response) {
     const { action, payload } = req.body;
 
     // --- AUTH RATE LIMITING ---
-    // Per-IP cap on `auth:*` actions (10/min/IP across all auth callbacks)
-    // applied before context resolution so rejected requests short-circuit
-    // the DB lookups in resolveContext + maintenance check. Riding the global
-    // 100 req/min/IP limit alone left ~100 OAuth attempts/min/IP, enough room
-    // for credential-stuffing-style probing across many accounts.
+    // Per-IP cap on `auth:*` actions (10/min/IP), applied before context
+    // resolution so rejected requests short-circuit the DB lookups. The global
+    // 100 req/min/IP limit alone left too much room for OAuth probing.
     if (typeof action === 'string' && action.startsWith('auth:')) {
         const ip = getClientIp(req);
         const check = checkAuthRateLimit(ip);
@@ -710,11 +759,10 @@ export default async function handler(req: Request, res: Response) {
     const publicActions = PUBLIC_ACTIONS;
 
     // --- MAINTENANCE MODE + FORCE LOGOUT ENFORCEMENT ---
-    // Force-logout bypass is NARROWER than maintenance bypass. SECURITY
-    // (mutation-dispatcher#4): user:heartbeat previously rode the maintenance
-    // bypass, which ALSO skipped force-logout — so a force-logged-out (revoked)
-    // session could keep heart-beating indefinitely. Only the pre-login auth
-    // bootstrap actions skip force-logout; heartbeat is now subject to it.
+    // Force-logout bypass is NARROWER than maintenance bypass: only the pre-login
+    // auth bootstrap actions skip force-logout. user:heartbeat skips maintenance
+    // but is still subject to force-logout, so a revoked session can't keep
+    // heart-beating indefinitely.
     const forceLogoutBypass = ['auth:discord_callback', 'auth:finalize_setup', 'auth:redeem_setup_code', 'system:get_push_config', 'system:preflight'];
     const maintenanceBypass = ['user:heartbeat', ...forceLogoutBypass];
     if (!forceLogoutBypass.includes(action) || !maintenanceBypass.includes(action)) {
@@ -727,7 +775,7 @@ export default async function handler(req: Request, res: Response) {
             // platform offline. Tokens issued before force_logout_timestamp 401.
             if (!forceLogoutBypass.includes(action) && platformSettings?.force_logout_timestamp && token) {
                 const decoded = verifyToken(token);
-                if (decoded && tokenIssuedAt(decoded).toISOString() < platformSettings.force_logout_timestamp) {
+                if (decoded && isSessionForceLoggedOut(decoded, platformSettings.force_logout_timestamp)) {
                     return res.status(401).json({ message: 'Session expired. Please log in again.', force_logout: true });
                 }
             }
@@ -775,7 +823,6 @@ export default async function handler(req: Request, res: Response) {
         return res.status(401).json({ message: 'Unauthorized: Missing token' });
     }
 
-    // Verify Token
     const decodedUser = verifyToken(token);
     let user = null;
     let authUserId = null;
@@ -816,10 +863,9 @@ export default async function handler(req: Request, res: Response) {
     // Single-org: no cross-org isolation check — there is exactly one org.
 
     // --- IDENTITY SPOOFING MITIGATION ---
-    // Force every "actor identity" field in the payload to the authenticated
-    // user's id, so handlers that destructure a field like creatorId/authorId
-    // can't be tricked by a crafted request. The ACTOR_ID_FIELDS list is at
-    // module scope (above) so stripActorFields() can share it.
+    // Force every actor-identity field in the payload to the authenticated user's
+    // id, so handlers that destructure creatorId/authorId/etc can't be tricked
+    // by a crafted request.
     if (payload && user) {
         for (const field of ACTOR_ID_FIELDS) {
             if (field in payload) payload[field] = user.id;
@@ -859,7 +905,19 @@ export default async function handler(req: Request, res: Response) {
                 const hasPerm = user?.permissions?.includes(requiredPerm);
                 const hasClearanceView = requiredPerm === 'intel:view' && user?.permissions?.includes('intel:view:clearance');
 
-                const isOpOwner = action.startsWith('operation:') && payload.operationId && (await db.getFullOperationDetails(payload.operationId))?.ownerId === user?.id;
+                // Op-owner bypass: an op's owner satisfies operations:manage for
+                // owner-appropriate edit/lifecycle actions on their OWN op. Only
+                // consulted when the caller lacks the required permission, so the
+                // expensive getFullOperationDetails fetch is skipped on the common
+                // path. Excluded for finance/payout/alert/participant/status
+                // actions, which always require the real operations:manage perm.
+                let isOpOwner = false;
+                if (!hasPerm
+                    && action.startsWith('operation:')
+                    && !OWNER_BYPASS_EXCLUDED_OPERATION_ACTIONS.has(action)
+                    && payload.operationId) {
+                    isOpOwner = (await db.getFullOperationDetails(payload.operationId))?.ownerId === user?.id;
+                }
 
                 const isUnitLeader = action === 'unit:update_details' && payload.unitId && user?.unit?.id === payload.unitId && user?.unit?.leaderId === user.id;
 
@@ -889,7 +947,6 @@ export default async function handler(req: Request, res: Response) {
         }
     }
 
-    // Execute Action (for all authenticated requests)
     try {
         const result = await actions[action](payload, token);
         return res.status(200).json({ success: true, data: result });

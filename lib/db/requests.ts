@@ -272,12 +272,12 @@ export async function completeRequest(requestId: string, report: RequestReport, 
 }
 
 /**
- * SECURITY (BOLA): the client-driven request actions (cancel, rate) are
- * permission-gated (request:cancel / request:rate — both held by every
- * Client) but act on a request id the caller supplies. Without an ownership
- * check a Client who learns another user's request id could cancel or rate
- * it. Duty-permission holders (the dispatch board) may act on any request;
- * everyone else only on their own. Throws on violation.
+ * The client-driven request actions (cancel, rate) are permission-gated
+ * (request:cancel / request:rate — both held by every Client) but act on a
+ * request id the caller supplies, so an ownership check is required: a Client who
+ * learns another user's request id could otherwise cancel or rate it.
+ * Duty-permission holders (the dispatch board) may act on any request; everyone
+ * else only on their own. Throws on violation.
  */
 export async function assertRequestOwnerOrDuty(requestId: string, user: { id: number; role?: string; permissions?: string[] }): Promise<void> {
     const perms = Array.isArray(user.permissions) ? user.permissions : [];

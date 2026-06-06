@@ -51,8 +51,6 @@ function Pill({
     );
 }
 
-/* ── Status ───────────────────────────────────────────────────────────────── */
-
 export const StatusPill: React.FC<{
     status: ServiceRequestStatus;
     size?: Size;
@@ -71,8 +69,6 @@ export const StatusPill: React.FC<{
     </Pill>
 );
 
-/* ── Urgency ──────────────────────────────────────────────────────────────── */
-
 export const UrgencyPill: React.FC<{
     urgency: UrgencyLevel;
     size?: Size;
@@ -88,8 +84,6 @@ export const UrgencyPill: React.FC<{
         {urgency}
     </Pill>
 );
-
-/* ── Threat (PVP / combat risk) ───────────────────────────────────────────── */
 
 export const ThreatPill: React.FC<{
     threat: ThreatLevel;
@@ -110,8 +104,6 @@ export const ThreatPill: React.FC<{
     );
 };
 
-/* ── Intel threat ─────────────────────────────────────────────────────────── */
-
 export const IntelPill: React.FC<{
     level: IntelThreatLevel;
     size?: Size;
@@ -131,8 +123,7 @@ export const IntelPill: React.FC<{
     );
 };
 
-/* ── Warrant (used when an active warrant is matched for client) ──────────── */
-
+// Used when an active warrant is matched for a client.
 export const WarrantPill: React.FC<{ size?: Size; className?: string }> = ({ size = 'sm', className = '' }) => (
     <Pill
         accentKey="red"

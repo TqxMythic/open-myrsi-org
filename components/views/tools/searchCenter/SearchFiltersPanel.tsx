@@ -325,7 +325,6 @@ const SearchFiltersPanel: React.FC<Props> = ({
     if (asDrawer) {
         return (
             <>
-                {/* Backdrop */}
                 <div
                     onClick={onCloseDrawer}
                     className={`fixed inset-0 z-40 bg-black/60 backdrop-blur-xs transition-opacity ${
@@ -333,7 +332,6 @@ const SearchFiltersPanel: React.FC<Props> = ({
                     }`}
                     aria-hidden
                 />
-                {/* Drawer */}
                 <div
                     ref={drawerRef}
                     role="dialog"

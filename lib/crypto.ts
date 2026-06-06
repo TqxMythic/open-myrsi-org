@@ -30,13 +30,10 @@ function getKey(): Buffer | null {
 export function encryptSecret(plaintext: string): string {
     if (!plaintext) return plaintext;
     const key = getKey();
-    // SECURITY: FAIL CLOSED. Previously this returned the
-    // plaintext unchanged when SECRETS_ENCRYPTION_KEY was unset, silently storing
-    // admin-entered secrets (Discord bot token, LiveKit/Gemini keys) in cleartext
-    // in the settings table. Refuse to "encrypt" without a key — the server also
-    // requires SECRETS_ENCRYPTION_KEY at boot in production (server.ts), so this
-    // only trips on a misconfigured/dev instance, where failing the save is far
-    // safer than persisting a plaintext credential.
+    // Fail closed: refuse to "encrypt" without a key rather than storing the
+    // admin-entered secret (Discord bot token, LiveKit/Gemini keys) in cleartext.
+    // The server requires SECRETS_ENCRYPTION_KEY at boot in production
+    // (server.ts), so this only trips on a misconfigured/dev instance.
     if (!key) {
         throw new Error('Cannot store secret: SECRETS_ENCRYPTION_KEY is not configured (encryption-at-rest is required).');
     }

@@ -74,7 +74,6 @@ const RackMountChannel: React.FC<{
             onDragLeave={onDragLeave}
             onDrop={(e) => onDrop(e, channel)}
         >
-            {/* Left: Info */}
             <div className="w-48 pl-2 flex flex-col justify-center border-r border-slate-700/50 pr-4">
                 <div className="flex items-center gap-3">
                     <div className={`w-2.5 h-2.5 rounded-full ${isActive ? 'bg-green-500 animate-pulse shadow-[0_0_8px_rgba(34,197,94,0.8)]' : 'bg-slate-600'}`}></div>
@@ -116,7 +115,6 @@ const RackMountChannel: React.FC<{
                                     <div className={`w-1.5 h-1.5 rounded-full ${isSpeaking ? 'bg-amber-400 animate-pulse shadow-[0_0_6px_rgba(251,191,36,0.8)]' : 'bg-green-400'}`}></div>
                                     <span className={`text-xs font-bold ${isSpeaking ? 'text-amber-200' : 'text-slate-200'}`}>{displayName}</span>
 
-                                    {/* Action buttons */}
                                     <div className={`flex items-center gap-0.5 ml-1 transition-opacity ${canManage ? 'opacity-0 group-hover/user:opacity-100' : 'opacity-0'}`}>
                                         <button
                                             onClick={(e) => { e.stopPropagation(); onSignal(identity); }}
@@ -135,7 +133,6 @@ const RackMountChannel: React.FC<{
                                     </div>
                                 </div>
 
-                                {/* Transfer dropdown */}
                                 {canManage && transferMenuOpen === identity && (
                                     <div className="absolute top-full left-0 mt-1 z-50 bg-slate-800 border border-slate-600 rounded-lg shadow-xl w-48 max-h-48 overflow-y-auto custom-scrollbar py-1">
                                         <p className="px-3 py-1 text-[9px] text-slate-500 uppercase font-black tracking-wider">Transfer to</p>
@@ -168,7 +165,6 @@ const RackMountChannel: React.FC<{
                 )}
             </div>
 
-            {/* Right: Controls */}
             <div className="w-40 flex justify-end gap-1 border-l border-slate-700/50 pl-2 items-center">
                 <span className="text-[10px] font-mono text-slate-600 mr-3">{userCount} USERS</span>
                 <button
@@ -195,7 +191,6 @@ const RackMountChannel: React.FC<{
 });
 RackMountChannel.displayName = 'RackMountChannel';
 
-// ── Channel Group Section ──
 const ChannelGroup: React.FC<{
     title: string,
     icon: string,
@@ -381,8 +376,6 @@ const RadioControlView: React.FC = () => {
     // The channel the dispatcher is currently monitoring
     const monitoredChannelId = isConnected ? currentChannel?.id || null : null;
 
-    // --- Actions ---
-
     const handleTuneIn = (channel: RadioChannel) => {
         setChannel(channel);
         addToast('Channel Tuned', <i className="fa-solid fa-headphones"></i>, 'bg-sky-500/10 text-sky-400 border-sky-500/50', { description: `Tuning into ${channel.name}.` });
@@ -462,7 +455,6 @@ const RadioControlView: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: keyed on rpcAction + addToast (the only effectful deps); fetchStatus is the polling helper above and gets called via setTimeout to refresh after the transfer settles — wrapping it as a dep would re-bind the callback on every poll.
     }, [rpcAction, addToast]);
 
-    // --- Broadcast (Toast) Logic ---
     const handleBroadcastAlert = async () => {
         if (!broadcastMessage.trim()) return;
         setIsSendingBroadcast(true);
@@ -477,8 +469,6 @@ const RadioControlView: React.FC = () => {
             setIsSendingBroadcast(false);
         }
     };
-
-    // --- Drag & Drop ---
 
     const handleDragStart = (e: React.DragEvent, identity: string, currentRoom: string) => {
         if (!canManage) return;
@@ -537,8 +527,6 @@ const RadioControlView: React.FC = () => {
         }
         setDraggedUser(null);
     };
-
-    // --- Render helpers ---
 
     const renderChannel = (channel: RadioChannel) => (
         <RackMountChannel
@@ -622,9 +610,7 @@ const RadioControlView: React.FC = () => {
                 </>}
             />
 
-            {/* Body */}
             <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
-                {/* LiveKit Configuration Warning */}
                 {!radioConfig.configured && (
                     <div className="bg-amber-500/5 border border-amber-500/30 rounded-xl p-3 flex items-center gap-3">
                         <i className="fa-solid fa-triangle-exclamation text-amber-400"></i>
@@ -634,7 +620,6 @@ const RadioControlView: React.FC = () => {
                     </div>
                 )}
 
-                {/* Search + Hide Empty */}
                 <div className="flex gap-2">
                     <div className="relative flex-1 max-w-2xl">
                         <i className="fa-solid fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-500"></i>
@@ -663,7 +648,6 @@ const RadioControlView: React.FC = () => {
                     </button>
                 </div>
 
-                {/* Content List - Grouped */}
                 {isLoading ? (
                     <div className="flex flex-col items-center justify-center h-64 opacity-60">
                         <i className="fa-solid fa-circle-notch animate-spin text-4xl text-amber-400 mb-4"></i>
@@ -716,7 +700,6 @@ const RadioControlView: React.FC = () => {
                 )}
             </div>
 
-            {/* Broadcast Alert Modal */}
             {isBroadcastModalOpen && (
                 <div className="fixed inset-0 bg-black/80 backdrop-blur-xs flex items-center justify-center z-200 animate-fade-in p-4">
                     <div className="bg-slate-900 border border-amber-500 rounded-xl shadow-2xl w-full max-w-md flex flex-col overflow-hidden">
@@ -760,7 +743,6 @@ const RadioControlView: React.FC = () => {
                 </div>
             )}
 
-            {/* Channel Edit Modal */}
             <RadioChannelModal
                 isOpen={isChannelModalOpen}
                 onClose={() => { setIsChannelModalOpen(false); setEditingChannel(undefined); }}

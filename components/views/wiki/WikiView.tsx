@@ -185,7 +185,6 @@ const WikiView: React.FC = () => {
             />
 
             <div className="flex flex-1 min-h-0">
-                {/* Desktop sidebar */}
                 <aside className="hidden md:flex md:w-64 lg:w-72 shrink-0 flex-col bg-slate-900/60 border-r border-slate-800">
                     <div className="flex items-center gap-2 p-3 border-b border-slate-800">
                         <i className="fa-solid fa-book text-sky-500 text-sm" />
@@ -207,7 +206,6 @@ const WikiView: React.FC = () => {
                     </div>
                 </aside>
 
-                {/* Main content */}
                 <main className="flex-1 overflow-y-auto custom-scrollbar">
                     <div className="p-4 md:p-6 lg:p-8">
                         {isInitialLoading ? (
@@ -300,7 +298,6 @@ const WikiView: React.FC = () => {
                 </main>
             </div>
 
-            {/* Mobile tree drawer */}
             <BottomSheet
                 isOpen={isMobileTreeOpen}
                 onClose={() => setIsMobileTreeOpen(false)}
@@ -331,7 +328,6 @@ const WikiView: React.FC = () => {
                 </div>
             </BottomSheet>
 
-            {/* Cmd+K palette */}
             <WikiQuickJump
                 isOpen={isQuickJumpOpen}
                 onClose={() => setIsQuickJumpOpen(false)}

@@ -28,7 +28,6 @@ const RankManagementTab: React.FC = () => {
                 memberCounts.set(user.rank.id, (memberCounts.get(user.rank.id) || 0) + 1);
             }
         });
-        // Sort by sortOrder
         const sorted = [...ranks].sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
 
         return sorted.map(rank => ({
@@ -37,7 +36,6 @@ const RankManagementTab: React.FC = () => {
         }));
     }, [ranks, allUsers]);
 
-    // Filter only for display
     const displayedRanks = useMemo(() => {
         if (!searchTerm) return rankData;
         return rankData.filter(r => r.name.toLowerCase().includes(searchTerm.toLowerCase()));
@@ -83,7 +81,6 @@ const RankManagementTab: React.FC = () => {
 
         setDropTargetId(targetRank.id);
 
-        // Determine before or after based on cursor position in row
         if (y < height / 2) {
             setDropPosition('before');
         } else {
@@ -93,7 +90,8 @@ const RankManagementTab: React.FC = () => {
     };
 
     const handleDragLeave = () => {
-        // setDropTargetId(null); // Keep active to avoid flickering, cleared on drop or end
+        // Intentionally left empty: keep the drop target active to avoid flicker;
+        // it is cleared on drop or drag end.
     };
 
     const handleDrop = async (e: React.DragEvent, targetRank: Rank) => {
@@ -111,14 +109,11 @@ const RankManagementTab: React.FC = () => {
 
         if (sourceIndex === targetIndex) return;
 
-        // Create new array order
         const newOrder = [...rankData];
         const [movedItem] = newOrder.splice(sourceIndex, 1);
 
-        // Calculate insertion index
-        // If we removed item from before target, target index shifts down by 1, so we need to account for that?
-        // Actually splice modifies array in place.
-        // It's safer to find new index of target in modified array
+        // Re-find the target index in the spliced array since removing the source
+        // may have shifted it.
         const newTargetIndex = newOrder.findIndex(r => r.id === targetRank.id);
         const insertionIndex = dropPosition === 'before' ? newTargetIndex : newTargetIndex + 1;
 
@@ -131,7 +126,6 @@ const RankManagementTab: React.FC = () => {
 
         addToast('Reordering Ranks', <i className="fa-solid fa-spinner animate-spin"></i>, 'bg-slate-500/10 text-slate-300 border-slate-500/50', { description: 'Saving new rank precedence order...' });
 
-        // Update all ranks with new sortOrders
         const updates = newOrder.map((rank, index) => ({
             ...rank,
             sortOrder: (index + 1) * 10

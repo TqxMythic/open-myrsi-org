@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Endpoint-level tests for the round-2 realtime slice subsets
+// Endpoint-level tests for the realtime slice subsets
 // (government_* / hr_* / fleet_* / warrant_slice / intel_summary /
 // bulletin_slice / wiki_page_slice):
-//   1. Every new subset is permission-gated at its parent bundle's gate —
+//   1. Every subset is permission-gated at its parent bundle's gate —
 //      a caller without the permission 403s BEFORE any db fetch.
 //   2. The HR per-array subsets re-apply the REAL viewer redaction (the
 //      helpers are imported from the actual lib/db/hr module, not mocked) —
@@ -34,7 +34,7 @@ const h = vi.hoisted(() => ({
 vi.mock('../lib/auth', () => ({ verifyToken: () => h.decoded, tokenIssuedAt: () => new Date(0) }));
 vi.mock('../lib/db', async () => {
     // The HR redaction helpers are REAL — these tests pin that the per-array
-    // subsets cannot regress the H2 redaction by skipping them.
+    // subsets cannot regress the viewer redaction by skipping them.
     const hr = await vi.importActual<typeof import('../lib/db/hr')>('../lib/db/hr');
     return {
         getPlatformSettings: async () => ({}),
@@ -224,7 +224,7 @@ describe('hr per-array subsets re-apply the REAL H2 viewer redaction', () => {
         await handler(req({ target: 'state', subset: 'hr_applicants' }), res);
         const a = res.body.hr.applicants[0];
         expect(a.applicantName).toBe(SECRET_NAME);
-        // §1.4 guard: vettingData NEVER rides a bulk list — only the
+        // vettingData NEVER rides a bulk list — only the
         // per-applicant hr:get_application_data lazy fetch.
         expect(a.vettingData).toBeUndefined();
     });

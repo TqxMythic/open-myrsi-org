@@ -163,3 +163,12 @@ describe('dead system:global_search action removed', () => {
         expect('system:global_search' in fullPermissionMap).toBe(false);
     });
 });
+
+// --- security-review gate values (drift guard) ------------------------------
+// permissionMapCoverage asserts an entry EXISTS; these pin the VALUE so a
+// silent downgrade (e.g. back to a weaker permission) fails CI.
+describe('security-review permission gates (M9/H4/M1)', () => {
+    it('intel:generate_summary is gated at intel:manage (M9 — writes the manager-only AI cache)', () => {
+        expect(fullPermissionMap['intel:generate_summary']).toBe('intel:manage');
+    });
+});

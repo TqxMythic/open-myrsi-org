@@ -1,20 +1,43 @@
 import type { Request } from 'express';
 
 /**
- * Resolve the originating client IP. Cloudflare always sets CF-Connecting-IP
- * to the real client; fall back to X-Forwarded-For (first hop) and then the
- * Express-resolved req.ip (which already honours `trust proxy`). Returns
- * 'unknown' if nothing identifies the caller — callers that rate-limit by IP
- * should treat that as a missing signal.
+ * Resolve the originating client IP for IP-keyed security controls (abuse
+ * blackhole, scanner counter, auth/action rate limiters).
  *
- * Shared between the top-of-stack abuse blackhole (server.ts) and the
- * services dispatcher's per-action rate limits (api/services.ts) so both
- * code paths agree on the IP key for a given request.
+ * These controls are only as strong as the IP resolution. Blindly trusting
+ * `CF-Connecting-IP` / first-hop `X-Forwarded-For` from any caller would let a
+ * client reaching the origin directly spoof a fresh IP per request (a new 60s
+ * rate-limit bucket each, defeating the 10/min auth shield) or frame a victim IP
+ * into the blackhole (collateral DoS).
+ *
+ * Trust model (explicit, opt-in via env):
+ *  - `TRUST_CF_PROXY=1` — the operator asserts the origin is reachable ONLY
+ *    through Cloudflare (tunnel / origin allow-list): honor CF-Connecting-IP,
+ *    which Cloudflare always sets/overwrites at its edge. Do NOT set this if
+ *    the origin is directly reachable — a direct caller could then spoof it.
+ *  - otherwise — CF-Connecting-IP is IGNORED and we use Express's `req.ip`,
+ *    which resolves X-Forwarded-For against `trust proxy` (TRUST_PROXY_HOPS,
+ *    default 1 = the single TLS-terminating reverse proxy of DEPLOYMENT_GUIDE
+ *    §4; set 0 if Node is directly exposed, else the socket peer can spoof
+ *    one XFF hop).
+ *
+ * Never hand-parse X-Forwarded-For here: taking the FIRST (leftmost) hop
+ * trusts a client-controlled value; rightmost-trusted resolution is exactly
+ * what `trust proxy` implements.
+ *
+ * Returns 'unknown' when nothing identifies the caller — IP-keyed limiters
+ * treat that as a missing signal (such callers collapse into one shared
+ * bucket; the auth limiter deliberately fails open on it).
+ *
+ * Shared between the top-of-stack abuse blackhole + express-rate-limit
+ * keyGenerators (server.ts) and the services dispatcher's per-action rate
+ * limits (api/services.ts) so every control agrees on the IP key for a given
+ * request — one resolver, one trust decision.
  */
 export function getClientIp(req: Request): string {
-    const cf = req.headers['cf-connecting-ip'];
-    if (typeof cf === 'string' && cf) return cf;
-    const xff = req.headers['x-forwarded-for'];
-    if (typeof xff === 'string' && xff) return xff.split(',')[0].trim();
+    if (process.env.TRUST_CF_PROXY === '1') {
+        const cf = req.headers['cf-connecting-ip'];
+        if (typeof cf === 'string' && cf) return cf;
+    }
     return req.ip || 'unknown';
 }

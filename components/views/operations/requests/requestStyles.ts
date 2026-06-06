@@ -102,8 +102,6 @@ export const reputationAccent = (rep: number): AccentKey => {
     return 'red';
 };
 
-/* ── Time formatting ────────────────────────────────────────────────────────── */
-
 export const timeAgo = (iso: string): string => {
     const d = new Date(iso);
     const diffMs = Date.now() - d.getTime();
@@ -136,8 +134,7 @@ export const formatDateFull = (iso: string, prefs?: FormatPrefs): string => {
     return formatUserDateTime(iso, prefs);
 };
 
-/* ── SLA derivation (client-only, no backend changes) ───────────────────────── */
-
+// SLA derivation is client-only (no backend changes).
 export const slaMinutes = (u: UrgencyLevel): number => {
     switch (u) {
         case UrgencyLevel.Critical: return 60;      // 1 hr
@@ -197,12 +194,9 @@ export const slaState = (createdAt: string, u: UrgencyLevel): SlaState => {
     return { remainingMs, totalMs, bucket, label, accent };
 };
 
-/* ── Status transition map for inline status-advance ────────────────────────── */
-
 /**
  * Statuses the user can advance *to* from the current status via one-click.
- * Intentionally limited to the most common forward paths — full transitions
- * still go through the existing Update Status modal.
+ * Limited to the common forward paths; full transitions go through the Update Status modal.
  */
 export const nextValidStatuses = (current: ServiceRequestStatus): ServiceRequestStatus[] => {
     switch (current) {

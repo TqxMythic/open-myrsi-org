@@ -35,16 +35,12 @@ const LoginView: React.FC<LoginViewProps> = ({ onLoginClick, brandingConfig, ann
 
     return (
         <div className="relative flex flex-col min-h-dvh bg-slate-950 text-slate-200 font-sans overflow-hidden animate-fade-in">
-            {/* Decorative blur blob */}
             <div className="absolute -top-32 left-1/2 -translate-x-1/2 w-[700px] h-[500px] bg-sky-500/10 rounded-full blur-[140px] pointer-events-none" aria-hidden />
-            {/* Grid overlay */}
             <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-size-[40px_40px] pointer-events-none" aria-hidden />
-            {/* Scan line */}
             <div className="absolute inset-0 overflow-hidden pointer-events-none" aria-hidden>
                 <div className="absolute left-0 right-0 h-[2px] bg-linear-to-r from-transparent via-sky-400/50 to-transparent" style={{ animation: 'loginScan 7s linear infinite' }} />
             </div>
 
-            {/* Top callsign chip */}
             <div className="relative z-10 px-5 pt-6 sm:px-8 sm:pt-8 flex justify-center">
                 <CallsignChip label="SECURE CHANNEL · AUTHENTICATION" icon="fa-shield-halved" accent="emerald" pulse />
             </div>
@@ -58,10 +54,8 @@ const LoginView: React.FC<LoginViewProps> = ({ onLoginClick, brandingConfig, ann
                 </div>
             )}
 
-            {/* Center content */}
             <div className="relative z-10 flex-1 flex items-center justify-center px-5 sm:px-8 py-6">
                 <div className="w-full max-w-md flex flex-col items-center text-center">
-                    {/* Logo with pulsing glow */}
                     <div className="relative mb-6">
                         <div className="absolute inset-0 bg-sky-500 blur-3xl opacity-25 rounded-full" style={{ animation: 'loginGlow 3s ease-in-out infinite' }} aria-hidden />
                         <div className="relative z-10 w-20 h-20 rounded-2xl bg-slate-900/60 border border-white/10 backdrop-blur-md flex items-center justify-center shadow-[0_0_40px_rgba(14,165,233,0.25)]">
@@ -69,14 +63,12 @@ const LoginView: React.FC<LoginViewProps> = ({ onLoginClick, brandingConfig, ann
                         </div>
                     </div>
 
-                    {/* Org name */}
                     <h1 className="text-3xl sm:text-4xl font-black text-white tracking-[0.15em] uppercase mb-1 leading-tight">
                         {brandingConfig.name}
                     </h1>
                     <p className="text-[11px] text-sky-300/70 font-mono uppercase tracking-[0.3em] mb-5">Operations Terminal</p>
                     <div className="h-px w-20 bg-linear-to-r from-transparent via-sky-500 to-transparent opacity-60 mb-6" />
 
-                    {/* Optional loginTitle / loginSubtitle */}
                     {(brandingConfig.loginTitle || brandingConfig.loginSubtitle) && (
                         <div className="max-w-sm mb-6">
                             {brandingConfig.loginTitle && (
@@ -110,7 +102,6 @@ const LoginView: React.FC<LoginViewProps> = ({ onLoginClick, brandingConfig, ann
                         </div>
                     )}
 
-                    {/* Discord button */}
                     <button
                         onClick={() => { onDismissAuthError?.(); onLoginClick(); }}
                         className="w-full flex items-center justify-center bg-[#5865F2] hover:bg-[#4752c4] text-white font-bold py-3.5 px-6 rounded-xl text-sm transition-all duration-200 shadow-lg shadow-[#5865F2]/25 group/btn relative overflow-hidden active:scale-[0.98]"
@@ -126,7 +117,6 @@ const LoginView: React.FC<LoginViewProps> = ({ onLoginClick, brandingConfig, ann
                 </div>
             </div>
 
-            {/* Footer status */}
             <div className="relative z-10 px-5 sm:px-8 pb-5 sm:pb-6 pt-3 border-t border-white/5 flex items-center justify-between text-[10px] font-mono uppercase tracking-[0.2em] text-slate-500">
                 <span className="flex items-center gap-2">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />

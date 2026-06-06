@@ -73,7 +73,10 @@ Set the environment variables from step 2, then run the app under a process mana
 
 1. Point an **A record** for `yourdomain.com` at your host's IP. No wildcard record or cert is needed — this is a single hostname.
 2. Terminate **HTTPS** in front of the app. The server itself speaks plain HTTP on `$PORT`; put a TLS-terminating reverse proxy (Caddy, nginx, Traefik) or your platform's built-in certificates in front of it. Make sure the proxy forwards the original `Host` and `X-Forwarded-Proto` headers — the server uses them to build OAuth redirect URLs and Open Graph meta. HTTPS is also assumed by the alliance federation handshake.
-3. **Set your public domain in the static SEO files.** `public/sitemap.xml`, `public/robots.txt`, and the `og:url` meta in `index.html` ship with a `https://yourdomain.com` placeholder — replace it with your actual domain so crawlers and social-share cards point at your instance. Everything else is runtime-driven: page title, description, and OG image come from **Admin → Branding** (the server rewrites the meta tags per request from your config and the `X-Forwarded-Host` header), and `og:image` falls back to the bundled `/media/opengraph.jpg`. Only those three static files need a manual edit.
+3. **Client-IP trust** (rate limiting + abuse blocking key on the client IP, so the server must know which proxy headers to believe):
+   - `TRUST_PROXY_HOPS` — how many reverse proxies sit in front of the app (default `1`, matching the single proxy above). Set `0` if Node is directly exposed with **no** proxy, or `2+` for deeper chains (CDN → LB → app). A wrong value either blames the proxy's IP for all traffic or lets clients spoof a forwarded hop.
+   - `TRUST_CF_PROXY=1` — set **only** if the origin is reachable exclusively through Cloudflare (Cloudflare Tunnel or an origin firewall allow-listing Cloudflare's IP ranges). The server then trusts `CF-Connecting-IP` for the real client address. If the origin is reachable directly, leave it unset — otherwise a direct caller can spoof the header to evade rate limits or frame another IP into the abuse blocker.
+4. **Set your public domain in the static SEO files.** `public/sitemap.xml`, `public/robots.txt`, and the `og:url` meta in `index.html` ship with a `https://yourdomain.com` placeholder — replace it with your actual domain so crawlers and social-share cards point at your instance. Everything else is runtime-driven: page title, description, and OG image come from **Admin → Branding** (the server rewrites the meta tags per request from your config and the `X-Forwarded-Host` header), and `og:image` falls back to the bundled `/media/opengraph.jpg`. Only those three static files need a manual edit.
 
 > **Using Coolify?** It issues a Let's Encrypt certificate for the single hostname automatically (HTTP-01 challenge) and forwards the proxy headers for you — no manual reverse-proxy config needed.
 
@@ -98,7 +101,21 @@ If you seed/import a `users` row by `discord_id` (e.g. migrating from another de
 
 ---
 
-## 7. Troubleshooting
+## 7. Updating an Existing Deployment
+
+There is **no migrations folder** — `schema.sql` is the single, **re-runnable** source of truth. To take a newer release's schema changes (new tables, columns, RPCs, policies, permissions) onto a database that already has data:
+
+1. **Update the code** — `git pull` and rebuild/redeploy the app as usual (Coolify redeploy, or `npm ci && npm run build` then restart). This alone updates the app but **not** the database.
+2. **Re-run `schema.sql`** — open **Supabase → SQL Editor**, paste the new `schema.sql`, and run it. It is fully idempotent: every statement is guarded (`CREATE … IF NOT EXISTS`, duplicate-safe `DO` blocks, `CREATE OR REPLACE`, `ON CONFLICT`), so it **adds what's new and leaves your existing data untouched**. Do **not** run `reset_db.sql` (that wipes everything).
+3. **Repair Database** — open **Admin → Database Tools → Repair Database**. This converges the things a schema re-run can't: it re-grants the Admin role every permission, tops up role grants, and refreshes seeded reference data. (This is also the fix if Catalogs or a new feature show "access denied" after an update.)
+
+The applied schema version is recorded in `settings.schema_version`. A release that changes the schema will say so in its notes — when in doubt after pulling new code, re-running `schema.sql` + Repair Database is always safe.
+
+> **Tip:** apply a new release's `schema.sql` to a throwaway copy of your database first to confirm a clean run for your Postgres/Supabase version.
+
+---
+
+## 8. Troubleshooting
 
 - **500s on boot:** missing env vars are the #1 cause — check `SUPABASE_*`.
 - **Discord login bounces:** verify the redirect URL is registered exactly (`https://yourdomain.com/**`), and that `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET` match.

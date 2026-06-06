@@ -5,17 +5,17 @@ import { log as baseLog } from './log.js';
 
 const log = baseLog.child({ module: 'lib.auth' });
 
-// JWT signing secret — MUST be set via environment variable.
-// A dedicated JWT_SECRET is required; do NOT reuse the Supabase service role key
-// (privilege separation: a token-signing leak must not equal a DB superuser leak).
+// JWT signing secret — MUST be set via environment variable. A dedicated
+// JWT_SECRET is required; do NOT reuse the Supabase service role key so a
+// token-signing leak does not equal a DB superuser leak.
 const SECRET = process.env.JWT_SECRET;
 
 if (!SECRET) {
     if (process.env.NODE_ENV === 'production') {
         throw new Error('CRITICAL: JWT_SECRET is not configured. Set JWT_SECRET to a dedicated random value (e.g. `node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"`).');
     }
-    // In dev, warn loudly but allow startup with a per-process random secret
-    // (tokens will not survive server restarts — intentional for dev safety)
+    // In dev, warn but allow startup with a per-process random secret; tokens
+    // will not survive server restarts.
     log.error('jwt_secret not set, using ephemeral random secret (tokens invalidate on restart)', { env: 'dev' });
 }
 
@@ -32,6 +32,17 @@ export interface AuthToken {
 /** Derive when the token was issued (exp minus lifetime) */
 export function tokenIssuedAt(token: AuthToken): Date {
     return new Date(token.exp - TOKEN_LIFETIME_MS);
+}
+
+/**
+ * Canonical force-logout predicate. A session whose token was issued BEFORE the
+ * platform's force_logout_timestamp is revoked. Shared by the /api/services
+ * dispatcher and the /api/admin/import-stream route so the two entry points
+ * cannot drift. True = revoked (reject the request).
+ */
+export function isSessionForceLoggedOut(token: AuthToken, forceLogoutTimestamp: string | null | undefined): boolean {
+    if (!forceLogoutTimestamp) return false;
+    return tokenIssuedAt(token).toISOString() < forceLogoutTimestamp;
 }
 
 export function signToken(payload: Omit<AuthToken, 'exp'>): string {
@@ -51,7 +62,7 @@ export function verifyToken(token: string | undefined): AuthToken | null {
     const [encodedData, signature] = parts;
     const expectedSignature = createHmac('sha256', SIGNING_KEY).update(encodedData).digest('hex');
 
-    // Constant-time compare to prevent timing side-channel on the HMAC signature.
+    // Constant-time compare to avoid a timing side-channel on the HMAC signature.
     // Decode both as hex Buffers; Buffer.from silently drops invalid hex chars,
     // so an unequal-length result indicates a malformed or mismatched signature.
     const sigBuf = Buffer.from(signature, 'hex');
@@ -79,18 +90,22 @@ export function verifyToken(token: string | undefined): AuthToken | null {
 // JWT_SECRET, so the server mints a SEPARATE standards-compliant HS256 JWT
 // signed with the project's SUPABASE_JWT_SECRET (Dashboard → Settings → API).
 // Claims: role 'authenticated' (the RLS role) + user_id (consumed by the
-// op-board visibility policy in schema.sql). Lifetime matches the 7-day
-// session so realtime doesn't silently die mid-session; re-minted on every
-// boot. Revocation is layered, NOT token-lifetime-bound: (a) org channels are
-// id-only — content fetches require the SEPARATE session token + a LIVE
-// permission re-check, and force-logout invalidates that; (b) op-board content
-// is gated by a LIVE RLS join (users.deleted_at + role_permissions +
-// clearance), so a demoted/deleted user loses it immediately; (c) the org
-// policy additionally requires the user row to be non-deleted. Without
-// SUPABASE_JWT_SECRET no token is minted and clients cannot subscribe to ANY
-// channel: fail-closed (no realtime, no leak) with a loud log.
+// op-board visibility policy in schema.sql). Revocation is layered, not
+// token-lifetime-bound: org channels are id-only (content fetches require the
+// separate session token + a live permission re-check, which force-logout
+// invalidates); op-board content is gated by a live RLS join (deleted_at +
+// role_permissions + clearance). Without SUPABASE_JWT_SECRET no token is minted
+// and clients cannot subscribe to any channel: fail-closed with a loud log.
 
-const REALTIME_TOKEN_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000; // 7 days (matches the session)
+// 8h, not the 7-day session lifetime: force_logout_all does not revoke an
+// already-minted realtime token (§6b RLS checks live perms/deleted_at but not
+// force_logout_timestamp), so a force-logged-out (not deleted) session keeps
+// receiving id-only pings until the token expires. The session JWT is re-checked
+// on every /api/services + /api/query call, so such a session can fetch no
+// content; the residual is signal/timing only. 8h bounds that window while
+// keeping realtime alive across a normal work session (re-minted on
+// boot/login/permission-change/reconnect — there is no periodic re-mint).
+const REALTIME_TOKEN_LIFETIME_MS = 8 * 60 * 60 * 1000; // 8 hours
 
 const b64url = (input: Buffer | string): string =>
     Buffer.from(input).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
@@ -157,6 +172,44 @@ export function verifyAdminSetupGrant(token: string | undefined): { discordId: s
     try {
         const payload = JSON.parse(Buffer.from(encodedData, 'base64').toString());
         if (payload.purpose !== 'admin_setup') return null;
+        if (typeof payload.discordId !== 'string' || !payload.discordId) return null;
+        if (Date.now() > payload.exp) return null;
+        return { discordId: payload.discordId };
+    } catch {
+        return null;
+    }
+}
+
+// Proof that a discord id completed the OAuth flow, minted for every new user in
+// auth:discord_callback. finalize_setup requires it and checks it matches the
+// submitted discordId, so a caller cannot create an account bound to someone
+// else's discord id (account squatting). Bound to discordId; short-lived.
+const IDENTITY_GRANT_LIFETIME_MS = 15 * 60 * 1000; // 15 minutes
+
+export function signIdentityGrant(discordId: string): string {
+    const expiry = Date.now() + IDENTITY_GRANT_LIFETIME_MS;
+    const data = JSON.stringify({ purpose: 'signup_identity', discordId, exp: expiry });
+    const encodedData = Buffer.from(data).toString('base64');
+    const signature = createHmac('sha256', SIGNING_KEY).update(encodedData).digest('hex');
+    return `${encodedData}.${signature}`;
+}
+
+export function verifyIdentityGrant(token: string | undefined): { discordId: string } | null {
+    if (!token) return null;
+
+    const parts = token.split('.');
+    if (parts.length !== 2) return null;
+
+    const [encodedData, signature] = parts;
+    const expectedSignature = createHmac('sha256', SIGNING_KEY).update(encodedData).digest('hex');
+    const sigBuf = Buffer.from(signature, 'hex');
+    const expBuf = Buffer.from(expectedSignature, 'hex');
+    if (sigBuf.length !== expBuf.length) return null;
+    if (!timingSafeEqual(sigBuf, expBuf)) return null;
+
+    try {
+        const payload = JSON.parse(Buffer.from(encodedData, 'base64').toString());
+        if (payload.purpose !== 'signup_identity') return null;
         if (typeof payload.discordId !== 'string' || !payload.discordId) return null;
         if (Date.now() > payload.exp) return null;
         return { discordId: payload.discordId };

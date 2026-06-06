@@ -135,7 +135,6 @@ const OrganisationView: React.FC = () => {
             />
 
             <div className="flex-1 overflow-y-auto overflow-x-hidden custom-scrollbar p-4 sm:p-6 space-y-4">
-                {/* Toolbar */}
                 <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
                     <div className="relative flex-1 max-w-2xl">
                         <i className="fa-solid fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-500"></i>
@@ -165,7 +164,6 @@ const OrganisationView: React.FC = () => {
                     </div>
                 </div>
 
-                {/* Tree */}
                 {filterTree.length === 0 ? (
                     <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/30">
                         <EmptyState
@@ -256,7 +254,6 @@ const UnitTreeBranch: React.FC<UnitTreeBranchProps> = ({
                     <i className={`fa-solid ${isCollapsed ? 'fa-chevron-right' : 'fa-chevron-down'} text-[10px] transition-transform`}></i>
                 </button>
 
-                {/* Card */}
                 <button
                     type="button"
                     onClick={() => onClick(node)}
@@ -266,7 +263,6 @@ const UnitTreeBranch: React.FC<UnitTreeBranchProps> = ({
                             : 'bg-slate-900/70 border-y-slate-700/40 border-r-slate-700/40 hover:bg-slate-800/60 hover:border-y-indigo-500/40 hover:border-r-indigo-500/40 hover:shadow-md'
                     } ${isMember ? `ring-1 ${tier.ring}` : ''}`}
                 >
-                    {/* Logo */}
                     <div className={`w-9 h-9 sm:w-10 sm:h-10 rounded-lg flex items-center justify-center shrink-0 border ${
                         isMember ? 'border-emerald-500/40 bg-emerald-500/10' : 'border-slate-700 bg-slate-950/60'
                     }`}>
@@ -277,7 +273,6 @@ const UnitTreeBranch: React.FC<UnitTreeBranchProps> = ({
                         )}
                     </div>
 
-                    {/* Identity */}
                     <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
                             <span className={`text-sm font-bold ${restricted ? 'text-slate-400' : 'text-white'} truncate`}>

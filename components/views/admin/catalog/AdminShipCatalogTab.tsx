@@ -22,7 +22,6 @@ export default function AdminShipCatalogTab() {
         addToast(message, null, '', { variant: type as ToastVariant });
     }, [addToast]);
 
-    // Self-fetched rows (the portal version received these via props + onRefresh).
     const [ships, setShips] = useState<ShipWithUsage[]>([]);
     const loadShips = useCallback(async () => {
         try {

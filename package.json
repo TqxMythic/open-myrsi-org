@@ -23,6 +23,7 @@
     "@google/genai": "^1.52.0",
     "@supabase/supabase-js": "^2.105.3",
     "@tailwindcss/vite": "^4.2.4",
+    "@tiptap/core": "^3.22.5",
     "@tiptap/extension-image": "^3.22.5",
     "@tiptap/extension-link": "^3.22.5",
     "@tiptap/extension-placeholder": "^3.22.5",
@@ -51,6 +52,7 @@
     "react-dom": "^19.2.5",
     "react-konva": "^19.2.3",
     "recharts": "^3.8.1",
+    "undici": "7.24.6",
     "web-push": "3.6.7"
   },
   "overrides": {

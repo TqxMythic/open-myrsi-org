@@ -22,7 +22,6 @@ interface ActiveRoom {
     participantNames: string[];
 }
 
-// Compact Cards for Density
 const IncidentCard: React.FC<{
     request: HydratedServiceRequest;
     onClick: () => void;
@@ -204,7 +203,6 @@ const DispatchCenterView: React.FC = () => {
         return map;
     }, [hydratedServiceRequests]);
 
-    // -- DATA FILTERING --
     const activeRequests = useMemo(() =>
         hydratedServiceRequests.filter(r =>
             [ServiceRequestStatus.Submitted, ServiceRequestStatus.Triaged, ServiceRequestStatus.Accepted, ServiceRequestStatus.InProgress].includes(r.status)
@@ -233,7 +231,6 @@ const DispatchCenterView: React.FC = () => {
 
     const canViewIntel = hasPermission('intel:view') || hasPermission('intel:create');
 
-    // -- DRAG AND DROP HANDLERS --
     const [draggedUser, setDraggedUser] = useState<number | null>(null);
 
     const handleDragStart = (e: React.DragEvent, userId: number) => {
@@ -340,7 +337,6 @@ const DispatchCenterView: React.FC = () => {
                 </>}
             />
 
-            {/* MAIN CONTENT AREA */}
             {tab === 'mdt' ? (
                 <div className="flex-1 overflow-y-auto">
                     <MDTPanel
@@ -352,7 +348,6 @@ const DispatchCenterView: React.FC = () => {
                 </div>
             ) : (
             <div className="flex flex-col lg:flex-row flex-1 overflow-hidden">
-                {/* LEFT PANEL - INCIDENTS */}
                 <div className="w-full lg:w-1/3 border-b lg:border-b-0 lg:border-r border-slate-800 flex flex-col h-1/3 lg:h-auto">
                     <div className="h-12 bg-slate-800/50 border-b border-white/5 flex items-center justify-between px-4 shrink-0">
                         <h3 className="text-sm font-bold text-slate-300 uppercase tracking-wide">Active Incidents ({activeRequests.length})</h3>
@@ -395,7 +390,6 @@ const DispatchCenterView: React.FC = () => {
                     </div>
                 </div>
 
-                {/* MIDDLE PANEL - UNITS */}
                 <div className="w-full lg:w-1/3 border-b lg:border-b-0 lg:border-r border-slate-800 flex flex-col h-1/3 lg:h-auto">
                     <div className="h-12 bg-slate-800/50 border-b border-white/5 flex items-center px-4 shrink-0">
                         <h3 className="text-sm font-bold text-slate-300 uppercase tracking-wide">On-Duty Units ({onDutyUnits.length})</h3>
@@ -421,7 +415,6 @@ const DispatchCenterView: React.FC = () => {
                     </div>
                 </div>
 
-                {/* RIGHT PANEL - COMMS MATRIX */}
                 <div className="w-full lg:w-1/3 flex flex-col h-1/3 lg:h-auto">
                     <div className="h-12 bg-slate-800/50 border-b border-white/5 flex items-center px-4 shrink-0 justify-between">
                         <h3 className="text-sm font-bold text-slate-300 uppercase tracking-wide">Comms Matrix</h3>
@@ -495,7 +488,6 @@ const DispatchCenterView: React.FC = () => {
             </div>
             )}
 
-            {/* Modal */}
             <DispatchServiceRequestModal
                 request={selectedRequest}
                 onClose={() => setSelectedRequest(null)}

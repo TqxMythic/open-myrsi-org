@@ -27,7 +27,6 @@ const VersionCard: React.FC<{ version: string; title: string; children: React.Re
 const ChangeLogView: React.FC<ChangeLogViewProps> = ({ onBack }) => {
     return (
         <div className="h-full flex flex-col overflow-hidden animate-fade-in">
-            {/* Hero */}
             <div className="shrink-0 relative overflow-hidden border-b border-white/5 bg-linear-to-b from-sky-950/30 via-slate-950/80 to-slate-950">
                 <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[400px] bg-sky-500/10 rounded-full blur-[120px] pointer-events-none" aria-hidden />
 
@@ -54,18 +53,13 @@ const ChangeLogView: React.FC<ChangeLogViewProps> = ({ onBack }) => {
                 </div>
             </div>
 
-            {/* Content */}
             <div className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 max-w-4xl mx-auto w-full space-y-6">
 
-                {/* LATEST VERSION */}
-                <VersionCard version="15.0.0-open" title="The Open-Source Release" isLatest>
-                    <li><strong className="text-green-400">[Release]</strong> <strong className="font-semibold text-slate-100">Open-Source, Self-Hosted Build</strong>: MyRSI.org is now available as a self-hostable build under a source-available, noncommercial licence. One deployment runs one organisation — bring your own Supabase project and Discord application, drop in your environment config, and a polished first-run setup wizard walks you from a preflight environment check through Discord sign-in, the one-time admin claim code, RSI handle verification, and an optional import of your existing data. The first Discord login that redeems the console setup code becomes Admin.</li>
-                    <li><strong className="font-semibold text-slate-100">A personal note.</strong> This release is my soft close on MyRSI. It is not the final update and I am not disappearing, but it marks the point where I step back from the day to day. I wanted to leave the platform in the best and safest state I could, and to make sure none of you are ever locked in. Here is what that looks like.</li>
-                    <li><strong className="font-semibold text-slate-100">Warrants are now Caution Notes.</strong> Same feature, friendlier name. It flags people your organisation should be wary of and shows a clear warning on any service request that involves them. The old labels are gone, replaced with three simple levels: Caution, High Caution, and Extreme Caution.</li>
-                    <li><strong className="font-semibold text-slate-100">Security and privacy came first.</strong> After the security incident some of you saw earlier, I went back through the entire platform from top to bottom reviewing any point at which data is transacted. This was the single biggest part of the release.</li>
-                    <li><strong className="font-semibold text-slate-100">MyRSI is now open source.</strong> The platform is free and open for anyone to read, run, and build on. The full source for the self hosted version lives at <a href="https://github.com/MyRSI-org/open-myrsi-org" target="_blank" rel="noopener noreferrer" className="text-sky-300 hover:text-sky-200 underline">github.com/MyRSI-org/open-myrsi-org</a>. If you ever want to host your own copy or just see how everything works under the hood, it is all there. Your org owner can export your full organisation's data from the billing portal at any time to take it with you.</li>
-                    <li><strong className="font-semibold text-slate-100">Reliability and tidy up.</strong> I fixed a range of behind the scenes issues that could trip up sign in or pages, made the app much clearer when something goes wrong, and removed a few older tools that were no longer needed.</li>
-                    <li><strong className="font-semibold text-slate-100">Thank you.</strong> Trusting me with your organisations has genuinely meant a lot. The lights stay on, the code is yours, and I am still around. Fly safe.</li>
+                <VersionCard version="15.1.0-open" title="Marketplace + Hardening" isLatest>
+                    <li><strong className="text-sky-400">[Marketplace]</strong> <strong className="font-semibold text-slate-100">Restored Marketplace feature with new chrome.</strong> This one speaks for itself. The marketplace is back and looking a fair bit better.</li>
+                    <li><strong className="text-sky-400">[Security]</strong> <strong className="font-semibold text-slate-100">Another security pass.</strong> I went back through the platform again and tightened the checks on who can see what across operations, intelligence, HR, the marketplace, and alliance sharing. Most of this is invisible day to day, which is the point: information only ever reaches the people it is meant to. Appropriate tests have been wired in.</li>
+                    <li><strong className="font-semibold text-slate-100">Operation templates now respect clearance.</strong> A template saved from a classified operation now inherits that operation's clearance, so its plan can only be seen and reused by people cleared for it, not everyone in the org.</li>
+                    <li><strong className="font-semibold text-slate-100">For self-hosters.</strong> This update adds a few database columns. After updating, re-run schema.sql in your Supabase SQL editor to pick them up. The schema is impotent so it is safe to run.</li>
                 </VersionCard>
 
                 <div className="space-y-6">
@@ -74,6 +68,16 @@ const ChangeLogView: React.FC<ChangeLogViewProps> = ({ onBack }) => {
                         Version History
                         <span className="h-px bg-slate-700 grow ml-4"></span>
                     </h3>
+
+                    <VersionCard version="15.0.0-open" title="The Open-Source Release">
+                        <li><strong className="text-green-400">[Release]</strong> <strong className="font-semibold text-slate-100">Open-Source, Self-Hosted Build</strong>: MyRSI.org is now available as a self-hostable build under a source-available, noncommercial licence. One deployment runs one organisation — bring your own Supabase project and Discord application, drop in your environment config, and a polished first-run setup wizard walks you from a preflight environment check through Discord sign-in, the one-time admin claim code, RSI handle verification, and an optional import of your existing data. The first Discord login that redeems the console setup code becomes Admin.</li>
+                        <li><strong className="font-semibold text-slate-100">A personal note.</strong> This release is my soft close on MyRSI. It is not the final update and I am not disappearing, but it marks the point where I step back from the day to day. I wanted to leave the platform in the best and safest state I could, and to make sure none of you are ever locked in. Here is what that looks like.</li>
+                        <li><strong className="font-semibold text-slate-100">Warrants are now Caution Notes.</strong> Same feature, friendlier name. It flags people your organisation should be wary of and shows a clear warning on any service request that involves them. The old labels are gone, replaced with three simple levels: Caution, High Caution, and Extreme Caution.</li>
+                        <li><strong className="font-semibold text-slate-100">Security and privacy came first.</strong> After the security incident some of you saw earlier, I went back through the entire platform from top to bottom reviewing any point at which data is transacted. This was the single biggest part of the release.</li>
+                        <li><strong className="font-semibold text-slate-100">MyRSI is now open source.</strong> The platform is free and open for anyone to read, run, and build on. The full source for the self hosted version lives at <a href="https://github.com/MyRSI-org/open-myrsi-org" target="_blank" rel="noopener noreferrer" className="text-sky-300 hover:text-sky-200 underline">github.com/MyRSI-org/open-myrsi-org</a>. If you ever want to host your own copy or just see how everything works under the hood, it is all there. Your org owner can export your full organisation's data from the billing portal at any time to take it with you.</li>
+                        <li><strong className="font-semibold text-slate-100">Reliability and tidy up.</strong> I fixed a range of behind the scenes issues that could trip up sign in or pages, made the app much clearer when something goes wrong, and removed a few older tools that were no longer needed.</li>
+                        <li><strong className="font-semibold text-slate-100">Thank you.</strong> Trusting me with your organisations has genuinely meant a lot. The lights stay on, the code is yours, and I am still around. Fly safe.</li>
+                    </VersionCard>
 
                     <VersionCard version="14.8.0-hosted" title="The Operations & Performance Update">
                         <li><strong className="text-slate-300">In short:</strong> Added cost and payout tracking to operations, the option to send each type of service request to its own Discord channel, a live level meter for the radio, and a cleaner career timeline, along with faster loading and a range of polish and reliability fixes.</li>

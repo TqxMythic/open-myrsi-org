@@ -2,9 +2,11 @@
 import * as db from '../../lib/db.js';
 import * as discord from '../../lib/discord.js';
 import * as radio from '../../lib/radio.js';
-import { signToken, signAdminSetupGrant, verifyAdminSetupGrant } from '../../lib/auth.js';
+import { signToken, signAdminSetupGrant, verifyAdminSetupGrant, signIdentityGrant, verifyIdentityGrant } from '../../lib/auth.js';
 import { verifyRsiHandle } from '../../lib/rsi.js';
 import { stripSensitiveUserFields } from '../../lib/db/userFilters.js';
+import { adminExists } from '../../lib/firstBoot.js';
+import { timingSafeEqual, createHash } from 'node:crypto';
 import { log as baseLog } from '../../lib/log.js';
 import type { User } from '../../types.js';
 
@@ -14,8 +16,9 @@ const log = baseLog.child({ module: 'actions.auth' });
 
 // participantName / userId in the body are IGNORED — the dispatcher injects the
 // authenticated `user`, and radio token identity/name + authorization derive
-// from it (SECURITY H5). The fields remain for backward-compat with old clients.
-type RadioActor = { id: number; name?: string; role?: string; permissions?: string[]; clearanceLevel?: { level?: number } | null };
+// from it. The fields remain for backward-compat with old clients.
+// limitingMarkers ride along so op-voice auth can enforce compartments.
+type RadioActor = { id: number; name?: string; role?: string; permissions?: string[]; clearanceLevel?: { level?: number } | null; limitingMarkers?: unknown[] };
 
 interface RadioAuthPayload {
     roomName: string;
@@ -49,6 +52,10 @@ interface FinalizeSetupPayload {
     // validated.
     isAdmin?: boolean;
     adminSetupToken?: string;
+    // Proof the discordId completed Discord OAuth, minted in auth:discord_callback.
+    // Required: binds the new account to that identity so it can't be created for
+    // someone else's discord id.
+    identityToken?: string;
     verificationCode?: string;
     // First-run admin "verify later (offline)" bypass. Honored ONLY with a valid
     // adminSetupToken (first-admin context); regular members must verify.
@@ -61,6 +68,15 @@ interface OrgClaimPayload {
 }
 
 const CLAIM_MAX_ATTEMPTS = 10;
+
+// Constant-time string compare for the setup code — avoids a timing
+// side-channel on the `===` compare. Hashing first makes it length-independent
+// (timingSafeEqual requires equal-length buffers).
+export function constantTimeEqual(a: string, b: string): boolean {
+    const ha = createHash('sha256').update(a).digest();
+    const hb = createHash('sha256').update(b).digest();
+    return timingSafeEqual(ha, hb);
+}
 
 /** Validate the single-org admin setup code against the DB, enforcing rate limits.
  *  On success the code is deleted (single-use). The code is printed to the server
@@ -90,7 +106,7 @@ async function validateClaimCode(submittedCode: string): Promise<boolean> {
         throw new Error("Too many failed attempts. The setup code has been revoked — restart the server to generate a new one.");
     }
 
-    if (storedCode !== submittedCode) {
+    if (!storedCode || !constantTimeEqual(String(storedCode), String(submittedCode))) {
         const nextValue = typeof stored === 'string'
             ? { code: stored, failed_attempts: attempts + 1 }
             : { ...stored, failed_attempts: attempts + 1 };
@@ -105,17 +121,26 @@ async function validateClaimCode(submittedCode: string): Promise<boolean> {
 
 export const authActions = {
     // --- RADIO AUTH ---
+    // These actions proxy to the metered LiveKit API and are reachable by any
+    // authenticated user. Throttle per-user (keyed on the server-injected user
+    // id) to prevent a token-cost DoS, AFTER the auth check so an unauthenticated
+    // caller still gets Unauthorized and the limiter keys on a real id. All
+    // existing auth/clearance gates remain inside lib/radio.
     'radio:auth': ({ roomName, user }: RadioAuthPayload) => {
         if (!user) throw new Error('Unauthorized');
+        radio.assertRadioRateLimit(user.id);
         return radio.generateRadioToken(user, roomName);
     },
     'radio:op_auth': ({ operationId, user }: RadioOpAuthPayload) => {
         if (!user) throw new Error('Unauthorized');
+        radio.assertRadioRateLimit(user.id);
         return radio.generateOpRadioToken(user, operationId);
     },
     // Participant identities only for radio managers; others get presence counts.
-    'radio:status': ({ user }: { user?: RadioActor }) =>
-        radio.getRadioStatus({ includeParticipants: user?.role === 'Admin' || (user?.permissions || []).includes('radio:manage') }),
+    'radio:status': ({ user }: { user?: RadioActor }) => {
+        radio.assertRadioRateLimit(user?.id);
+        return radio.getRadioStatus({ includeParticipants: user?.role === 'Admin' || (user?.permissions || []).includes('radio:manage') });
+    },
     'radio:reboot': () => radio.rebootRadioNetwork(),
 
     // --- AUTH ACTIONS ---
@@ -160,6 +185,13 @@ export const authActions = {
         if (state && state.startsWith('admin_setup:')) {
             const claimKey = state.split(':')[1];
             if (claimKey) {
+                // First-admin-only — refuse once an admin is established,
+                // mirroring the org:claim / redeem_setup_code sibling paths.
+                // adminExists() fails closed (returns true on a DB error), so a
+                // transient failure denies the claim rather than granting Admin.
+                // Checked BEFORE validateClaimCode so a lingering setup code
+                // cannot self-promote a second admin.
+                if (await adminExists()) throw new Error('An administrator already exists for this organization.');
                 await validateClaimCode(claimKey);
                 isAdminClaim = true;
             }
@@ -204,20 +236,20 @@ export const authActions = {
             }
 
             const token = signToken({ userId: user.id, roleId: user.roleId });
-            // SECURITY (M5): the self record returned at login must not carry
-            // admin-only fields (adminNotes) or another-user's-eyes-only material.
-            // Strip with the user as their own requester: personal data (personnel
-            // notes / conduct / markers) is preserved for self; adminNotes is
-            // blanked unless they actually hold admin:user:update.
+            // The self record returned at login must not carry admin-only fields
+            // (adminNotes) or another-user's-eyes-only material. Strip with the
+            // user as their own requester: personal data (personnel notes /
+            // conduct / markers) is preserved for self; adminNotes is blanked
+            // unless they actually hold admin:user:update.
             const safeUser = stripSensitiveUserFields(user, { id: user.id, role: user.role, permissions: user.permissions || [] });
             return { user: safeUser, token, isNewUser: false };
         }
 
-        // New User. When this OAuth flow carried a valid (now-consumed) admin setup
-        // code, mint a short-lived server-signed grant bound to the OAuth-verified
-        // Discord id. finalize_setup requires this grant to assign the Admin role —
-        // the client-side `isAdminSetup` flag is cosmetic (drives UI copy) and is
-        // NOT trusted for the privilege decision.
+        // New User. identityToken binds finalize_setup to this OAuth-verified
+        // Discord id (so an account can't be created for someone else's id). When
+        // the flow also carried a valid (now-consumed) admin setup code, an
+        // adminSetupToken additionally authorizes the Admin role — the client-side
+        // `isAdminSetup` flag is cosmetic (drives UI copy) and is NOT trusted.
         return {
             isNewUser: true,
             user: {
@@ -226,6 +258,7 @@ export const authActions = {
                 avatarUrl,
                 isAdminSetup: isAdminClaim
             },
+            identityToken: signIdentityGrant(discordUser.id),
             ...(isAdminClaim ? { adminSetupToken: signAdminSetupGrant(discordUser.id) } : {})
         };
     },
@@ -234,8 +267,16 @@ export const authActions = {
             throw new Error("An RSI handle is required.");
         }
 
-        // SECURITY (C1): the Admin role is granted ONLY when the caller presents a
-        // valid, server-signed admin-setup grant bound to THIS discordId. The grant
+        // Bind the new account to the Discord identity that completed OAuth. The
+        // grant was minted in auth:discord_callback for the verified discordId, so
+        // the submitted discordId cannot be spoofed to squat another member.
+        const identity = verifyIdentityGrant(payload.identityToken);
+        if (!identity || identity.discordId !== payload.discordId) {
+            throw new Error("Your sign-in session has expired. Please sign in with Discord again.");
+        }
+
+        // The Admin role is granted ONLY when the caller presents a valid,
+        // server-signed admin-setup grant bound to THIS discordId. The grant
         // is minted by auth:discord_callback or auth:redeem_setup_code after the
         // one-time setup code was validated + consumed. A client `isAdmin` flag is
         // never trusted.
@@ -289,6 +330,11 @@ export const authActions = {
         if (!user) throw new Error("User context invalid.");
         log.info('org:claim attempt', { userId });
 
+        // The setup code promotes the FIRST admin only. Once an admin exists,
+        // refuse self-promotion outright (additional admins are assigned by an
+        // existing admin, never via a lingering setup code).
+        if (await adminExists()) throw new Error('An administrator already exists for this organization.');
+
         // Validate code with TTL and rate limiting (also deletes on success)
         await validateClaimCode(code);
 
@@ -316,6 +362,8 @@ export const authActions = {
         // authorization secret (proves server-console access) — same trust model as
         // the OAuth-state claim path.
         if (!discordId || !code) throw new Error('Discord identity and setup code are required.');
+        // First-admin-only — refuse once an admin is established.
+        if (await adminExists()) throw new Error('An administrator already exists for this organization.');
         await validateClaimCode(code);
         return { adminSetupToken: signAdminSetupGrant(discordId) };
     }

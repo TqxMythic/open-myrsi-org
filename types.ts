@@ -203,20 +203,19 @@ export enum RSVPStatus { Pending = 'Pending', Accepted = 'Accepted', Declined = 
 export enum AllianceStatus { Pending = 'Pending', Active = 'Active', Dissolved = 'Dissolved' }
 export enum AllianceType { Alliance = 'Alliance', Rivalry = 'Rivalry', Neutral = 'Neutral' }
 
-// Per-channel sharing toggles on an alliance peer (Phase 1 ships these dormant;
-// the intel channel maps the legacy feed sync flags).
+// Per-channel sharing toggles on an alliance peer.
 export interface AllianceChannels {
     reports?: boolean;
     warrants?: boolean;
     bulletins?: boolean;
-    // P3: opt-in to cross-instance joint operations with this peer.
+    // Opt-in to cross-instance joint operations with this peer.
     operations?: boolean;
-    // P4: opt-in to share a minimal member roster / fleet summary with this peer.
+    // Opt-in to share a minimal member roster / fleet summary with this peer.
     roster?: boolean;
     fleet?: boolean;
 }
 
-// P4 — minimal, deny-by-default roster projection shared with an ally. NO PII
+// Minimal, deny-by-default roster projection shared with an ally. NO PII
 // (no discord id, email, notes, clearance, permissions).
 export interface AllyRosterMember {
     id: number;
@@ -236,7 +235,7 @@ export interface AllyRosterData {
     fetchedAt: string;
 }
 
-// P4 — aggregate fleet summary (no per-member ship ownership).
+// Aggregate fleet summary (no per-member ship ownership).
 export interface AllyFleetGroup {
     name: string;
     type: string;
@@ -689,8 +688,8 @@ export type CommsProvider =
     | 'other';
 
 export interface CommsPlanEntry {
-    // v2 fields — added 2026-04. Optional for backward-compat with legacy rows
-    // that only have `channel/frequency/callsign/notes` populated.
+    // Optional for backward-compat with legacy rows that only have
+    // `channel/frequency/callsign/notes` populated.
     id?: string;
     purpose?: string;
     provider?: CommsProvider;
@@ -709,7 +708,7 @@ export interface CommsPlanEntry {
     notes?: string;
 }
 
-// An allied PEER invited to a locally-owned joint operation (alliance P3).
+// An allied PEER invited to a locally-owned joint operation.
 export interface OperationAlliedOrg {
     id: number;
     operationId: string;
@@ -939,7 +938,7 @@ export interface HydratedWarrant {
     issuedAt: string;
     claimedAt?: string;
     // Cached "latest note" for list-view rendering. Canonical history lives
-    // in the warrant_notes table (#11). Loaded lazily on detail-modal open.
+    // in the warrant_notes table. Loaded lazily on detail-modal open.
     notes?: string;
     sourceFeedId?: string;
     sourceFeedLabel?: string;
@@ -948,7 +947,7 @@ export interface HydratedWarrant {
 
 // Append-only note row attached to a warrant. Each post is a separate row
 // with author + timestamp; the legacy warrants.notes column is updated to
-// the latest note's content for list-view callers (#11).
+// the latest note's content for list-view callers.
 export interface WarrantNote {
     id: number;
     warrantId: string;
@@ -1516,11 +1515,7 @@ export interface UserPresenceRow {
     lastActiveAt: string | null;
 }
 
-/**
- * Toast severity — picks the visual treatment (accent stripe + icon tint)
- * and the auto-dismiss duration. Five-value vocabulary keeps the visual
- * surface consistent across the app.
- */
+/** Toast severity — picks the visual treatment (accent stripe + icon tint) and the auto-dismiss duration. */
 export type ToastVariant = 'success' | 'error' | 'warning' | 'info' | 'neutral';
 
 export interface HydratedReputationHistoryEntry {
@@ -1972,6 +1967,149 @@ export interface WarehouseOverview {
     totalReserved: number;
     lowStockCount: number;
     openRequestCount: number;
+}
+
+// =============================================================================
+// MARKETPLACE (single-org internal trading)
+// =============================================================================
+export type MarketplaceListingKind = 'item' | 'service';
+export type MarketplaceListingType = 'sell' | 'buy' | 'offer' | 'request';
+export type MarketplacePriceType = 'fixed' | 'negotiable' | 'per_unit' | 'hourly';
+export type MarketplaceListingStatus = 'draft' | 'active' | 'paused' | 'closed' | 'expired';
+export type MarketplaceContractStatus = 'proposed' | 'accepted' | 'in_progress' | 'delivered' | 'completed' | 'cancelled';
+
+export interface MarketplaceCategory {
+    id: number;
+    slug: string;
+    name: string;
+    parentId: number | null;
+    listingKind: 'item' | 'service' | 'both';
+    icon: string | null;
+    sortOrder: number;
+    active: boolean;
+}
+
+// Public, minimal member projection for trader display — NO PII (no discord id,
+// email, clearance, notes, permissions). The server's listing/contract embeds
+// only ever populate these fields.
+export interface MarketplaceTrader {
+    id: number;
+    name: string;
+    rsiHandle: string | null;
+    avatarUrl: string | null;
+}
+
+export interface MarketplaceListing {
+    id: string;
+    sellerId: number;
+    seller?: MarketplaceTrader;
+    kind: MarketplaceListingKind;
+    listingType: MarketplaceListingType;
+    categoryId: number | null;
+    categoryName?: string | null;
+    categoryIcon?: string | null;
+    title: string;
+    description: string | null;
+    quantity: number | null;
+    quantityClaimed: number;
+    priceUec: number | null;
+    priceType: MarketplacePriceType;
+    location: string | null;
+    tags: string[];
+    status: MarketplaceListingStatus;
+    expiresAt: string | null;
+    warehouseStockId: number | null;
+    createdAt: string;
+    updatedAt: string;
+}
+
+export interface MarketplaceMilestone {
+    id: number;
+    contractId: string;
+    title: string;
+    description: string | null;
+    sortOrder: number;
+    completedAt: string | null;
+    completedById: number | null;
+}
+
+export interface MarketplaceContract {
+    id: string;
+    listingId: string | null;
+    sellerId: number;
+    seller?: MarketplaceTrader;
+    buyerId: number;
+    buyer?: MarketplaceTrader;
+    kind: MarketplaceListingKind;
+    title: string;
+    quantity: number | null;
+    agreedPriceUec: number | null;
+    termsNote: string | null;
+    status: MarketplaceContractStatus;
+    proposedById: number | null;
+    cancelReason: string | null;
+    warehouseStockId: number | null;
+    proposedAt: string;
+    acceptedAt: string | null;
+    deliveredAt: string | null;
+    completedAt: string | null;
+    cancelledAt: string | null;
+    createdAt: string;
+    updatedAt: string;
+    milestones?: MarketplaceMilestone[];
+}
+
+export interface MarketplaceRating {
+    id: number;
+    contractId: string;
+    raterId: number;
+    rater?: MarketplaceTrader;
+    rateeId: number;
+    raterRole: 'buyer' | 'seller';
+    stars: number;
+    feedback: string | null;
+    createdAt: string;
+}
+
+export interface MarketplaceReputation {
+    userId: number;
+    averageStars: number;
+    ratingCount: number;
+    tier: 'New' | 'Reputable' | 'Trusted' | 'Elite';
+}
+
+export interface MarketplaceTraderProfile {
+    trader: MarketplaceTrader;
+    reputation: MarketplaceReputation;
+    activeListings: MarketplaceListing[];
+    // No recentRatings — per-rating feedback + rater identities are
+    // party-confidential (see getContractRatings). Aggregate reputation only.
+}
+
+export type MarketplaceReportStatus = 'open' | 'reviewing' | 'actioned' | 'dismissed';
+
+// Admin moderation view of a report. Surfaces only what the moderation queue
+// renders — reporter name/avatar + a target summary (title/status/owner) — never
+// the full listing/contract body or any reporter PII beyond display name.
+export interface MarketplaceReport {
+    id: number;
+    listingId: string | null;
+    contractId: string | null;
+    reporterId: number;
+    reporterName: string | null;
+    reporterAvatarUrl: string | null;
+    reasonCategory: string;
+    details: string | null;
+    status: MarketplaceReportStatus;
+    reviewedAt: string | null;
+    reviewedById: number | null;
+    reviewerName: string | null;
+    createdAt: string;
+    targetType: 'listing' | 'contract';
+    targetId: string | null;
+    targetTitle: string | null;
+    targetStatus: string | null;
+    targetSellerId: number | null;
 }
 
 // --- UEX Platform Catalog Types ---

@@ -87,8 +87,8 @@ export const toGovernmentPositionHolder = (row: NullToUndefined<Tables<'governme
 /** Slice discriminators carried on government_update broadcasts so clients
  *  refetch only the affected key-group instead of the full 8-key bundle.
  *  'structure' covers config + branches + positions + holders (cross-row
- *  hydrated together). Id-only/discriminator-only payloads — the db-changes
- *  channel is anon-readable (H4). */
+ *  hydrated together). Discriminator-only payloads, since the db-changes
+ *  channel is anon-readable. */
 export type GovernmentSlice = 'structure' | 'elections' | 'legislation' | 'motions';
 
 /** Omit `slice` for wholesale changes (template apply) — clients fall back
@@ -402,19 +402,8 @@ export function tallyApproval(votes: ElectionVoteRow[], maxWinners: number): Tal
 }
 
 export function tallyPreferential(votes: ElectionVoteRow[], maxWinners: number): TallyResult {
-    // Instant-runoff voting: eliminate lowest candidate, redistribute preferences
-    // Group votes by voter_hash to get each voter's preference ranking
-    // Since we don't have voter_hash in the fetched data, group by ballot
-    // For IRV, each vote row has a rank_order — group by unique voter ballots
-
-    // Build ballots: Map<candidateId_at_rank1, candidateId_at_rank2, ...>
-    // We need voter_hash to group. Let's fetch it.
-    // Actually, we can infer: each unique set of votes with consecutive rank_orders from same voter
-    // But we don't have voter_hash in our query. We need a different approach.
-    // For simplicity in the tally, we'll re-query with voter_hash.
-
-    // Since this is called from concludeElection which has the electionId, let's handle it differently
-    // For now, fall back to simple majority based on first-preference votes
+    // True IRV needs voter_hash to group ballots, which isn't in this row shape —
+    // see tallyPreferentialFull. This fallback tallies first-preference votes only.
     const firstPreferences = votes.filter(v => v.rank_order === 1 || v.rank_order === null);
     return tallySimpleMajority(firstPreferences, maxWinners);
 }

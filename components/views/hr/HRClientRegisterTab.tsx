@@ -6,16 +6,12 @@ import AdminClientDetailView from '../admin/AdminClientDetailView';
 import ClientManagementTab from '../admin/ClientManagementTab';
 import { useModalRegistry } from '../../../contexts/ModalRegistryContext';
 
-// HR-Hub-side wrapper for the existing admin Client Register (#9 of the
-// user-feedback list). Mirrors the HRMembersTab pattern: the list view and
-// drill-in detail view are both reused verbatim from the admin module so HR
-// Managers see full parity with admins (including reputation-adjust and
-// admin-notes actions). The decision to grant HR Managers full client-detail
-// access is documented in the medium-effort PR plan.
+// HR-Hub-side wrapper for the admin Client Register. Reuses the admin list and
+// detail views so HR Managers get full parity with admins (reputation-adjust,
+// admin notes).
 //
 // State is liftable to HRHubView via optional props so clicking the
-// "Client Register" nav while drilled into a client returns to the list —
-// otherwise activeTab doesn't change and the click is a no-op.
+// "Client Register" nav while drilled into a client returns to the list.
 interface HRClientRegisterTabProps {
     managingClientId?: number | null;
     setManagingClientId?: (id: number | null) => void;

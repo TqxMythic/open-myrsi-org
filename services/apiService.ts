@@ -142,7 +142,7 @@ class ApiService {
         return response.json();
     }
 
-    async discordCallback(code: string, state: string | null, redirectUri: string): Promise<{ user: any, isNewUser: boolean, adminSetupToken?: string }> {
+    async discordCallback(code: string, state: string | null, redirectUri: string): Promise<{ user: any, isNewUser: boolean, adminSetupToken?: string, identityToken?: string }> {
         // Explicitly send action in query param to bypass auth middleware logic if body parsing fails
         const response = await fetch(`${API_URL}/services?target=auth&action=auth:discord_callback`, {
             method: 'POST',
@@ -170,7 +170,7 @@ class ApiService {
         return data;
     }
 
-    async finalizeUserSetup(userData: { discordId: string, name: string, avatarUrl: string, rsiHandle: string, verificationCode?: string, isAdmin?: boolean, adminSetupToken?: string, skipVerification?: boolean }): Promise<any> {
+    async finalizeUserSetup(userData: { discordId: string, name: string, avatarUrl: string, rsiHandle: string, verificationCode?: string, isAdmin?: boolean, adminSetupToken?: string, identityToken?: string, skipVerification?: boolean }): Promise<any> {
         const response = await fetch(`${API_URL}/services?target=auth&action=auth:finalize_setup`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -231,7 +231,7 @@ class ApiService {
     // --- First-run onboarding ---
 
     /** Pre-auth preflight status (booleans only) for the setup wizard. */
-    async preflight(): Promise<{ dbConnected: boolean; adminExists: boolean; discordConfigured: boolean; realtimeEnabled: boolean; secretsEncrypted: boolean; setupCompleted: boolean; setupCodeExists: boolean } | undefined> {
+    async preflight(): Promise<{ dbConnected: boolean; adminExists: boolean; discordConfigured: boolean; realtimeEnabled: boolean; secretsEncrypted: boolean; sessionSecretStrong: boolean; setupCompleted: boolean; setupCodeExists: boolean } | undefined> {
         const res = await this.rpc('system:preflight', {});
         return res?.data;
     }

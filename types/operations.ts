@@ -1,11 +1,5 @@
-// Re-exports of Operations domain types for future-PR cleanliness.
-// This file establishes the import boundary for the Operations domain so
-// consumers can migrate from `import { HydratedOperation, ... } from '../types'`
-// to `import { HydratedOperation, ... } from '../types/operations'` over time.
-// No types are moved yet — these are pure re-exports from the canonical types.ts.
-//
-// Note: RadioChannel is already re-exported from types/config.ts (Phase 3b
-// owns the radioChannels slice in ConfigContext). It's NOT included here.
+// Import-boundary re-exports of Operations domain types. Canonical definitions live in the root types.ts.
+// RadioChannel is re-exported from types/config.ts (ConfigContext owns the radioChannels slice), not here.
 
 export type {
     HydratedOperation,

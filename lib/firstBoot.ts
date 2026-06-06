@@ -15,8 +15,10 @@ import { log as baseLog } from './log.js';
 
 const log = baseLog.child({ module: 'lib.firstBoot' });
 
-/** True when at least one non-deleted Admin user exists. */
-async function adminExists(): Promise<boolean> {
+/** True when at least one non-deleted Admin user exists. Exported so the
+ *  org-claim / setup-code redemption paths can refuse self-promotion once an
+ *  admin is established — the setup code is first-admin-only. */
+export async function adminExists(): Promise<boolean> {
     const roles = await getSystemRoles();
     if (!roles.admin) return false; // roles not seeded yet → definitely no admin
     const { count, error } = await supabase
@@ -69,8 +71,8 @@ function printSetupCodeBanner(code: string): void {
     console.log('  to regenerate it if lost.');
     console.log(line);
     console.log('');
-    // SECURITY (L3): the code is a redeemable admin credential — do NOT persist it
-    // to structured/JSON log storage. The console banner above is the intended
+    // The code is a redeemable admin credential — do NOT persist it to
+    // structured/JSON log storage. The console banner above is the intended
     // operator-facing output (transient terminal/boot log); the structured line
     // only records that a code was generated, never its value.
     log.warn('admin setup code generated (first boot) — see console banner for the one-time code');

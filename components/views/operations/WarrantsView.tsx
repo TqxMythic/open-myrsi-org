@@ -44,7 +44,7 @@ const WarrantsView: React.FC<WarrantsViewProps> = ({ openCreateModal, openUpdate
     const [viewMode, setViewMode] = useState<'cards' | 'table'>('cards');
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
-    // Adjusted height for new card design. Increase for mobile to prevent cutoff.
+    // Taller rows on mobile to prevent card cutoff.
     const [itemHeight, setItemHeight] = useState(window.innerWidth < 768 ? 480 : 380);
 
     useEffect(() => {
@@ -187,9 +187,7 @@ const WarrantsView: React.FC<WarrantsViewProps> = ({ openCreateModal, openUpdate
                 ))}
             />
 
-            {/* Body — full-width */}
             <div className="flex-1 overflow-y-auto p-4 sm:p-6">
-                {/* Search */}
                 <div className="relative mb-4 max-w-2xl">
                     <i className="fa-solid fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-500"></i>
                     <input
@@ -204,7 +202,6 @@ const WarrantsView: React.FC<WarrantsViewProps> = ({ openCreateModal, openUpdate
                     />
                 </div>
 
-                {/* Bulk Action Bar */}
                 {viewMode === 'table' && selectedIds.size > 0 && hasPermission('warrant:manage') && (
                     <div className="flex items-center gap-3 p-3 mb-4 bg-red-500/10 border border-red-500/20 rounded-lg animate-fade-in">
                         <span className="text-xs font-bold text-red-400">{selectedIds.size} selected</span>

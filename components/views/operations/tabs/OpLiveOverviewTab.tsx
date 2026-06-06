@@ -52,7 +52,6 @@ const OpLiveOverviewTab: React.FC<OpLiveOverviewTabProps> = ({ operation, canMan
     const totalCount = activeParticipants.length;
     const readyPct = totalCount > 0 ? Math.round((readyCount / totalCount) * 100) : 0;
 
-    // Mission clock
     const missionClock = useMemo(() => {
         if (operation.status !== OperationStatus.Active || !operation.activeStartTime) return null;
         const elapsed = now - new Date(operation.activeStartTime).getTime();
@@ -62,7 +61,6 @@ const OpLiveOverviewTab: React.FC<OpLiveOverviewTabProps> = ({ operation, canMan
         return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
     }, [operation.status, operation.activeStartTime, now]);
 
-    // Status counts
     const statusCounts = useMemo(() => {
         const counts: Record<string, number> = {};
         activeParticipants.forEach(p => {

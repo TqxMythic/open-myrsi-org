@@ -86,7 +86,7 @@ const MirroredOperationDetailView: React.FC<Props> = ({ mirror: initialMirror, o
 
     if (!op) {
         return (
-            <div className="p-6 lg:p-8 space-y-6">
+            <div className="h-full overflow-y-auto custom-scrollbar p-6 lg:p-8 space-y-6">
                 {backBtn}
                 <div className="text-center text-slate-500 py-16">
                     <i className="fa-solid fa-satellite-dish text-2xl mb-3"></i>
@@ -97,7 +97,7 @@ const MirroredOperationDetailView: React.FC<Props> = ({ mirror: initialMirror, o
     }
 
     return (
-        <div className="p-6 lg:p-8 space-y-6">
+        <div className="h-full overflow-y-auto custom-scrollbar p-6 lg:p-8 space-y-6">
             <div className="flex items-center justify-between gap-3 flex-wrap">
                 {backBtn}
                 <span className="text-[10px] font-black uppercase tracking-wider px-3 py-1.5 rounded-full border bg-cyan-500/10 text-cyan-300 border-cyan-500/30">
@@ -105,7 +105,6 @@ const MirroredOperationDetailView: React.FC<Props> = ({ mirror: initialMirror, o
                 </span>
             </div>
 
-            {/* Header */}
             <div className="bg-linear-to-r from-slate-800/60 to-slate-900/40 rounded-xl border border-slate-700/40 p-6">
                 <div className="flex items-start gap-3 flex-wrap">
                     <h1 className="text-2xl font-black text-white tracking-tight">{op.name}</h1>
@@ -152,7 +151,6 @@ const MirroredOperationDetailView: React.FC<Props> = ({ mirror: initialMirror, o
                 </Section>
             )}
 
-            {/* Phases */}
             {!!op.phases?.length && (
                 <Section title="Phases" icon="fa-diagram-project">
                     <div className="space-y-2">
@@ -166,7 +164,6 @@ const MirroredOperationDetailView: React.FC<Props> = ({ mirror: initialMirror, o
                 </Section>
             )}
 
-            {/* Tasks */}
             {!!op.tasks?.length && (
                 <Section title="Tasking" icon="fa-list-check">
                     <div className="space-y-2">
@@ -180,7 +177,6 @@ const MirroredOperationDetailView: React.FC<Props> = ({ mirror: initialMirror, o
                 </Section>
             )}
 
-            {/* Command structure */}
             {!!op.commandNodes?.length && (
                 <Section title="Command Structure" icon="fa-sitemap">
                     <div className="flex flex-wrap gap-2">
@@ -191,7 +187,6 @@ const MirroredOperationDetailView: React.FC<Props> = ({ mirror: initialMirror, o
                 </Section>
             )}
 
-            {/* Participants */}
             <Section title="Participants" icon="fa-users">
                 <div className="space-y-1.5">
                     {(op.participants || []).map((p, i) => (

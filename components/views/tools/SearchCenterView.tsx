@@ -161,7 +161,6 @@ const SearchCenterView: React.FC = () => {
                 {announcement}
             </div>
 
-            {/* Header */}
             <div className="flex flex-col gap-4 mb-6">
                 <h1 className="text-2xl md:text-3xl font-black text-white uppercase tracking-tight flex items-center">
                     <i className="fa-solid fa-magnifying-glass text-sky-500 mr-3 md:mr-4" aria-hidden />
@@ -184,7 +183,6 @@ const SearchCenterView: React.FC = () => {
                     )}
                 </div>
 
-                {/* Mobile filter trigger */}
                 <div className="lg:hidden">
                     <button
                         onClick={() => setIsFiltersDrawerOpen(true)}
@@ -201,7 +199,6 @@ const SearchCenterView: React.FC = () => {
                 </div>
             </div>
 
-            {/* Two-pane body */}
             <div className="flex gap-6 flex-1 min-h-0">
                 <SearchFiltersPanel api={filtersApi} prefetch={prefetch} />
 
@@ -214,7 +211,6 @@ const SearchCenterView: React.FC = () => {
                 />
 
                 <div ref={scrollRef} className="flex-1 min-w-0 flex flex-col">
-                    {/* Result count header */}
                     {trimmedQuery && results.length > 0 && (
                         <div className="flex items-center justify-between mb-3 text-[10px] font-mono uppercase tracking-widest text-slate-500">
                             <span>
@@ -233,7 +229,6 @@ const SearchCenterView: React.FC = () => {
                         </div>
                     )}
 
-                    {/* Empty / loading / results */}
                     {!trimmedQuery ? (
                         <EmptyIdle />
                     ) : noTypesSelected ? (

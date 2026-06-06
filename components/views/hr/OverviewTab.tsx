@@ -117,9 +117,7 @@ const OverviewTab: React.FC<OverviewTabProps> = ({ setActiveTab }) => {
 
     return (
         <div className="animate-fade-in flex flex-col lg:flex-row gap-6">
-            {/* =========================================================== */}
-            {/* MAIN BODY (left column)                                      */}
-            {/* =========================================================== */}
+            {/* Main body (left column) */}
             <div className="flex-1 min-w-0 space-y-6 order-2 lg:order-1">
                 {/* Probation Banner */}
                 {currentUser?.probationEnd && (() => {
@@ -274,9 +272,7 @@ const OverviewTab: React.FC<OverviewTabProps> = ({ setActiveTab }) => {
                 </div>
             </div>
 
-            {/* =========================================================== */}
-            {/* RIGHT SIDEBAR (org ID card + quick options)                  */}
-            {/* =========================================================== */}
+            {/* Right sidebar (org ID card + quick options) */}
             <aside className="lg:w-80 lg:shrink-0 space-y-4 order-1 lg:order-2">
                 {currentUser && <MemberIdCard user={currentUser} accent="emerald" />}
 

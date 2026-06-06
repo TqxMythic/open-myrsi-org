@@ -31,7 +31,6 @@ const OpAdminLogisticsTab: React.FC<OpAdminLogisticsTabProps> = ({
 
     return (
         <div className="flex flex-col h-full">
-            {/* Sub-tab bar */}
             <div className="shrink-0 px-6 lg:px-8 pt-6 lg:pt-8 pb-4">
                 <div className="flex items-center justify-between gap-4">
                     <p className="text-[10px] text-slate-500 uppercase font-black tracking-widest flex items-center gap-2">

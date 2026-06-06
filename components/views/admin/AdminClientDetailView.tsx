@@ -31,10 +31,8 @@ const getStatusChipClass = (status: ServiceRequestStatus) => {
     }
 };
 
-// Section card chrome shared across modern detail views (ProfileView,
-// MyUnitView, MyServiceRecordView). Local copy here so this file ships
-// without a new shared dependency; promote to components/shared/ui if a
-// fourth caller appears.
+// Section card chrome shared with other detail views. Local copy to avoid a
+// new shared dependency.
 const SectionCard: React.FC<{
     title: string;
     icon: string;
@@ -123,12 +121,9 @@ const AdminClientDetailView: React.FC<AdminClientDetailViewProps> = ({ user, onB
         }
     };
 
-    // Affiliate / VIP toggles. Backend rejects flags on non-Client users so the
-    // UI here doesn't need a role guard beyond the standard `admin:user:update`
-    // permission used for Notes / Reputation. Realtime ticks via broadcastToOrg
-    // refresh allUsers, but we also call refreshMainState on success so the
-    // optimistic-feeling pill update lands immediately even if the realtime
-    // subscription is briefly disconnected.
+    // Affiliate / VIP toggles. Backend rejects flags on non-Client users, so no
+    // extra role guard beyond admin:user:update is needed. refreshMainState on
+    // success lands the pill update immediately if realtime is briefly disconnected.
     const [togglingAffiliate, setTogglingAffiliate] = useState(false);
     const [togglingVip, setTogglingVip] = useState(false);
     const toggleClientFlag = async (action: 'admin:toggle_affiliate' | 'admin:toggle_vip', label: string) => {

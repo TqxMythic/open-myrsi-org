@@ -9,10 +9,6 @@ const log = baseLog.child({ module: 'db' });
 export { supabase, handleSupabaseError };
 
 /**
- * HELPER: Safe Table Fetch
- * Prevents 500 errors if the user hasn't run migrations yet for new features.
- */
-/**
  * Broadcasts an event to the single-org Supabase Realtime channel 'db-changes'.
  * (Single-org build: no per-tenant channel scoping.)
  */
@@ -27,20 +23,20 @@ export function broadcastToOrg(event: string, payload: Record<string, unknown> =
 type PooledChannel = ReturnType<typeof supabase.channel>;
 const channelPool = new Map<string, { channel: PooledChannel; ready: Promise<void> }>();
 
-// SECURITY: every broadcast channel is PRIVATE (Supabase Realtime
-// Authorization). Subscribing requires a JWT that passes the realtime.messages
-// RLS policies in schema.sql — the public anon key alone can no longer
-// observe org broadcasts (previously ANY anon-key holder could subscribe and
-// harvest event metadata, and the EAM/op-alert/board channels carried
-// content). The server authorizes its own connection with the service-role
-// key (RLS-bypassing), set once below.
+// Every broadcast channel is PRIVATE (Supabase Realtime Authorization).
+// Subscribing requires a JWT that passes the realtime.messages RLS policies in
+// schema.sql; the public anon key alone cannot observe org broadcasts. The
+// server authorizes its own connection with the service-role key (RLS-bypassing).
 let serverRealtimeAuthSet = false;
 function ensureServerRealtimeAuth() {
     if (serverRealtimeAuthSet) return;
     serverRealtimeAuthSet = true;
     try {
-        // The service-role key is itself a JWT with role=service_role.
-        void supabase.realtime.setAuth(process.env.SUPABASE_SERVICE_ROLE_KEY || '');
+        // The service-role key is itself a JWT with role=service_role. It is
+        // required + validated at startup (lib/supabaseServer.ts throws if unset),
+        // so no fallback literal — only set auth when the real key is present.
+        const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+        if (serviceKey) void supabase.realtime.setAuth(serviceKey);
     } catch (e) {
         log.warn('failed to set server realtime auth', { err: e });
         serverRealtimeAuthSet = false;
@@ -138,10 +134,8 @@ export async function getSystemRoles(): Promise<SystemRoles> {
         dispatcher: find(/^dispatcher$/i) || roles[2],
         admin: find(/^admin$/i) || roles[3],
     };
-    // Only cache when the lookup succeeded for all four slots. If we cached an
-    // incomplete result (e.g. called mid-seed for a freshly-paid org before the
-    // roles row had committed), every subsequent call would see "no Client role
-    // configured" for the full TTL until repair was run manually.
+    // Only cache when all four slots resolved; caching an incomplete result
+    // (e.g. called mid-seed before roles committed) would persist for the full TTL.
     const complete = !!(result.client && result.member && result.dispatcher && result.admin);
     if (complete) {
         cache.set(cacheKey, result, TTL.SYSTEM_ROLES);

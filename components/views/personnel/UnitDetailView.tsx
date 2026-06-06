@@ -9,12 +9,12 @@ interface UnitDetailViewProps {
     onBack: () => void;
 }
 
-// #1: Detail page for any unit reached from the Org Chart. Renders the same
+// Detail page for any unit reached from the Org Chart. Renders the same
 // MyUnitView component used by HR Hub's "My Unit" tab — but for the picked
 // unit instead of the viewer's own. When the unit is restricted and the
 // viewer isn't a member or admin, we render a lock screen instead of the
-// detail; the actual data fetches (unit:get_feed) are also gated server-side
-// so the lock isn't bypassable by a savvy client.
+// detail; the data fetches (unit:get_feed) are also gated server-side so the
+// lock isn't bypassable by the client.
 const UnitDetailView: React.FC<UnitDetailViewProps> = ({ unitId, onBack }) => {
     const { units } = useMembers();
     const { currentUser, hasPermission } = useAuth();

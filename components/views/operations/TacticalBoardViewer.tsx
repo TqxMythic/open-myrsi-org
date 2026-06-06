@@ -3,10 +3,9 @@ import { Stage, Layer, Rect, Circle, Line, Text as KonvaText, Group } from 'reac
 import type Konva from 'konva';
 import { OperationBoardElement } from '../../../types';
 
-// Static read-only render of a tactical board, used by the joint-operation mirror
-// view (alliance P3). Mirrors the element styling of the editor (TacticalBoard in
-// OpCommandSignalsTab.tsx) but carries NONE of its edit/realtime machinery — no
-// RPC, no per-op board subscription, no selection/drag/undo. Pan + zoom only.
+// Static read-only render of a tactical board, used by the joint-operation mirror view.
+// Mirrors the element styling of the editor (TacticalBoard in OpCommandSignalsTab.tsx) but
+// carries none of its edit/realtime machinery — no RPC, no subscription, no drag/undo. Pan + zoom only.
 
 const ELEMENT_COLORS: Record<string, string> = {
     unit: '#3b82f6', waypoint: '#f59e0b', ship: '#06b6d4', zone: '#22c55e',

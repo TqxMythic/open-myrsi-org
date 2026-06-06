@@ -17,9 +17,6 @@ interface Options<T> {
  * `options.deserialize`. Example for Set<number>:
  *   { serialize: v => JSON.stringify(Array.from(v)),
  *     deserialize: s => new Set(JSON.parse(s)) }
- *
- * A small defensive wrapper so the try-catch persistence idiom doesn't get
- * re-implemented at every callsite.
  */
 export function usePersistentState<T>(
     key: string,

@@ -3,9 +3,8 @@ import React, { useState, useRef, useCallback, useMemo, useEffect } from 'react'
 import { FleetGroup, UserShip } from '../../../types';
 import { usePersistentState } from '../../../hooks/usePersistentState';
 
-// Per-tenant localStorage key — the subdomain identifies the org in this
-// multi-tenant SaaS, so a user logged into two orgs in two tabs won't bleed
-// expansion state between them.
+// localStorage key scoped by hostname so expansion state doesn't bleed between
+// separate deployments opened in different tabs.
 const expandedStorageKey = () => `fleet:expanded:${typeof window !== 'undefined' ? window.location.hostname : 'default'}`;
 const setSerialize = (v: Set<number>) => JSON.stringify(Array.from(v));
 const setDeserialize = (s: string): Set<number> => {
@@ -219,10 +218,8 @@ const FleetOrgChart: React.FC<FleetOrgChartProps> = ({
     const [isDragging, setIsDragging] = useState(false);
     const dragStartRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
 
-    // Per-group expansion of the wrapped ship grid. Persisted to localStorage
-    // (scoped per-tenant via subdomain) so the admin doesn't have to re-expand
-    // their working set after every reload. Falls back to a fresh empty Set on
-    // parse errors or in non-browser environments.
+    // Per-group expansion of the wrapped ship grid, persisted to localStorage so
+    // the admin doesn't have to re-expand their working set after every reload.
     const [expandedGroupIds, setExpandedGroupIds] = usePersistentState<Set<number>>(
         expandedStorageKey(),
         new Set<number>(),
@@ -460,7 +457,6 @@ const FleetOrgChart: React.FC<FleetOrgChartProps> = ({
 
     return (
         <div className="relative rounded-xl border border-slate-700/50 bg-slate-900/40 backdrop-blur-md overflow-hidden flex-1 min-h-[400px]">
-            {/* Canvas */}
             <div
                 ref={containerRef}
                 className={`w-full h-full ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
@@ -471,7 +467,6 @@ const FleetOrgChart: React.FC<FleetOrgChartProps> = ({
                 onWheel={handleWheel}
             >
                 <div style={{ transform: `translate(${panX}px, ${panY}px) scale(${zoom})`, transformOrigin: '0 0', position: 'relative' }}>
-                    {/* SVG Connection Lines */}
                     <svg
                         style={{
                             position: 'absolute',
@@ -499,7 +494,6 @@ const FleetOrgChart: React.FC<FleetOrgChartProps> = ({
                         })}
                     </svg>
 
-                    {/* Group Nodes */}
                     {nodes.filter(n => n.type === 'group').map(n => {
                         const isDropTarget = dropTarget?.kind === 'group' && dropTarget.id === n.id;
                         const insideHighlight = isDropTarget && dropTarget.position === 'inside';
@@ -587,7 +581,6 @@ const FleetOrgChart: React.FC<FleetOrgChartProps> = ({
                         );
                     })}
 
-                    {/* Ship Nodes */}
                     {nodes.filter(n => n.type === 'ship').map(n => {
                         const isDropTarget = dropTarget?.kind === 'ship' && dropTarget.id === n.id;
                         const beforeHighlight = isDropTarget && dropTarget.position === 'before';
@@ -668,7 +661,6 @@ const FleetOrgChart: React.FC<FleetOrgChartProps> = ({
                 </div>
             </div>
 
-            {/* Zoom Controls */}
             <div className="absolute bottom-3 right-3 bg-slate-900/90 border border-slate-700/50 rounded-xl backdrop-blur-md p-1 flex flex-col gap-1 z-10 shadow-lg">
                 <button
                     onClick={() => setZoom(z => Math.min(z * 1.2, 2.0))}
@@ -694,7 +686,6 @@ const FleetOrgChart: React.FC<FleetOrgChartProps> = ({
                 </button>
             </div>
 
-            {/* Zoom level indicator */}
             <div className="absolute bottom-3 left-3 text-[10px] text-slate-500 font-mono z-10 uppercase tracking-widest bg-slate-900/90 border border-slate-700/50 rounded-sm px-2 py-1 backdrop-blur-md">
                 {Math.round(zoom * 100)}%
             </div>

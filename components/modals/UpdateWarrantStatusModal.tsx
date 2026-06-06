@@ -40,11 +40,10 @@ const UpdateWarrantModal: React.FC<UpdateWarrantModalProps> = ({ isOpen, onClose
         if (targetRsiHandle.trim() && reason.trim() && !isNaN(reward) && reward > 0) {
             setIsLoading(true);
             try {
-                // #11: notes are now an append-only thread on the warrant
-                // detail view. The status-change modal stays focused on
-                // status + reason; passing the existing notes value through
-                // unchanged so the legacy notes column isn't accidentally
-                // wiped on a status update.
+                // Notes are an append-only thread on the warrant detail view; this
+                // modal stays focused on status + reason. Pass the existing notes
+                // value through unchanged so the legacy notes column isn't wiped
+                // on a status update.
                 await updateWarrant(warrant.id, {
                     targetRsiHandle: targetRsiHandle.trim(),
                     reason: reason.trim(),

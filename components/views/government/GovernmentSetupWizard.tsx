@@ -64,7 +64,6 @@ const GovernmentSetupWizard: React.FC<GovernmentSetupWizardProps> = ({ onComplet
         setIsApplying(true);
         try {
             if (selectedType === GovernmentType.Custom) {
-                // Just create an empty config
                 await rpcAction('gov:upsert_config', {
                     config: { governmentType: 'custom', name: 'Government', description: 'Custom government structure' }
                 });

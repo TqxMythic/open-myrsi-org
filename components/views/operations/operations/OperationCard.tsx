@@ -60,8 +60,7 @@ const OperationCard: React.FC<Props> = ({ operation }) => {
     const ownerRank = operation.owner?.rank?.name;
     const ownerAvatar = operation.owner?.avatarUrl;
 
-    /* ── Classified / isSpecial variant ────────────────────────────────────── */
-
+    // Classified / isSpecial variant.
     if (operation.isSpecial) {
         return (
             <div
@@ -113,23 +112,19 @@ const OperationCard: React.FC<Props> = ({ operation }) => {
         );
     }
 
-    /* ── Standard variant ──────────────────────────────────────────────────── */
-
+    // Standard variant.
     return (
         <div
             onClick={() => viewOperationDetails(operation)}
             className="group relative flex flex-col h-full rounded-xl overflow-hidden border border-white/10 bg-linear-to-br from-slate-900/80 via-slate-900/60 to-slate-950/80 backdrop-blur-xs shadow-lg transition-all duration-300 cursor-pointer hover:border-white/20 hover:shadow-xl"
         >
-            {/* accent rail */}
             <div className={`absolute inset-y-0 left-0 w-1 ${statusA.dot}`} aria-hidden />
 
-            {/* hover glow */}
             <div
                 className={`absolute -top-20 -left-10 w-64 h-64 ${statusA.bg} rounded-full blur-[90px] opacity-0 group-hover:opacity-60 pointer-events-none transition-opacity duration-500`}
                 aria-hidden
             />
 
-            {/* HEADER */}
             <div className="relative pl-4 pr-3 py-3 bg-slate-950/40 border-b border-white/5 flex items-center justify-between gap-3 shrink-0">
                 <div className="flex items-center gap-3 min-w-0">
                     <div className={`w-10 h-10 rounded-lg ${typeA.bg} border ${typeA.border} flex items-center justify-center shrink-0`}>
@@ -177,9 +172,7 @@ const OperationCard: React.FC<Props> = ({ operation }) => {
                 </div>
             </div>
 
-            {/* BODY */}
             <div className="relative pl-4 pr-4 py-4 grow grid grid-cols-1 md:grid-cols-5 gap-4 min-h-0">
-                {/* LEFT — commander + unit/location */}
                 <div className="md:col-span-2 flex flex-col gap-3 min-w-0">
                     <div className="flex items-center gap-3 p-2.5 rounded-lg bg-slate-950/40 border border-white/5">
                         {ownerAvatar ? (
@@ -222,7 +215,6 @@ const OperationCard: React.FC<Props> = ({ operation }) => {
                     )}
                 </div>
 
-                {/* RIGHT — briefing + participants */}
                 <div className="md:col-span-3 flex flex-col gap-3 min-w-0 md:border-l md:border-white/5 md:pl-4">
                     <div className="grow min-w-0">
                         <p className="text-[9px] text-slate-500 uppercase font-black tracking-widest mb-1">Mission Briefing</p>
@@ -245,7 +237,6 @@ const OperationCard: React.FC<Props> = ({ operation }) => {
                 </div>
             </div>
 
-            {/* FOOTER */}
             <div className="relative pl-4 pr-4 py-2.5 bg-slate-950/40 border-t border-white/5 flex items-center justify-between gap-2 shrink-0 text-[10px] font-mono text-slate-500 uppercase tracking-wider">
                 {operation.scheduledStart ? (
                     <span className="inline-flex items-center gap-1.5 text-amber-400/80 min-w-0 truncate">

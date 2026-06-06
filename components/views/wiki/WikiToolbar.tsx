@@ -163,12 +163,9 @@ const WikiToolbar: React.FC<WikiToolbarProps> = ({ editor }) => {
         </>
     );
 
-    // #14: Contextual table toolbar — only renders when caret is in a table.
-    // The Tiptap commands already exist; the wiki toolbar previously surfaced
-    // only insertTable, so users couldn't add/remove columns or rows.
-    // Each button shows an icon + visible label so unfamiliar tools are
-    // self-explanatory (the previous icon-only design relied on browser
-    // tooltips, which lag on hover and don't show on mobile).
+    // Contextual table toolbar — only renders when the caret is in a table.
+    // Each button shows an icon + visible label so unfamiliar add/remove
+    // column/row tools are self-explanatory.
     const showTableToolbar = editor.isActive('table');
     const tableToolbar = showTableToolbar && (
         <div className="flex flex-wrap items-center gap-1 px-2 py-1.5 border-t border-amber-500/20 bg-amber-500/4 min-w-0">
@@ -250,7 +247,6 @@ const WikiToolbar: React.FC<WikiToolbarProps> = ({ editor }) => {
             <div className="flex flex-wrap items-center gap-0.5 p-1.5 min-w-0">
                 {essentialGroup}
 
-                {/* Mobile: overflow trigger */}
                 <div className="md:hidden ml-auto relative" ref={overflowRef}>
                     <button
                         onMouseDown={(e) => e.preventDefault()}
@@ -271,7 +267,6 @@ const WikiToolbar: React.FC<WikiToolbarProps> = ({ editor }) => {
                     )}
                 </div>
 
-                {/* Desktop: inline */}
                 <div className="hidden md:flex md:flex-wrap items-center gap-0.5 min-w-0">
                     {secondaryGroups}
                 </div>

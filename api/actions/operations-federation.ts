@@ -1,7 +1,7 @@
-// api/actions/operations-federation.ts — RPC handlers for joint-op federation
-// (alliance P3). Host invite/revoke require operations:manage; guest mirror
-// accept/decline are admin (alliance:manage); list/get/rsvp/poll are member-level.
-// The cross-instance inbound handlers are HTTP endpoints in server.ts, not RPCs.
+// api/actions/operations-federation.ts — RPC handlers for joint-op federation.
+// Host invite/revoke require operations:manage; guest mirror accept/decline are
+// admin (alliance:manage); list/get/rsvp/poll are member-level. The
+// cross-instance inbound handlers are HTTP endpoints in server.ts, not RPCs.
 
 import * as db from '../../lib/db.js';
 

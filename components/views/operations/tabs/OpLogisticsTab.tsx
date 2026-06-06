@@ -99,7 +99,6 @@ const OpLogisticsTab: React.FC<OpLogisticsTabProps> = ({ operation, canManage, i
                 )}
             </div>
 
-            {/* Overall Progress */}
             {items.length > 0 && (
                 <div className="bg-slate-800/40 border border-slate-700/50 rounded-lg p-4">
                     <div className="flex items-center justify-between mb-2">
@@ -151,7 +150,6 @@ const OpLogisticsTab: React.FC<OpLogisticsTabProps> = ({ operation, canManage, i
                 </div>
             )}
 
-            {/* Category Groups */}
             {Object.entries(grouped).map(([cat, catItems]) => {
                 if (catItems.length === 0) return null;
                 return (

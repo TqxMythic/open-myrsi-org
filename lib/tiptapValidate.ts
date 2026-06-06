@@ -1,4 +1,4 @@
-// Pure Tiptap-JSON sanitizer + safe-HTML emitter (#14).
+// Pure Tiptap-JSON sanitizer + safe-HTML emitter.
 //
 // Two responsibilities, both implemented as recursive walks over the JSON
 // document the editor produces. NO Tiptap dependency, NO DOM dependency —
@@ -17,6 +17,17 @@
 // surface and the constrained public blurb.
 
 export type TiptapValidatorMode = 'wiki' | 'minimal';
+
+// ---------------------------------------------------------------------------
+// Recursion depth cap (DoS guard)
+// ---------------------------------------------------------------------------
+// Every walk over the JSON document (sanitize / emit / empty-detect) is
+// recursive. A hostile author could post a deeply-nested doc (~10k levels, well
+// under 1MB) and exhaust the stack. Real documents nest only a handful of levels
+// (lists-in-lists, tables, blockquotes), so a generous ceiling is invisible to
+// legitimate content; at the cap we stop descending and drop/truncate the
+// subtree (fail closed).
+const MAX_DEPTH = 100;
 
 // ---------------------------------------------------------------------------
 // Allowlists
@@ -120,9 +131,12 @@ function sanitizeMark(mark: any, cfg: AllowConfig): any | null {
     return cleanAttrs ? { type: mark.type, attrs: cleanAttrs } : { type: mark.type };
 }
 
-function sanitizeNode(node: any, cfg: AllowConfig): any | null {
+function sanitizeNode(node: any, cfg: AllowConfig, depth = 0): any | null {
     if (!node || typeof node !== 'object' || typeof node.type !== 'string') return null;
     if (!cfg.nodes.has(node.type)) return null;
+    // Depth cap: at the ceiling, drop the subtree entirely (fail closed)
+    // rather than recursing further and risking stack exhaustion.
+    if (depth > MAX_DEPTH) return null;
 
     // URL-bearing nodes: drop if the URL is unsafe.
     if (node.type === 'image' || node.type === 'youtube' || node.type === 'iframe') {
@@ -150,7 +164,7 @@ function sanitizeNode(node: any, cfg: AllowConfig): any | null {
     }
 
     if (Array.isArray(node.content)) {
-        const cleanChildren = node.content.map((child: any) => sanitizeNode(child, cfg)).filter(Boolean);
+        const cleanChildren = node.content.map((child: any) => sanitizeNode(child, cfg, depth + 1)).filter(Boolean);
         if (cleanChildren.length > 0) out.content = cleanChildren;
     }
     return out;
@@ -219,8 +233,13 @@ function emitMarks(marks: any[]): { open: string; close: string } {
     return { open, close };
 }
 
-function emitNode(node: any): string {
+function emitNode(node: any, depth = 0): string {
     if (!node) return '';
+    // Depth cap: at the ceiling, truncate the subtree (emit nothing for it)
+    // rather than recursing further. Emit input is normally pre-sanitized,
+    // but tiptapJsonToSafeHtml re-sanitizes defensively, so this is a second
+    // independent guard against stack exhaustion.
+    if (depth > MAX_DEPTH) return '';
     if (node.type === 'text') {
         const text = escapeHtml(typeof node.text === 'string' ? node.text : '');
         if (Array.isArray(node.marks) && node.marks.length > 0) {
@@ -230,7 +249,7 @@ function emitNode(node: any): string {
         return text;
     }
 
-    const inner = Array.isArray(node.content) ? node.content.map(emitNode).join('') : '';
+    const inner = Array.isArray(node.content) ? node.content.map((child: any) => emitNode(child, depth + 1)).join('') : '';
 
     switch (node.type) {
         case 'doc': return inner;
@@ -299,14 +318,18 @@ export function tryParseTiptapJson(value: unknown): any | null {
 
 const VISIBLE_ATOMIC_NODES = new Set(['image', 'youtube', 'iframe', 'horizontalRule']);
 
-function nodeHasContent(node: any): boolean {
+function nodeHasContent(node: any, depth = 0): boolean {
     if (!node || typeof node !== 'object') return false;
+    // Depth cap: at the ceiling, stop descending (treat the subtree as
+    // empty) rather than recursing further. Anything that deep is dropped
+    // by the sanitizer anyway, so reporting "no content" is consistent.
+    if (depth > MAX_DEPTH) return false;
     if (node.type === 'text') {
         return typeof node.text === 'string' && node.text.trim().length > 0;
     }
     if (VISIBLE_ATOMIC_NODES.has(node.type)) return true;
     if (Array.isArray(node.content)) {
-        return node.content.some(nodeHasContent);
+        return node.content.some((child: any) => nodeHasContent(child, depth + 1));
     }
     return false;
 }

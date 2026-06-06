@@ -11,6 +11,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 const h = vi.hoisted(() => ({
     inserts: [] as { table: string; rows: any[] }[],
     updates: [] as { table: string; patch: any; id: unknown }[],
+    deletes: [] as { table: string; col: string; vals: unknown[] }[],
     unknownCols: {} as Record<string, string[]>,
     failRow: null as null | { table: string; col: string; value: unknown },
 }));
@@ -35,7 +36,7 @@ vi.mock('../lib/db/common', () => {
                 return Promise.resolve({ error: null });
             },
             update: (patch: any) => { pendingPatch = patch; return { eq: (_c: string, v: unknown) => { h.updates.push({ table, patch: pendingPatch, id: v }); return Promise.resolve({ error: null }); } }; },
-            delete: () => ({ neq: () => Promise.resolve({ error: null }), eq: () => Promise.resolve({ error: null }), in: () => Promise.resolve({ error: null }) }),
+            delete: () => ({ neq: () => Promise.resolve({ error: null }), eq: () => Promise.resolve({ error: null }), in: (col: string, vals: unknown[]) => { h.deletes.push({ table, col, vals }); return Promise.resolve({ error: null }); } }),
             eq: () => Promise.resolve({ data: [], error: null }),
             range: () => Promise.resolve({ data: [], error: null }), // empty catalog index
             then: (r: any) => Promise.resolve({ count: 0, error: null, data: [] }).then(r),
@@ -47,7 +48,7 @@ vi.mock('../lib/db/common', () => {
 
 import { importOrgData, type ImportProgressEvent } from '../lib/db/importer';
 
-beforeEach(() => { h.inserts = []; h.updates = []; h.unknownCols = {}; h.failRow = null; });
+beforeEach(() => { h.inserts = []; h.updates = []; h.deletes = []; h.unknownCols = {}; h.failRow = null; });
 
 describe('importer cross-table FK + schema-divergence resilience', () => {
     it('defers units.leader_id (→ users) on insert and restores it after users import', async () => {
@@ -87,14 +88,14 @@ describe('importer cross-table FK + schema-divergence resilience', () => {
         // Empty permissions catalog in the mock → every grant is unresolved.
         const ndjson = [
             '{"kind":"header","version":1,"tableOrder":["role_permissions"],"manifest":{"role_permissions":2}}',
-            '{"kind":"row","t":"role_permissions","r":{"role_id":4,"permission_id":99,"permissions":{"name":"marketplace:view"}}}',
+            '{"kind":"row","t":"role_permissions","r":{"role_id":4,"permission_id":99,"permissions":{"name":"platform:billing"}}}',
             '{"kind":"row","t":"role_permissions","r":{"role_id":4,"permission_id":7,"permissions":{"name":"intel:view"}}}',
         ].join('\n');
         const result = await importOrgData(ndjson);
         const insertedRows = h.inserts.filter((i) => i.table === 'role_permissions').flatMap((i) => i.rows);
         expect(insertedRows).toHaveLength(0);       // dropped, NOT inserted with a null permission_id
         expect(result.rowsSkipped).toBe(2);
-        expect(result.warnings.some((w) => w.includes('marketplace:view'))).toBe(true);
+        expect(result.warnings.some((w) => w.includes('platform:billing'))).toBe(true);
     });
 
     it('skips a single FK-orphan row via row-by-row fallback instead of failing the whole batch', async () => {
@@ -108,6 +109,67 @@ describe('importer cross-table FK + schema-divergence resilience', () => {
         const result = await importOrgData(ndjson);
         expect(result.rowsInserted).toBe(1); // the valid row
         expect(result.rowsSkipped).toBe(1);  // the orphan, skipped not fatal
+    });
+
+    it('never imports deployment/integration/secret settings; portable settings still import', async () => {
+        const ndjson = [
+            '{"kind":"header","version":1,"tableOrder":["settings"],"manifest":{"settings":7}}',
+            '{"kind":"row","t":"settings","r":{"key":"brandingConfig","value":{"name":"Acme Org"}}}',
+            '{"kind":"row","t":"settings","r":{"key":"discordConfig","value":{"clientId":"1495641123316568144"}}}',
+            '{"kind":"row","t":"settings","r":{"key":"radioConfig","value":{"url":"wss://x.livekit.cloud"}}}',
+            '{"kind":"row","t":"settings","r":{"key":"aiConfig","value":{"apiKey":"AIzaLEAKED"}}}',
+            '{"kind":"row","t":"settings","r":{"key":"geminiKey","value":"AIzaSEPARATEROW"}}',
+            '{"kind":"row","t":"settings","r":{"key":"admin_setup_code","value":{"code":"SETUP-PWN"}}}',
+            '{"kind":"row","t":"settings","r":{"key":"setup_completed","value":true}}',
+        ].join('\n');
+        const result = await importOrgData(ndjson);
+
+        const insertedSettings = h.inserts.filter((i) => i.table === 'settings').flatMap((i) => i.rows);
+        const insertedKeys = insertedSettings.map((r) => r.key);
+        expect(insertedKeys).toContain('brandingConfig');             // portable org data imports
+        for (const denied of ['discordConfig', 'radioConfig', 'aiConfig', 'geminiKey', 'admin_setup_code', 'setup_completed']) {
+            expect(insertedKeys).not.toContain(denied);               // deployment identity / secrets / bootstrap excluded
+        }
+        // No source secret/identity reaches the DB.
+        const blob = JSON.stringify(insertedSettings);
+        for (const secret of ['1495641123316568144', 'AIzaLEAKED', 'AIzaSEPARATEROW', 'SETUP-PWN']) {
+            expect(blob).not.toContain(secret);
+        }
+
+        // Pre-clear must NOT delete the local deployment-config keys (so locally-set
+        // discordConfig / admin_setup_code survive the import untouched).
+        const settingsPreclear = h.deletes.find((d) => d.table === 'settings' && d.col === 'key');
+        expect(settingsPreclear).toBeTruthy();
+        expect(settingsPreclear!.vals).toContain('brandingConfig');
+        for (const denied of ['discordConfig', 'geminiKey', 'admin_setup_code', 'setup_completed']) {
+            expect(settingsPreclear!.vals).not.toContain(denied);
+        }
+
+        expect(result.warnings.some((w) => w.includes('deployment-config'))).toBe(true);
+    });
+
+    it('never imports alliance_peers (deployment-local federation crypto), avoiding credential bleed + dangling api_keys FKs', async () => {
+        const ndjson = [
+            '{"kind":"header","version":1,"tableOrder":["alliance_peers"],"manifest":{"alliance_peers":1}}',
+            '{"kind":"row","t":"alliance_peers","r":{"id":"p1","label":"Ally","outbound_key_enc":"ENCKEYBLEED","inbound_key_id":"00000000-0000-0000-0000-000000000000","entered_peer_code_enc":"CODEBLEED","pairing_state":"active"}}',
+        ].join('\n');
+        const result = await importOrgData(ndjson);
+        expect(h.inserts.find((i) => i.table === 'alliance_peers')).toBeUndefined();   // not imported at all
+        expect(JSON.stringify(h.inserts)).not.toContain('ENCKEYBLEED');
+        expect(JSON.stringify(h.inserts)).not.toContain('CODEBLEED');
+        expect(result.rowsSkipped).toBe(1);
+        expect(result.warnings.some((w) => /federation/i.test(w))).toBe(true);
+    });
+
+    it('nulls users.rsi_verification_code (transient per-install token) on import', async () => {
+        const ndjson = [
+            '{"kind":"header","version":1,"tableOrder":["users"],"manifest":{"users":1}}',
+            '{"kind":"row","t":"users","r":{"id":1,"name":"A","discord_id":"d1","rsi_verification_code":"RSI-STALE-123","auth_user_id":"auth-x"}}',
+        ].join('\n');
+        await importOrgData(ndjson);
+        const ins = h.inserts.find((i) => i.table === 'users');
+        expect(ins!.rows[0].rsi_verification_code).toBeNull();
+        expect(ins!.rows[0].auth_user_id).toBeNull();
     });
 
     it('nulls intel_reports.source_feed_id so federated intel imports without the (dead) feed link', async () => {

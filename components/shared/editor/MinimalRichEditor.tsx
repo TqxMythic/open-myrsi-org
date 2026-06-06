@@ -4,7 +4,7 @@ import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
 import Link from '@tiptap/extension-link';
 
-// #14: a constrained Tiptap editor used on surfaces where the full WikiEditor
+// A constrained Tiptap editor used on surfaces where the full WikiEditor
 // is overkill (Public Landing Page blurb is the first caller). Extension set
 // is intentionally narrow — no images, tables, iframes, YouTube, or code
 // blocks — so the XSS surface is small and the public bundle stays tiny.
@@ -137,7 +137,7 @@ const MinimalRichEditor: React.FC<MinimalRichEditorProps> = ({ content, editable
         ],
         content: content && (typeof content === 'object' ? Object.keys(content).length > 0 : !!content) ? content : undefined,
         editable,
-        onUpdate: onChange ? ({ editor: e }) => onChange(e.getJSON()) : undefined,
+        onUpdate: onChange ? ({ editor: e }) => { if (!e.isDestroyed) onChange(e.getJSON()); } : undefined,
         editorProps: {
             attributes: {
                 class: 'minimal-rich-editor-content prose prose-invert prose-sm max-w-none focus:outline-hidden min-h-[120px] p-3',
@@ -146,15 +146,21 @@ const MinimalRichEditor: React.FC<MinimalRichEditorProps> = ({ content, editable
     });
 
     useEffect(() => {
-        if (editor) editor.setEditable(editable);
+        if (editor && !editor.isDestroyed) editor.setEditable(editable);
     }, [editor, editable]);
 
     useEffect(() => {
-        if (!editor || !content || (typeof content === 'object' && Object.keys(content).length === 0)) return;
-        const current = editor.getJSON();
-        if (JSON.stringify(current) !== JSON.stringify(content)) {
-            editor.commands.setContent(content);
-        }
+        if (!editor || editor.isDestroyed || !content || (typeof content === 'object' && Object.keys(content).length === 0)) return;
+        // The editor's command/state managers can be momentarily unset while Tiptap
+        // recreates the instance under React, and reading editor.commands then throws.
+        // The initial content is already applied via useEditor's content option, so
+        // skipping a transient sync is harmless.
+        try {
+            const current = editor.getJSON();
+            if (JSON.stringify(current) !== JSON.stringify(content)) {
+                editor.commands.setContent(content);
+            }
+        } catch { /* editor not ready yet — initial content stands */ }
     }, [content, editor]);
 
     if (!editor) return null;

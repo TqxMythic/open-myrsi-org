@@ -69,13 +69,9 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const dataCore = useDataCore();
     const { rpcAction, notifyDbConnected, registerFetchDataSubset, registerFeatureFlags, applyStateData } = dataCore;
 
-    // Members domain (Phase 3a). MembersProvider mounts OUTSIDE this provider
-    // (DataCoreProvider > MembersProvider > ConfigProvider > DataProvider) so we
-    // can read its value here. The 12 Members slices + 21 CRUD methods + derived
-    // `members` are sourced from useMembers() and re-exposed on the DataContext
-    // value verbatim, preserving the useData() public shape for the 220 existing
-    // consumers. Phase 4 of the migration will move consumers to useMembers()
-    // directly and drop these from the DataContext value.
+    // Members domain. MembersProvider mounts OUTSIDE this provider so we can read
+    // its value here and re-expose the Members slices + CRUD methods + derived
+    // `members` on the DataContext value verbatim, preserving the useData() shape.
     const members = useMembers();
     const {
         allUsers, ranks, units, roles,
@@ -96,10 +92,8 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         registerRefreshDiscord: registerMembersRefreshDiscord,
     } = members;
 
-    // Config domain (Phase 3b). ConfigProvider mounts between MembersProvider
-    // and DataProvider so we can read its value here. The 13 Config slices +
-    // 18 CRUD/update methods + 1 query are sourced from useConfig() and
-    // re-exposed on the DataContext value verbatim. Same pattern as Members.
+    // Config domain — sourced from useConfig() and re-exposed on the DataContext
+    // value verbatim.
     const config = useConfig();
     const {
         brandingConfig, discordConfig, heroCardConfig, openGraphConfig, radioConfig,
@@ -118,13 +112,9 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         registerRefreshExternalTools: registerConfigRefreshExternalTools,
     } = config;
 
-    // Operations domain (Phase 3c). OperationsProvider mounts between
-    // ConfigProvider and DataProvider so we can read its value here. The 3
-    // Operations slices + 5 template methods are sourced from useOperations()
-    // and re-exposed on the DataContext value verbatim. Same pattern as
-    // Members / Config. The setOperations / setWarrants setters are destructured
-    // so DataContext's optimisticUpdate('operations' | 'warrants', ...) branches
-    // can keep writing through to the canonical state.
+    // Operations domain — sourced from useOperations() and re-exposed verbatim.
+    // setOperations / setWarrants are destructured so DataContext's
+    // optimisticUpdate ('operations' | 'warrants') branches can write through.
     const operationsCtx = useOperations();
     const {
         operations, operationTemplates, warrants,
@@ -137,15 +127,10 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         registerRefreshWarrants: registerOpsRefreshWarrants,
     } = operationsCtx;
 
-    // Intel domain (Phase 3d). IntelProvider mounts between OperationsProvider
-    // and DataProvider so we can read its value here. The 4 Intel slices +
-    // 2 bulletin CRUD methods + refreshIntel are sourced from useIntel() and
-    // re-exposed on the DataContext value verbatim. Same pattern as Members /
-    // Config / Operations. The setters are destructured so DataContext's
-    // fetchDataSubset('intel') branch can keep writing through to the
-    // canonical state (Map construction for intelTargetIndex and the
-    // post-fetch version bump both live in the subset-fetch dispatch table
-    // below — Intel itself doesn't own a subset fetcher).
+    // Intel domain — sourced from useIntel() and re-exposed verbatim. The setters
+    // are destructured so DataContext's fetchDataSubset('intel') branch can write
+    // through (Map construction for intelTargetIndex and the version bump live in
+    // the subset-fetch dispatch table below — Intel doesn't own a subset fetcher).
     const intelCtx = useIntel();
     const {
         intelTargetIndex, intelHubStats, intelDataVersion, activeBulletins,
@@ -157,16 +142,11 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         registerRefreshIntel: registerIntelRefreshIntel,
     } = intelCtx;
 
-    // HR domain (Phase 3e). HRProvider mounts between IntelProvider and
-    // DataProvider so we can read its value here. The 6 HR slices are sourced
-    // from useHR() and re-exposed on the DataContext value verbatim. Same
-    // pattern as Members / Config / Operations / Intel. The setHrApplicants /
-    // setHrInterviews setters are destructured so DataContext's
-    // optimisticUpdate('hr_applications' | 'hr_interviews', ...) branches can
-    // keep writing through to the canonical state. setHrJobs is also forwarded
-    // on the useData() public value per DataContextType. HR's nested-block
-    // state setter (data.hr.*) lives in HR via the registered 'hr' slice
-    // setter, so the nested-block formerly in setStateFromData is gone.
+    // HR domain — sourced from useHR() and re-exposed verbatim. setHrApplicants /
+    // setHrInterviews are destructured so DataContext's optimisticUpdate
+    // ('hr_applications' | 'hr_interviews') branches can write through; setHrJobs
+    // is forwarded on the useData() value. The HR nested-block (data.hr.*) is
+    // populated via HR's registered 'hr' slice setter.
     const hrCtx = useHR();
     const {
         hrApplicants, hrInterviews, hrJobs, hrTemplates, hrTransfers, hrPositions,
@@ -176,65 +156,32 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         registerRefreshHR,
     } = hrCtx;
 
-    // Warehouse domain (Phase 3f). WarehouseProvider mounts between HRProvider
-    // and DataProvider so we can read its value here. The 3 Warehouse slices
-    // are sourced from useWarehouse() and re-exposed on the DataContext value
-    // verbatim. Same pattern as Members / Config / Operations / Intel / HR.
-    // No optimistic-update branches exist for warehouse tables, so we don't
-    // need to destructure any setters into local aliases — Warehouse's slice
-    // setters live in WarehouseContext and run via applyStateData(data). The
-    // 'warehouse' subset-fetch branch below still writes through setters, but
-    // it does so via applyStateData(data) on the response (which fans out to
-    // the 3 registered setters) — see fetchDataSubset('warehouse').
-    // Feature-gating (warehouseEnabled in DataCore) is unchanged: the realtime
-    // channel only registers warehouse:* listeners when the flag is on; the
-    // slice setters here fire regardless.
+    // Warehouse domain — sourced from useWarehouse() and re-exposed verbatim.
+    // No optimistic-update branches exist for warehouse tables; Warehouse's
+    // slice setters run via applyStateData(data) (the 'warehouse' subset-fetch
+    // branch routes the response through it).
     const warehouseCtx = useWarehouse();
     const {
         warehouseCatalog, warehouseStock, warehouseRequests,
         registerRefreshWarehouse,
     } = warehouseCtx;
 
-    // Fleet domain (Phase 3g). FleetProvider mounts between WarehouseProvider
-    // and DataProvider so we can read its value here. The 3 Fleet slices are
-    // sourced from useFleet() and re-exposed on the DataContext value
-    // verbatim. Same pattern as Members / Config / Operations / Intel / HR /
-    // Warehouse. No optimistic-update branches exist for fleet tables, so we
-    // don't need to destructure any setters into local aliases — Fleet's
-    // slice setters live in FleetContext and run via applyStateData(data).
-    // The 'fleet' subset-fetch branch below still writes through setters, but
-    // it does so via applyStateData(data) on the response (which fans out to
-    // the 3 registered setters) — see fetchDataSubset('fleet').
-    //
-    // ensureFleetLoaded stays as a DataContext-local useCallback because it's
-    // part of the DataContext value per DataContextType. Its dependency on
-    // shipCatalog.length keeps working because shipCatalog is the
-    // destructured value below — the existing definition is unchanged.
+    // Fleet domain — sourced from useFleet() and re-exposed verbatim. No
+    // optimistic-update branches exist for fleet tables; Fleet's slice setters
+    // run via applyStateData(data) (the 'fleet' subset-fetch branch routes the
+    // response through it). ensureFleetLoaded stays a DataContext-local callback
+    // (part of the DataContext value) and reads the destructured shipCatalog.
     const fleetCtx = useFleet();
     const {
         shipCatalog, userShips, fleetGroups,
         registerRefreshFleet,
     } = fleetCtx;
 
-    // Government domain (Phase 3i — LAST Phase 3 extraction). GovernmentProvider
-    // mounts between FleetProvider and DataProvider so we can read its value
-    // here. The 8 Government slices are sourced from useGovernment() and
-    // re-exposed on the DataContext value verbatim. Same pattern as Members /
-    // Config / Operations / Intel / HR / Warehouse / Fleet. No
-    // optimistic-update branches exist for government tables, and no government
-    // CRUD lives here — government mutations come through other action paths.
-    // Government's slice setters live in GovernmentContext and run via
-    // applyStateData(data). The 'government' subset-fetch branch below still
-    // writes through setters, but it does so via applyStateData(data) on the
-    // response (which fans out to the 8 registered setters) — see
-    // fetchDataSubset('government').
-    //
-    // Feature-gating (governmentsEnabled in DataCore) is unchanged: the
-    // realtime channel only registers government_update broadcasts when the
-    // flag is on; the slice setters here fire regardless. The
-    // governmentsFeatureConfig value flows from useGovernment() into the
-    // registerFeatureFlags useEffect below so DataCore continues to see the
-    // current feature state.
+    // Government domain — sourced from useGovernment() and re-exposed verbatim.
+    // No optimistic-update branches and no government CRUD here. Government's
+    // slice setters run via applyStateData(data) (the 'government' subset-fetch
+    // branch routes the response through it). governmentsFeatureConfig flows into
+    // the registerFeatureFlags effect below so DataCore sees the current state.
     const governmentCtx = useGovernment();
     const {
         governmentConfig, governmentBranches, governmentPositions, governmentPositionHolders,
@@ -242,14 +189,10 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         registerRefreshGovernment,
     } = governmentCtx;
 
-    // Requests domain (Phase 4g). RequestsProvider mounts between
-    // GovernmentProvider and DataProvider so we can read its value here. The
-    // hydratedServiceRequests slice + 17 CRUD methods are sourced from
-    // useRequests() and re-exposed on the DataContext value verbatim,
-    // preserving the useData() public shape for the 100+ existing consumers.
+    // Requests domain — sourced from useRequests() and re-exposed verbatim.
     // setHydratedServiceRequests is destructured so DataContext's
-    // optimisticUpdate('service_requests', ...) branch + fetchDataSubset
-    // ('requests') handler keep writing through to the canonical state.
+    // optimisticUpdate('service_requests') branch + fetchDataSubset('requests')
+    // handler can write through.
     const requestsCtx = useRequests();
     const {
         hydratedServiceRequests,
@@ -257,14 +200,10 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         registerRefreshRequests,
     } = requestsCtx;
 
-    // Announcements domain. AnnouncementsProvider mounts between
-    // RequestsProvider and DataProvider so we can read its value here. The
-    // announcements slice + 3 CRUD methods are sourced from useAnnouncements()
-    // and re-exposed on the DataContext value verbatim, preserving the
-    // useData() public shape for the many read-consumers. setAnnouncements is
-    // destructured so DataContext's optimisticUpdate('announcements', ...)
-    // branch + fetchDataSubset('announcements') handler keep writing through
-    // to the canonical state.
+    // Announcements domain — sourced from useAnnouncements() and re-exposed
+    // verbatim. setAnnouncements is destructured so DataContext's
+    // optimisticUpdate('announcements') branch + fetchDataSubset('announcements')
+    // handler can write through.
     const announcementsCtx = useAnnouncements();
     const {
         announcements,
@@ -272,38 +211,14 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         registerRefreshAnnouncements,
     } = announcementsCtx;
 
-    // ... core data states (Members + Config + Operations + Intel + Requests +
-    // Announcements slices live in their respective contexts now) ...
-    // intelTargetIndex, intelHubStats, intelDataVersion, activeBulletins slices
-    // live in IntelContext now (Phase 3d). Sourced from useIntel() above.
-    // operations, operationTemplates, warrants slices live in OperationsContext
-    // now (Phase 3c). Sourced from useOperations() above.
-
-    // Config slices (brandingConfig, discordConfig, heroCardConfig,
-    // openGraphConfig, radioConfig, aiConfig, wikiHomeConfig, hrConfig,
-    // publicPageConfig, serviceTypes, externalTools, locations, radioChannels)
-    // live in ConfigContext now (Phase 3b). Sourced from useConfig() above.
-
-    // HR slices (hrApplicants, hrInterviews, hrJobs, hrTemplates, hrTransfers,
-    // hrPositions) live in HRContext now (Phase 3e). Sourced from useHR() above.
+    // Members, Config, Operations, Intel, HR, Warehouse, Fleet, Government,
+    // Requests, and Announcements slices live in their own domain contexts and
+    // are sourced via the use*() hooks above. Only wikiPages remains DataContext-local.
     const [wikiPages, setWikiPages] = useState<WikiPage[]>([]);
-    // Warehouse slices (warehouseCatalog, warehouseStock, warehouseRequests)
-    // live in WarehouseContext now (Phase 3f). Sourced from useWarehouse() above.
 
-    // Discord Mapping — slices live in MembersContext now (Phase 3a).
-
-    // Fleet slices (shipCatalog, userShips, fleetGroups) live in FleetContext
-    // now (Phase 3g). Sourced from useFleet() above.
-
-    // Government System — slices (governmentConfig, governmentBranches,
-    // governmentPositions, governmentPositionHolders, governmentElections,
-    // governmentLegislation, governmentMotions, governmentsFeatureConfig) live
-    // in GovernmentContext now (Phase 3i — LAST Phase 3 extraction). Sourced
-    // from useGovernment() above.
-
-    // NOTE: activeEam no longer lives here — the EAM body is stripped from
-    // every wire payload (audience-gated via broadcast:get_active_eam);
-    // EAMBroadcastTab fetches it locally.
+    // activeEam is not held here — the EAM body is stripped from every wire
+    // payload (audience-gated via broadcast:get_active_eam); EAMBroadcastTab
+    // fetches it locally.
     const [orgMeta, setOrgMeta] = useState<OrgMeta | null>(null);
     const [platformSettings, setPlatformSettings] = useState<any>(null);
 
@@ -314,10 +229,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         debugLog(`[Optimistic] ${action} on ${table}:${id}`);
 
         if (table === 'service_requests') {
-            // Service-requests slice lives in RequestsContext now (Phase 4g);
-            // write through its setter so external callers of
-            // optimisticUpdate('service_requests', ...) still see the same
-            // effect on UI state.
+            // Slice lives in RequestsContext; write through its setter.
             setReqsHydrated(prev => {
                 if (action === 'delete') return prev.filter(item => item.id !== id);
                 if (action === 'update') return prev.map(item => item.id === id ? { ...item, ...data } : item);
@@ -326,9 +238,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
             });
         }
         else if (table === 'operations') {
-            // Operations slice lives in OperationsContext now; write through its
-            // setter so external callers of optimisticUpdate('operations', ...)
-            // still see the same effect on UI state.
+            // Slice lives in OperationsContext; write through its setter.
             setOpsOperations(prev => {
                 if (action === 'delete') return prev.filter(item => item.id !== id);
                 if (action === 'update') return prev.map(item => item.id === id ? { ...item, ...data } : item);
@@ -337,7 +247,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
             });
         }
         else if (table === 'warrants') {
-            // Warrants slice lives in OperationsContext now; write through its setter.
+            // Slice lives in OperationsContext; write through its setter.
             setOpsWarrants(prev => {
                 if (action === 'delete') return prev.filter(item => item.id !== id);
                 if (action === 'update') return prev.map(item => item.id === id ? { ...item, ...data } : item);
@@ -346,9 +256,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
             });
         }
         else if (table === 'hr_applications') {
-            // HR applicants slice lives in HRContext now; write through its
-            // setter so external callers of optimisticUpdate('hr_applications', ...)
-            // still see the same effect on UI state.
+            // Slice lives in HRContext; write through its setter.
             setHrCtxApplicants(prev => {
                 if (action === 'delete') return prev.filter(item => item.id !== id);
                 if (action === 'update') return prev.map(item => item.id === id ? { ...item, ...data } : item);
@@ -357,7 +265,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
             });
         }
         else if (table === 'hr_interviews') {
-            // HR interviews slice lives in HRContext now; write through its setter.
+            // Slice lives in HRContext; write through its setter.
             setHrCtxInterviews(prev => {
                 if (action === 'delete') return prev.filter(item => item.id !== id);
                 if (action === 'update') return prev.map(item => item.id === id ? { ...item, ...data } : item);
@@ -366,10 +274,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
             });
         }
         else if (table === 'announcements') {
-            // Announcements slice lives in AnnouncementsContext now; write
-            // through its setter so external callers of
-            // optimisticUpdate('announcements', ...) still see the same effect
-            // on UI state.
+            // Slice lives in AnnouncementsContext; write through its setter.
             setAnnsAnnouncements(prev => {
                 if (action === 'delete') return prev.filter(item => item.id !== id);
                 if (action === 'update') return prev.map(item => item.id === id ? { ...item, ...data } : item);
@@ -378,9 +283,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
             });
         }
         else if (table === 'organizational_units') {
-            // Units slice lives in MembersContext now; write through its setter
-            // so external callers of optimisticUpdate('organizational_units', ...)
-            // still see the same effect on UI state.
+            // Slice lives in MembersContext; write through its setter.
             setMembersUnits(prev => {
                 if (action === 'delete') return prev.filter(item => item.id !== id);
                 if (action === 'update') return prev.map(item => item.id === id ? { ...item, ...data } : item);
@@ -389,7 +292,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
             });
         }
         else if (table === 'ranks') {
-            // Ranks slice lives in MembersContext now; write through its setter.
+            // Slice lives in MembersContext; write through its setter.
             setMembersRanks(prev => {
                 if (action === 'delete') return prev.filter(item => item.id !== id);
                 if (action === 'update') return prev.map(item => item.id === id ? { ...item, ...data } : item);
@@ -397,65 +300,20 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 return prev;
             });
         }
-        // Add other tables as needed systematically
     }, [setMembersRanks, setMembersUnits, setOpsOperations, setOpsWarrants, setHrCtxApplicants, setHrCtxInterviews, setReqsHydrated, setAnnsAnnouncements]);
 
     const setStateFromData = useCallback((data: any) => {
         if (!data) return;
-        // Members slices (users, ranks, units, roles, securityClearances,
-        // limitingMarkers, specializationTags, certifications, commendations,
-        // syncedDiscordRoles, rankMappings, roleMappings) and Config slices
-        // (brandingConfig, discordConfig, heroCardConfig, openGraphConfig,
-        // radioConfig, aiConfig, wikiHomeConfig, hrConfig, publicPageConfig,
-        // serviceTypes, externalTools, locations, radioChannels) and Intel
-        // slices (intelTargetIndex, intelHubStats, activeBulletins) are
-        // populated via DataCore's registered slice setters — call
-        // applyStateData first so they fire on every bulk-state payload.
+        // Every domain's slices (Members, Config, Intel, Operations, HR,
+        // Warehouse, Fleet, Government, Requests, Announcements) are populated
+        // via DataCore's registered slice setters — call applyStateData first so
+        // they fire on every bulk-state payload. Only wikiPages, orgMeta, and
+        // platformSettings remain DataContext-local.
         applyStateData(data);
 
-        // announcements slice lives in AnnouncementsContext now; populated via
-        // its registered 'announcements' slice setter — handled by
-        // applyStateData(data) above.
-        // hydratedServiceRequests slice lives in RequestsContext now (Phase 4g);
-        // populated via RequestsContext's registered 'requests' slice setter —
-        // handled by applyStateData(data) above.
-        // intelTargetIndex / intelHubStats / activeBulletins are populated via
-        // IntelContext's registered slice setters (Phase 3d) — handled by
-        // applyStateData(data) above. intelDataVersion is a client-side cache
-        // buster and not driven by server payloads here.
-        // operations / operationTemplates / warrants are populated via
-        // OperationsContext's registered slice setters (Phase 3c) — handled by
-        // applyStateData(data) above.
-
-        // Government slices (governmentConfig, governmentBranches,
-        // governmentPositions, governmentPositionHolders, governmentElections,
-        // governmentLegislation, governmentMotions, governmentsFeatureConfig)
-        // live in GovernmentContext now (Phase 3i — LAST Phase 3 extraction) —
-        // populated via GovernmentContext's eight registered top-level slice
-        // setters, handled by applyStateData(data) above. The 'governmentsConfig'
-        // key in the server payload maps to the governmentsFeatureConfig slice
-        // (preserved naming mismatch — see GovernmentContext comment).
-
-        // Settings / EAM
-
-        // HR (data.hr.*) slices live in HRContext now (Phase 3e) — populated
-        // via HRContext's registered 'hr' slice setter, handled by
-        // applyStateData(data) above.
-
-        // Wiki
         if (data.wikiPages) setWikiPages(data.wikiPages);
-
-        // Warehouse (data.warehouseCatalog / data.warehouseStock /
-        // data.warehouseRequests) slices live in WarehouseContext now
-        // (Phase 3f) — populated via WarehouseContext's three registered
-        // top-level slice setters, handled by applyStateData(data) above.
-
-        // Org metadata (member count, pricing tier)
         if (data.orgMeta) setOrgMeta(data.orgMeta);
-
-        // Platform settings (maintenance mode, etc.)
         if (data.platformSettings) setPlatformSettings(data.platformSettings);
-
     }, [applyStateData]);
 
     // Debounce realtime-triggered fetches: if the same subset was fetched in the last 2 seconds, skip it.
@@ -560,15 +418,11 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setIsFetching(prev => ({ ...prev, [subset]: true }));
         try {
             if (subset === 'requests' || subset === 'service_requests') {
-                // hydratedServiceRequests lives in RequestsContext now (Phase
-                // 4g); write through its setter so the fetched data lands in
-                // the canonical state.
+                // Write through RequestsContext's setter.
                 const data = await apiService.getStateSubset('requests');
                 setReqsHydrated(data.requests || []);
             } else if (subset === 'operations') {
-                // operations / operationTemplates slices live in OperationsContext
-                // now (Phase 3c); write through its setters so the fetched data
-                // lands in the canonical state.
+                // Write through OperationsContext's setters.
                 const gen = guards.operations.begin();
                 const data = await apiService.getStateSubset('operations');
                 if (guards.operations.tryApply(gen)) {
@@ -668,12 +522,8 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 }
                 await warrantSliceCoalescerRef.current(ids);
             } else if (subset === 'intel') {
-                // intelTargetIndex / intelHubStats / activeBulletins slices
-                // live in IntelContext now (Phase 3d); write through its
-                // setters so the fetched data lands in the canonical state.
-                // intelDataVersion is a client-side cache buster bumped
-                // here on every successful 'intel' fetch — preserves the
-                // prior behavior line-for-line.
+                // Write through IntelContext's setters. intelDataVersion is a
+                // client-side cache buster bumped on every successful 'intel' fetch.
                 const sumGen = guards.intelSummary.begin();
                 const bullGen = guards.bulletins.begin();
                 const data = await apiService.getStateSubset('intel');
@@ -737,9 +587,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 }
                 await bulletinSliceCoalescerRef.current([bulletinId]);
             } else if (subset === 'announcements') {
-                // announcements slice lives in AnnouncementsContext now; write
-                // through its setter so the fetched data lands in the canonical
-                // state.
+                // Write through AnnouncementsContext's setter.
                 const data = await apiService.getStateSubset('announcements');
                 setAnnsAnnouncements(data.announcements || []);
             } else if (subset === 'hr') {
@@ -793,11 +641,8 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
                     }));
                 }
             } else if (subset === 'warehouse') {
-                // warehouseCatalog / warehouseStock / warehouseRequests slices
-                // live in WarehouseContext now (Phase 3f); the response is
-                // routed through applyStateData which fans out to Warehouse's
-                // three registered top-level slice setters so the fetched data
-                // lands in the canonical state.
+                // Route the response through applyStateData; it fans out to
+                // Warehouse's three registered slice setters.
                 const data = await apiService.getStateSubset('warehouse');
                 applyStateData(data);
             } else if (APPLY_STATE_SLICE_SUBSETS.has(subset)) {
@@ -814,24 +659,14 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 const data = await apiService.getStateSubset('external_tools');
                 setStateFromData(data);
             } else if (subset === 'fleet') {
-                // shipCatalog / userShips / fleetGroups slices live in
-                // FleetContext now (Phase 3g); the response is routed through
-                // applyStateData which fans out to Fleet's three registered
-                // top-level slice setters so the fetched data lands in the
-                // canonical state.
+                // Route the response through applyStateData; it fans out to
+                // Fleet's three registered slice setters.
                 const data = await apiService.getStateSubset('fleet');
                 applyStateData(data);
             } else if (subset === 'government') {
-                // governmentConfig / governmentBranches / governmentPositions /
-                // governmentPositionHolders / governmentElections /
-                // governmentLegislation / governmentMotions /
-                // governmentsFeatureConfig slices live in GovernmentContext now
-                // (Phase 3i — LAST Phase 3 extraction); the response is routed
-                // through applyStateData which fans out to Government's eight
-                // registered top-level slice setters so the fetched data lands
-                // in the canonical state. The `!== undefined` check on
-                // governmentConfig (null IS valid) is preserved inside the
-                // registered setter.
+                // Route the response through applyStateData; it fans out to
+                // Government's eight registered slice setters. The `!== undefined`
+                // check on governmentConfig (null is valid) lives in the setter.
                 const data = await apiService.getStateSubset('government');
                 applyStateData(data);
             } else if (subset === 'main') {
@@ -879,6 +714,7 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         registerFeatureFlags({
             warehouseEnabled: orgMeta?.features?.warehouse?.enabled === true,
             governmentsEnabled: governmentsFeatureConfig?.enabled === true,
+            marketplaceEnabled: orgMeta?.features?.marketplace?.enabled === true,
         });
     }, [orgMeta, governmentsFeatureConfig, registerFeatureFlags]);
 
@@ -918,19 +754,8 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // callFetcher() without force, so the dedupe still protects that path.
     const refreshRequests = useCallback(() => fetchDataSubset('requests', { force: true }), [fetchDataSubset]);
     const refreshHR = useCallback(() => fetchDataSubset('hr', { force: true }), [fetchDataSubset]);
-    // Operations + warrants subset refreshes — registered with OperationsContext
-    // below so its template methods can chain post-RPC refreshes without
-    // importing useData(). Also exposed on the DataContext value verbatim to
-    // preserve the useData() public shape.
     const refreshWarrants = useCallback(() => fetchDataSubset('warrants', { force: true }), [fetchDataSubset]);
     const refreshOperations = useCallback(() => fetchDataSubset('operations', { force: true }), [fetchDataSubset]);
-
-    // Operation template methods (createOperationTemplate, updateOperationTemplate,
-    // deleteOperationTemplate, extractTemplateFromOperation, importOperationTemplate)
-    // moved to OperationsContext (Phase 3c). They're destructured from
-    // useOperations() at the top of this provider and re-exposed on the
-    // DataContext value below.
-
     const refreshIntel = useCallback(() => fetchDataSubset('intel', { force: true }), [fetchDataSubset]);
     const refreshAnnouncements = useCallback(() => fetchDataSubset('announcements', { force: true }), [fetchDataSubset]);
     const refreshWiki = useCallback(() => fetchDataSubset('wiki', { force: true }), [fetchDataSubset]);
@@ -945,9 +770,9 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const refreshDiscord = useCallback(() => fetchDataSubset('discord', { force: true }), [fetchDataSubset]);
     const refreshExternalTools = useCallback(() => fetchDataSubset('external_tools', { force: true }), [fetchDataSubset]);
 
-    // Register our refresh callbacks with MembersContext so its CRUD methods
-    // can trigger post-RPC refreshes without depending on useData() (which
-    // would create a context cycle — Members is mounted OUTSIDE Data).
+    // Register our refresh callbacks with each domain context so their CRUD
+    // methods can trigger post-RPC refreshes without depending on useData()
+    // (which would create a context cycle — these contexts mount OUTSIDE Data).
     useEffect(() => {
         const unreg = registerMembersRefreshMain(refreshMainState);
         return unreg;
@@ -957,9 +782,6 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return unreg;
     }, [registerMembersRefreshDiscord, refreshDiscord]);
 
-    // Same pattern for ConfigContext (Phase 3b): register the 'main' / 'discord' /
-    // 'external_tools' refresh callbacks so Config's CRUD methods can chain
-    // post-RPC refreshes without importing useData().
     useEffect(() => {
         const unreg = registerConfigRefreshMain(refreshMainState);
         return unreg;
@@ -973,10 +795,6 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return unreg;
     }, [registerConfigRefreshExternalTools, refreshExternalTools]);
 
-    // Same pattern for OperationsContext (Phase 3c): register the 'operations' /
-    // 'warrants' refresh callbacks so Operations's template methods can chain
-    // post-RPC refreshes without importing useData() (which would create a
-    // context cycle — Operations is mounted OUTSIDE Data).
     useEffect(() => {
         const unreg = registerOpsRefreshOperations(refreshOperations);
         return unreg;
@@ -986,98 +804,47 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return unreg;
     }, [registerOpsRefreshWarrants, refreshWarrants]);
 
-    // Same pattern for IntelContext (Phase 3d): register the 'intel' refresh
-    // callback so Intel's bulletin CRUD methods can chain post-RPC refreshes
-    // without importing useData() (which would create a context cycle —
-    // Intel is mounted OUTSIDE Data). refreshIntel is the canonical
-    // fetchDataSubset('intel') wrapper defined above and is also exposed on
-    // the DataContext value for the useData() shim.
     useEffect(() => {
         const unreg = registerIntelRefreshIntel(refreshIntel);
         return unreg;
     }, [registerIntelRefreshIntel, refreshIntel]);
 
-    // Same pattern for HRContext (Phase 3e): register the 'hr' refresh
-    // callback so any future HR-owned CRUD methods can chain post-RPC
-    // refreshes without importing useData() (which would create a context
-    // cycle — HR is mounted OUTSIDE Data). refreshHR is the canonical
-    // fetchDataSubset('hr') wrapper defined above and is also exposed on the
-    // DataContext value for the useData() shim.
     useEffect(() => {
         const unreg = registerRefreshHR(refreshHR);
         return unreg;
     }, [registerRefreshHR, refreshHR]);
 
-    // Same pattern for WarehouseContext (Phase 3f): register the 'warehouse'
-    // refresh callback so any future warehouse-owned CRUD methods can chain
-    // post-RPC refreshes without importing useData() (which would create a
-    // context cycle — Warehouse is mounted OUTSIDE Data). refreshWarehouse is
-    // the canonical fetchDataSubset('warehouse') wrapper defined above and is
-    // also exposed on the DataContext value for the useData() shim.
     useEffect(() => {
         const unreg = registerRefreshWarehouse(refreshWarehouse);
         return unreg;
     }, [registerRefreshWarehouse, refreshWarehouse]);
 
-    // Same pattern for FleetContext (Phase 3g): register the 'fleet' refresh
-    // callback so any future fleet-owned CRUD methods can chain post-RPC
-    // refreshes without importing useData() (which would create a context
-    // cycle — Fleet is mounted OUTSIDE Data). refreshFleet is the canonical
-    // fetchDataSubset('fleet') wrapper defined above and is also exposed on
-    // the DataContext value for the useData() shim.
     useEffect(() => {
         const unreg = registerRefreshFleet(refreshFleet);
         return unreg;
     }, [registerRefreshFleet, refreshFleet]);
 
-    // Same pattern for GovernmentContext (Phase 3i — LAST Phase 3 extraction):
-    // register the 'government' refresh callback so any future government-owned
-    // CRUD methods can chain post-RPC refreshes without importing useData()
-    // (which would create a context cycle — Government is mounted OUTSIDE
-    // Data). refreshGovernment is the canonical fetchDataSubset('government')
-    // wrapper defined above and is also exposed on the DataContext value for
-    // the useData() shim.
     useEffect(() => {
         const unreg = registerRefreshGovernment(refreshGovernment);
         return unreg;
     }, [registerRefreshGovernment, refreshGovernment]);
 
-    // Same pattern for RequestsContext (Phase 4g): register the 'requests'
-    // refresh callback so the Requests CRUD methods can chain post-RPC
-    // refreshes without importing useData(). refreshRequests is the canonical
-    // fetchDataSubset('requests') wrapper defined above and is also exposed
-    // on the DataContext value for the useData() shim.
     useEffect(() => {
         const unreg = registerRefreshRequests(refreshRequests);
         return unreg;
     }, [registerRefreshRequests, refreshRequests]);
 
-    // Same pattern for AnnouncementsContext: register the 'announcements'
-    // refresh callback so the Announcements CRUD methods can chain post-RPC
-    // refreshes without importing useData(). refreshAnnouncements is the
-    // canonical fetchDataSubset('announcements') wrapper defined above and is
-    // also exposed on the DataContext value for the useData() shim.
     useEffect(() => {
         const unreg = registerRefreshAnnouncements(refreshAnnouncements);
         return unreg;
     }, [registerRefreshAnnouncements, refreshAnnouncements]);
 
-    // Members domain CRUD (addUnit/updateUnit/deleteUnit, addRank/updateRank/deleteRank,
-    // addRole/updateRole/deleteRole/getRoleDetails/updateRolePermissions,
-    // addSpecializationTag/.../deleteCommendation, syncDiscordRoles, updateRankMapping)
-    // moved to MembersContext (Phase 3a). They're destructured from useMembers()
-    // at the top of this provider and re-exposed on the DataContext value below.
-
-    // Config domain CRUD (locations, service types, external tools, radio channel,
-    // and all update*Config methods + listTestimonialCandidates + updateOrgFeatures)
-    // moved to ConfigContext (Phase 3b). Destructured from useConfig() at the top
-    // and re-exposed below.
+    // Members and Config domain CRUD live in their own contexts; they're
+    // destructured from use*() at the top of this provider and re-exposed below.
 
     const reorderWikiPages = useCallback((pages: { id: string; sortOrder: number }[]) => rpcAction('wiki:reorder_pages', { pages }).then(() => fetchDataSubset('wiki')), [rpcAction, fetchDataSubset]);
 
-    // Bulletin CRUD (createBulletin, deleteBulletin) moved to IntelContext
-    // (Phase 3d). Destructured from useIntel() at the top of this provider
-    // and re-exposed on the DataContext value below.
+    // Bulletin CRUD lives in IntelContext; destructured above and re-exposed below.
 
     const broadcastEAM = useCallback((message: string) => rpcAction('broadcast:eam', { message }), [rpcAction]);
 

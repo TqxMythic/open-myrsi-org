@@ -1,5 +1,7 @@
 import { supabase, handleSupabaseError, safeFetch } from './common.js';
 import { validateTemplatePayload } from '../operation-template-validate.js';
+import { stripHtml, stripHtmlSingleLine } from '../textSanitize.js';
+import { passesClearance, type ClearanceUser } from '../clearance.js';
 import type { Tables } from './rows.js';
 import type {
     OperationTemplate,
@@ -11,7 +13,24 @@ import type {
 } from '../../types.js';
 
 // operation_templates row plus the joined creator name embed.
-type TemplateRow = Tables<'operation_templates'> & { creator?: { name?: string | null } | null };
+type TemplateRow = Tables<'operation_templates'> & {
+    creator?: { name?: string | null } | null;
+    // Generated types lag the clearance columns on operation_templates.
+    classification_level?: number | null;
+    limiting_marker_ids?: Array<number | string> | null;
+};
+
+// A template carries the clearance of the operation it was extracted from, so it
+// is gated like an op: the viewer's clearance must cover the level and every
+// marker. Operations managers / Admin bypass.
+function templateVisibleTo(viewer: ClearanceUser | null | undefined, row: TemplateRow): boolean {
+    return passesClearance(
+        viewer,
+        row.classification_level ?? 0,
+        (row.limiting_marker_ids ?? []).map(id => ({ id })),
+        ['operations:manage'],
+    );
+}
 
 // Re-export so existing call sites in lib/db.ts (`export * from './db/operation-templates.js'`)
 // continue to expose validateTemplatePayload to the rest of the server.
@@ -41,7 +60,7 @@ const TEMPLATE_SELECT = '*, creator:users!operation_templates_created_by_fkey(na
 // CRUD
 // ---------------------------------------------------------------------------
 
-export async function listOperationTemplates(): Promise<OperationTemplate[]> {
+export async function listOperationTemplates(viewer?: ClearanceUser | null): Promise<OperationTemplate[]> {
     // safeFetch swallows PGRST205 (table missing from PostgREST schema cache)
     // and 42P01 (table doesn't exist yet) so the operations subset still loads
     // when the templates migration hasn't fully propagated. The op center
@@ -50,21 +69,26 @@ export async function listOperationTemplates(): Promise<OperationTemplate[]> {
     const query = supabase
         .from('operation_templates')
         .select(TEMPLATE_SELECT)
-        
         .order('name', { ascending: true });
     const data = await safeFetch<TemplateRow[]>(query, [], 'Failed to list operation templates');
-    return (data || []).map(toTemplate).filter(Boolean) as OperationTemplate[];
+    return (data || [])
+        .filter(r => templateVisibleTo(viewer, r))
+        .map(toTemplate)
+        .filter(Boolean) as OperationTemplate[];
 }
 
-export async function getOperationTemplate(id: number): Promise<OperationTemplate | null> {
+// `viewer` undefined = server-internal caller (no clearance gate). When a viewer
+// is passed (the client get path), a template the viewer's clearance can't cover
+// reads as not-found.
+export async function getOperationTemplate(id: number, viewer?: ClearanceUser | null): Promise<OperationTemplate | null> {
     const { data, error } = await supabase
         .from('operation_templates')
         .select(TEMPLATE_SELECT)
-        
         .eq('id', id)
         .single();
     if (error?.code === 'PGRST116') return null;
     handleSupabaseError({ error, message: 'Failed to fetch operation template' });
+    if (data && viewer !== undefined && !templateVisibleTo(viewer, data as TemplateRow)) return null;
     return toTemplate(data);
 }
 
@@ -73,8 +97,13 @@ export async function createOperationTemplate(
     name: string,
     description: string | null,
     payload: OperationTemplatePayload,
+    // Clearance the template inherits (from the source op when extracted, derived
+    // server-side). Omitted for hand-authored/imported templates → unclassified.
+    clearance?: { classificationLevel?: number; markerIds?: Array<number | string> },
 ): Promise<OperationTemplate> {
-    const trimmed = name?.trim();
+    // Strip markup + cap the template name/description too (the validator covers
+    // the payload; these arrive as separate args).
+    const trimmed = stripHtmlSingleLine(name, 200);
     if (!trimmed) throw new Error('Template name is required.');
     const validated = validateTemplatePayload(payload);
 
@@ -82,9 +111,11 @@ export async function createOperationTemplate(
         .from('operation_templates')
         .insert({
             name: trimmed,
-            description: description?.trim() || null,
+            description: stripHtml(description, 4000) || null,
             created_by: userId,
             payload: validated,
+            classification_level: Math.max(0, Math.floor(Number(clearance?.classificationLevel ?? 0))) || 0,
+            limiting_marker_ids: (clearance?.markerIds ?? []).map(m => Number(m)).filter(n => Number.isFinite(n)),
         })
         .select(TEMPLATE_SELECT)
         .single();
@@ -103,11 +134,11 @@ export async function updateOperationTemplate(
 ): Promise<OperationTemplate> {
     const patch: { name?: string; description?: string | null; payload?: OperationTemplatePayload } = {};
     if (updates.name !== undefined) {
-        const trimmed = updates.name.trim();
+        const trimmed = stripHtmlSingleLine(updates.name, 200);
         if (!trimmed) throw new Error('Template name cannot be empty.');
         patch.name = trimmed;
     }
-    if (updates.description !== undefined) patch.description = updates.description?.trim() || null;
+    if (updates.description !== undefined) patch.description = stripHtml(updates.description, 4000) || null;
     if (updates.payload !== undefined) patch.payload = validateTemplatePayload(updates.payload);
 
     const { data, error } = await supabase
@@ -220,16 +251,17 @@ export async function extractTemplatePayloadFromOperation(
 //
 // scheduled_time is NOT NULL on operation_schedule_entries, so milestones that
 // lack both a scheduled start and an offset are skipped — the template can't
-// represent them as a real schedule entry yet. They will be re-introducible
-// once the wizard adds optional-DTG support that sets schedule rows with
-// nullable times (a separate column-relax migration in PR #3).
+// represent them as a real schedule entry yet.
 
 export async function instantiateTemplateOnOperation(
     operationId: string,
     templateId: number,
     options: { scheduledStart?: string | null } = {},
+    // The op creator: a template they can't see resolves to not-found, so a
+    // classified plan can't be instantiated onto (and read back from) a new op.
+    viewer?: ClearanceUser | null,
 ): Promise<{ phases: number; tasks: number; milestones: number }> {
-    const tpl = await getOperationTemplate(templateId);
+    const tpl = await getOperationTemplate(templateId, viewer);
     if (!tpl) throw new Error('Template not found.');
     return instantiatePayloadOnOperation(operationId, tpl.payload, options);
 }

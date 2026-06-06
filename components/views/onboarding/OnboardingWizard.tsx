@@ -19,7 +19,8 @@ const STEP_LABELS: Record<Step, string> = {
 
 interface PreflightStatus {
     dbConnected: boolean; adminExists: boolean; discordConfigured: boolean;
-    realtimeEnabled: boolean; secretsEncrypted: boolean; setupCompleted: boolean; setupCodeExists: boolean;
+    realtimeEnabled: boolean; secretsEncrypted: boolean; sessionSecretStrong: boolean;
+    setupCompleted: boolean; setupCodeExists: boolean;
 }
 
 // `requiresRestart` flags checks that read environment variables. Node snapshots
@@ -29,8 +30,9 @@ interface PreflightStatus {
 const CHECKS: { key: keyof PreflightStatus; label: string; critical: boolean; requiresRestart: boolean; tip: string }[] = [
     { key: 'dbConnected', label: 'Database connection', critical: true, requiresRestart: false, tip: 'Could not reach the database. Check your network and Supabase project status, then re-check. (The server will not start at all if it cannot reach Supabase, so this normally only fails on a transient blip.)' },
     { key: 'discordConfigured', label: 'Discord sign-in', critical: true, requiresRestart: true, tip: 'Set DISCORD_CLIENT_ID in your environment, then restart the app/container and re-check — you sign in with Discord in the next step. Environment variables are only read at startup, so a re-check alone will not pick up a new value.' },
-    { key: 'secretsEncrypted', label: 'Secrets encryption at rest', critical: false, requiresRestart: true, tip: 'Set SECRETS_ENCRYPTION_KEY so admin-entered API keys are encrypted at rest, then restart the app/container and re-check (env vars are only read at startup).' },
-    { key: 'realtimeEnabled', label: 'Live realtime updates', critical: false, requiresRestart: true, tip: 'Set SUPABASE_JWT_SECRET to enable live updates, then restart the app/container and re-check (env vars are only read at startup). Otherwise the app refreshes manually.' },
+    { key: 'sessionSecretStrong', label: 'Session token signing key', critical: false, requiresRestart: true, tip: 'Set JWT_SECRET to a high-entropy random value of at least 32 characters (e.g. `openssl rand -hex 32`), then restart the app/container and re-check (env vars are only read at startup). A short/weak key makes session tokens forgeable.' },
+    { key: 'secretsEncrypted', label: 'Secrets encryption at rest', critical: false, requiresRestart: true, tip: 'Set SECRETS_ENCRYPTION_KEY to a random value of at least 32 characters (e.g. `openssl rand -hex 32`) so admin-entered API keys are encrypted at rest, then restart the app/container and re-check (env vars are only read at startup). A short/weak key weakens the encryption. (In production the server refuses to start until this is at least 32 chars.)' },
+    { key: 'realtimeEnabled', label: 'Live realtime updates', critical: false, requiresRestart: true, tip: 'Set SUPABASE_JWT_SECRET (your Supabase project JWT secret, ≥32 chars) to enable live updates, then restart the app/container and re-check (env vars are only read at startup). Otherwise the app refreshes manually.' },
 ];
 
 export default function OnboardingWizard() {
@@ -100,7 +102,7 @@ export default function OnboardingWizard() {
     );
 }
 
-// --- Step shell ------------------------------------------------------------
+// Step shell
 function Shell({ icon, title, subtitle, children }: { icon: string; title: string; subtitle?: string; children: React.ReactNode }) {
     return (
         <div>
@@ -129,7 +131,7 @@ function PrimaryBtn({ onClick, disabled, children }: { onClick: () => void; disa
     );
 }
 
-// --- 1. Welcome ------------------------------------------------------------
+// Welcome step
 function WelcomeStep({ onNext }: { onNext: () => void }) {
     return (
         <Shell icon="fa-rocket" title="Welcome to Open MyRSI.org">
@@ -151,7 +153,7 @@ function WelcomeStep({ onNext }: { onNext: () => void }) {
     );
 }
 
-// --- 2. Preflight ----------------------------------------------------------
+// Preflight step
 function PreflightStep({ onNext }: { onNext: () => void }) {
     const [status, setStatus] = useState<PreflightStatus | null>(null);
     const [loading, setLoading] = useState(true);
@@ -209,7 +211,7 @@ function PreflightStep({ onNext }: { onNext: () => void }) {
     );
 }
 
-// --- 3. Create account (Discord) ------------------------------------------
+// Create account (Discord) step
 function DiscordStep({ onSignIn }: { onSignIn: () => void }) {
     return (
         <Shell icon="fa-discord" title="Create your account" subtitle="Open MyRSI.org uses Discord to sign in. You'll be the organization's first member and Admin.">
@@ -222,7 +224,7 @@ function DiscordStep({ onSignIn }: { onSignIn: () => void }) {
     );
 }
 
-// --- 4. Admin claim code ---------------------------------------------------
+// Admin claim code step
 function ClaimStep({ redeem, pendingName }: { redeem: (code: string) => Promise<string>; pendingName?: string }) {
     const [code, setCode] = useState('');
     const [busy, setBusy] = useState(false);
@@ -252,7 +254,7 @@ function ClaimStep({ redeem, pendingName }: { redeem: (code: string) => Promise<
     );
 }
 
-// --- 5. RSI handle verification (with offline bypass) ----------------------
+// RSI handle verification step (with offline bypass)
 function genCode() { return `MYRSI-${Math.random().toString(36).substring(2, 8).toUpperCase()}`; }
 
 function RsiStep({ finalize }: { finalize: (rsiHandle: string, verificationCode?: string, skipVerification?: boolean) => Promise<void> }) {
@@ -304,7 +306,7 @@ function RsiStep({ finalize }: { finalize: (rsiHandle: string, verificationCode?
     );
 }
 
-// --- 6. Import (optional, streamed) ---------------------------------------
+// Import step (optional, streamed)
 interface ImportUserOption { id: number; label: string; sub?: string; discordId?: string }
 // Parse the export's `users` rows client-side for the "which of these is you?"
 // merge picker. The file is already in the browser, so no extra round-trip.
@@ -465,7 +467,7 @@ function ImportStep({ onContinue, selfDiscordId }: { onContinue: () => void; sel
     );
 }
 
-// --- 7. Congrats -----------------------------------------------------------
+// Congrats step
 function CongratsStep({ name }: { name?: string }) {
     const [busy, setBusy] = useState(false);
     const finish = async () => {

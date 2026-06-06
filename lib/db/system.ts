@@ -12,6 +12,7 @@ import { sanitizeImageUrl, sanitizeImageUrlOrLocalPath } from '../imageUrl.js';
 import { stripHtml as sharedStripHtml, stripHtmlSingleLine } from '../textSanitize.js';
 import { sanitizeTiptapJson, tryParseTiptapJson } from '../tiptapValidate.js';
 import { sanitizePublicLinkUrl } from '../linkUrl.js';
+import { sanitizeRichHtml } from '../htmlSanitize.js';
 import { log as baseLog } from '../log.js';
 
 const log = baseLog.child({ module: 'db.system' });
@@ -28,10 +29,6 @@ const DEFAULT_PUBLIC_PAGE_CONFIG = {
     links: [] as Array<{ id: string; label: string; url: string; icon?: string }>,
     featuredTestimonialIds: [] as string[],
 };
-
-// ... existing settings functions ...
-
-// ... existing settings functions ...
 
 // Settings are stored one row per `key` and reduced into this typed blob by
 // getAllSettings. The first ten keys are always present (seeded by `defaults`);
@@ -101,9 +98,19 @@ export async function setSetupCompleted(): Promise<{ success: true }> {
  * dbConnected + discordConfigured (you sign in with Discord next); the rest are
  * advisories with fix-it tips.
  */
+// A signing/encryption secret is only acceptable when it is present AND has
+// sufficient entropy. We use the same >=32-char floor as the production boot
+// guard (server.ts SECRETS_ENCRYPTION_KEY check) — a short/low-entropy key
+// weakens HMAC session signing (JWT_SECRET), realtime-token signing
+// (SUPABASE_JWT_SECRET), and AES key derivation (SECRETS_ENCRYPTION_KEY).
+// Raw length (no trim) to stay byte-aligned with the boot check.
+const SECRET_MIN_LENGTH = 32;
+const isStrongSecret = (v: string | undefined): boolean => typeof v === 'string' && v.length >= SECRET_MIN_LENGTH;
+
 export async function getPreflightStatus(): Promise<{
     dbConnected: boolean; adminExists: boolean; discordConfigured: boolean;
-    realtimeEnabled: boolean; secretsEncrypted: boolean; setupCompleted: boolean; setupCodeExists: boolean;
+    realtimeEnabled: boolean; secretsEncrypted: boolean; sessionSecretStrong: boolean;
+    setupCompleted: boolean; setupCodeExists: boolean;
 }> {
     let dbConnected = false, adminExists = false, setupCompleted = false, setupCodeExists = false;
     let discordClientId: string | undefined = process.env.DISCORD_CLIENT_ID || undefined;
@@ -130,8 +137,12 @@ export async function getPreflightStatus(): Promise<{
     return {
         dbConnected, adminExists,
         discordConfigured: !!discordClientId,
-        realtimeEnabled: !!process.env.SUPABASE_JWT_SECRET,
-        secretsEncrypted: !!process.env.SECRETS_ENCRYPTION_KEY,
+        // Each secret must be present AND >=32 chars (entropy floor). A present-
+        // but-short secret reports false so the wizard flags it. Booleans only —
+        // the env values themselves never cross the wire (pinned by the test).
+        realtimeEnabled: isStrongSecret(process.env.SUPABASE_JWT_SECRET),
+        secretsEncrypted: isStrongSecret(process.env.SECRETS_ENCRYPTION_KEY),
+        sessionSecretStrong: isStrongSecret(process.env.JWT_SECRET),
         setupCompleted, setupCodeExists,
     };
 }
@@ -161,8 +172,48 @@ export const updateHeroCardConfig = async (config: Record<string, unknown>) => {
     handleSupabaseError({ error, message: 'Failed to update hero card config' });
     broadcastSettingsUpdate();
 };
-export const updateBrandingConfig = async (config: Record<string, unknown>) => { const { error } = await supabase.from('settings').upsert({ key: 'brandingConfig', value: config }, { onConflict: 'key' }); handleSupabaseError({ error, message: 'Failed to update branding config' }); broadcastSettingsUpdate(); };
-export const updateOpenGraphConfig = async (config: Record<string, unknown>) => { const { error } = await supabase.from('settings').upsert({ key: 'openGraphConfig', value: config }, { onConflict: 'key' }); handleSupabaseError({ error, message: 'Failed to update OpenGraph config' }); broadcastSettingsUpdate(); };
+export const updateBrandingConfig = async (config: Record<string, unknown>) => {
+    // termsOfService is rich HTML rendered with dangerouslySetInnerHTML on the
+    // client. Sanitize on WRITE (mirrors the client's default DOMPurify) so raw
+    // markup is never stored — defense in depth over the render-time DOMPurify.
+    // Other branding fields are plain strings / URLs validated at their own edit
+    // surfaces.
+    const safeConfig = config && typeof config.termsOfService === 'string'
+        ? { ...config, termsOfService: sanitizeRichHtml(config.termsOfService) }
+        : config;
+    const { error } = await supabase.from('settings').upsert({ key: 'brandingConfig', value: safeConfig }, { onConflict: 'key' });
+    handleSupabaseError({ error, message: 'Failed to update branding config' });
+    broadcastSettingsUpdate();
+};
+// Accepts #rgb / #rrggbb / #rrggbbaa (case-insensitive). Anything else (named
+// colours, rgb()/hsl() functions, urls, expressions) is dropped on write so a
+// crafted themeColor can never reach the SSR <meta name="theme-color"> tag.
+const THEME_COLOR_RE = /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+const sanitizeThemeColor = (raw: unknown): string | undefined => {
+    if (typeof raw !== 'string') return undefined;
+    const trimmed = raw.trim();
+    return THEME_COLOR_RE.test(trimmed) ? trimmed : undefined;
+};
+
+export const updateOpenGraphConfig = async (config: Record<string, unknown>) => {
+    // Mirror the validation the 3 sibling config writers do
+    // (updateHeroCardConfig/updateBrandingConfig/updatePublicPageConfig). The OG
+    // imageUrl/faviconUrl feed SSR <meta og:image>/<link rel="icon"> tags and the
+    // themeColor feeds <meta name="theme-color">; sanitize on WRITE so a tracking
+    // host / non-image / non-colour value is never persisted. Image fields follow
+    // the silent-clear contract (invalid → '', not a throw, matching heroCard).
+    const safeConfig: Record<string, unknown> = { ...(config || {}) };
+    if ('imageUrl' in safeConfig) safeConfig.imageUrl = sanitizeImageUrl(safeConfig.imageUrl) || '';
+    if ('faviconUrl' in safeConfig) safeConfig.faviconUrl = sanitizeImageUrl(safeConfig.faviconUrl) || '';
+    if ('pwaIconUrl' in safeConfig) safeConfig.pwaIconUrl = sanitizeImageUrl(safeConfig.pwaIconUrl) || '';
+    if ('themeColor' in safeConfig) {
+        const color = sanitizeThemeColor(safeConfig.themeColor);
+        if (color) safeConfig.themeColor = color; else delete safeConfig.themeColor;
+    }
+    const { error } = await supabase.from('settings').upsert({ key: 'openGraphConfig', value: safeConfig }, { onConflict: 'key' });
+    handleSupabaseError({ error, message: 'Failed to update OpenGraph config' });
+    broadcastSettingsUpdate();
+};
 export const updateRadioConfig = async (config: Record<string, unknown>) => {
     // Fetch existing config to merge — prevents partial updates from wiping apiKey/apiSecret
     const existingQuery = supabase.from('settings').select('value').eq('key', 'radioConfig');
@@ -317,8 +368,7 @@ export const updateGovernmentsConfig = async (config: GovernmentsFeatureConfig) 
 // the 'orgFeatures' settings key; the org Admin flips them in Admin → Optional
 // Features (admin:update_features). Read back into orgMeta.features by
 // getMainState so the Sidebar/views can gate on them. (Government keeps its own
-// 'governmentsConfig' key.) These are purely local on/off switches — they were
-// never tied to hosted-SaaS plan gating.
+// 'governmentsConfig' key.)
 export const getOrgFeatures = async (): Promise<Record<string, unknown>> => {
     const { data } = await supabase.from('settings').select('value').eq('key', 'orgFeatures').maybeSingle();
     return (data?.value as Record<string, unknown>) || {};
@@ -361,8 +411,6 @@ export const updateSystemConfig = async (config: Record<string, unknown>) => {
     broadcastSettingsUpdate();
 };
 
-// ... roles/permissions ...
-
 export async function getRoleDetails(roleId: number) {
     const id = parseInt(roleId.toString());
     const { data: role, error: roleError } = await supabase.from('roles').select('*').eq('id', id).single();
@@ -400,8 +448,6 @@ export async function updateRolePermissions(roleId: number, permissionNames: str
     if (permIds.length > 0) await supabase.from('role_permissions').insert(permIds.map(pid => ({ role_id: id, permission_id: pid })));
 }
 
-// ... API Keys ...
-
 export async function createApiKey(label: string) {
     const key = `sk_${randomBytes(12).toString('base64url')}`;
     const hash = createHash('sha256').update(key).digest('hex');
@@ -425,7 +471,6 @@ export async function deleteApiKey(id: string) {
     await supabase.from('api_keys').delete().eq('id', id);
 }
 
-// ... External Feeds ...
 // Intel feeds are now rows in the unified alliance_peers table, discriminated by
 // pairing_state ('legacy' = backfilled, 'manual' = added here). A feed is a
 // one-directional intel subscription (we hold a key to pull from the peer). The
@@ -499,7 +544,6 @@ export async function updateTrustedFeed(id: string, updates: { syncReports?: boo
     }
 }
 
-// ... Clearances ...
 export async function getSecurityClearances() {
     const query = supabase.from('security_clearances').select('*').order('level', { ascending: true });
     return safeFetch<Tables<'security_clearances'>[]>(query, [], 'Failed to get clearances');
@@ -530,7 +574,6 @@ export async function deleteLimitingMarker(id: number) {
     handleSupabaseError({ error, message: 'Failed to delete marker' });
 }
 
-// ... Service Types ...
 export async function getServiceTypes(): Promise<ServiceTypeConfig[]> {
     const query = supabase.from('service_types').select('*').order('name');
     const data = await safeFetch<Parameters<typeof toServiceTypeConfig>[0][]>(query, [], 'Failed to get service types');
@@ -730,6 +773,10 @@ const GLOBAL_PERMISSIONS = [
     { name: 'warehouse:request', description: "Request Withdrawal of Bulk Stock", category: 'Warehouse' },
     { name: 'warehouse:manage', description: "Manage Stock, Transfers & Withdrawals", category: 'Warehouse' },
     { name: 'warehouse:admin', description: "Configure Commodity Catalog", category: 'Warehouse' },
+    { name: 'marketplace:view', description: "Browse the Marketplace", category: 'Marketplace' },
+    { name: 'marketplace:list', description: "Post & Manage Own Listings", category: 'Marketplace' },
+    { name: 'marketplace:contract', description: "Propose & Fulfil Contracts", category: 'Marketplace' },
+    { name: 'marketplace:admin', description: "Moderate Marketplace & Reports", category: 'Marketplace' },
 ];
 
 export async function repairDatabase() {
@@ -877,17 +924,14 @@ export async function repairDatabase() {
     return { success: true, message: "Database repair complete." };
 }
 
-// Reuses the 'user_update' realtime event (mapped to main subset in
-// DataContext) to push reference-data + per-user-record changes to other
-// clients. Postgres_changes for the units table is also mapped to main but
-// has been observed to silently miss in some sessions; the explicit
-// broadcast is the reliable path and matches the documented contract in
-// DataContext's realtime handler.
+// Reuses the 'user_update' realtime event (mapped to main subset in DataContext)
+// to push reference-data + per-user-record changes to other clients. The
+// explicit broadcast is the reliable path — postgres_changes for the units table
+// has been observed to silently miss in some sessions.
 //
 // Pass `userId` when the change targets a specific user's heavy fields
-// (certifications, commendations) so the recipient's AuthContext listener
-// can re-hydrate currentUser. Omit it for broad reference-data changes
-// (units) — the listener re-fetches conservatively for empty payloads too.
+// (certifications, commendations) so the recipient's AuthContext listener can
+// re-hydrate currentUser. Omit it for broad reference-data changes (units).
 function broadcastReferenceDataUpdate(userId?: number) {
     broadcastToOrg('user_update', userId ? { userId } : {});
 }
@@ -999,10 +1043,9 @@ export async function deleteCertification(id: number) {
 
 export async function awardCertification(userId: number, certId: number, adminId: number) {
     await supabase.from('user_certifications').insert({ user_id: userId, certification_id: certId, awarded_by: adminId });
-    // user_certifications isn't in the postgres_changes map, so the bulk path
-    // (line 937) is the only one that broadcasts. Mirror it here so single-
-    // user awards push to other clients too. Pass userId so the recipient
-    // re-hydrates their heavy nested arrays (lite roster query omits certs).
+    // user_certifications isn't in the postgres_changes map, so broadcast
+    // explicitly. Pass userId so the recipient re-hydrates their heavy nested
+    // arrays (the lite roster query omits certs).
     broadcastReferenceDataUpdate(userId);
 }
 export async function revokeCertification(userId: number, certId: number) {
@@ -1011,11 +1054,10 @@ export async function revokeCertification(userId: number, certId: number) {
 }
 
 /**
- * Award a single certification to N users. Validates the cert belongs to
- * the org once at the top, then per-user BOLA-checks the target via the
- * users table before insert. Allows duplicate grants (matches single-user
- * `awardCertification` semantics — schema has no UNIQUE). Capped at 100
- * targets per call; client chunks at 25.
+ * Award a single certification to N users. Validates the cert exists once at the
+ * top, then verifies each target user exists before insert. Allows duplicate
+ * grants (matches single-user `awardCertification` — schema has no UNIQUE).
+ * Capped at 100 targets per call; client chunks at 25.
  */
 export async function bulkAwardCertification(
     targetUserIds: number[],
@@ -1038,8 +1080,8 @@ export async function bulkAwardCertification(
 
     let updated = 0;
     let skipped = 0;
-    // Successfully-awarded ids only — shipped on the bulk broadcast so clients
-    // can slice-refetch just these roster rows (users_slice).
+    // Successfully-awarded ids only — shipped on the bulk broadcast so clients can
+    // slice-refetch just these roster rows (users_slice).
     const updatedIds: number[] = [];
     for (const userId of targetUserIds) {
         try {
@@ -1085,8 +1127,8 @@ export async function revokeCommendation(id: number) {
 
 /**
  * Award a single commendation to N users with an optional shared reason.
- * Validates commendation belongs to the org once; per-user BOLA on the
- * target. Allows duplicates.
+ * Validates the commendation exists once; verifies each target exists. Allows
+ * duplicates.
  */
 export async function bulkAwardCommendation(
     targetUserIds: number[],
@@ -1138,15 +1180,14 @@ export async function bulkAwardCommendation(
 // ---------------------------------------------------------------------------
 // Achievement Catalog Import — preview + bulk upsert
 //
-// Used by the admin "Import" flow on each MemberAchievementsTab sub-tab. The
-// envelope is per-type ({ schemaVersion, type, items: [...] }); items are
-// matched by (organization_id, name). Existing names → update editable fields;
-// missing names → insert. Never deletes anything the file omits.
+// Used by the admin "Import" flow on each MemberAchievementsTab sub-tab. Items
+// are matched by name: existing names update editable fields, missing names
+// insert; nothing the file omits is deleted.
 //
-// Bulk upserts are chunked client-side via offset/limit so a 5000-row import
-// (catalog use today, bulk-award use later) doesn't tie up a single RPC call
-// and the UI can show progress. Per-row try/catch keeps a single bad row from
-// aborting the rest. Server clamps `limit` to MAX_IMPORT_BATCH_SIZE upstream.
+// Bulk upserts are chunked client-side via offset/limit so a large import
+// doesn't tie up a single RPC call and the UI can show progress. Per-row
+// try/catch keeps a single bad row from aborting the rest. Server clamps `limit`
+// to MAX_IMPORT_BATCH_SIZE upstream.
 // ---------------------------------------------------------------------------
 
 export const MAX_IMPORT_BATCH_SIZE = 100;
@@ -1483,9 +1524,9 @@ export async function deleteUnitPost(postId: string, opts?: { actorUserId?: numb
     if (!post) return; // already gone
     let q = supabase.from('unit_posts').delete()
         .eq('id', postId).eq('unit_id', post.unit_id);
-    // SECURITY (permission-map-correctness#5): unit:delete_post is gated only at
-    // the read-level user:view:roster perm. A member may delete only their OWN
-    // post; unit leaders/managers (allowAny) may delete any post in the unit.
+    // unit:delete_post is gated only at the read-level user:view:roster perm. A
+    // member may delete only their OWN post; unit leaders/managers (allowAny) may
+    // delete any post in the unit.
     if (!opts?.allowAny && opts?.actorUserId !== undefined) {
         q = q.eq('author_id', opts.actorUserId);
     }
@@ -1494,7 +1535,6 @@ export async function deleteUnitPost(postId: string, opts?: { actorUserId?: numb
 }
 
 // --- TOOLS & LOCATIONS ---
-// ... existing tools/location/comms functions ...
 // External tools: category and sort_order columns ship via
 // migrations/add-external-tools-order-category.sql. We try writing them on
 // create/update and fall back without those fields if the column doesn't
@@ -1583,12 +1623,10 @@ export async function broadcastEAM(message: string) {
     // fetch reads it back)
     await supabase.from('settings').upsert({ key: 'active_eam', value: eamData });
 
-    // SECURITY: the realtime emit is a TRIGGER ONLY ({timestamp}, no message
-    // body). The EAM text previously rode the broadcast in cleartext —
-    // including a second db-changes copy that had zero client handlers (pure
-    // leak). Authorized clients pull the body via the permission-gated
-    // broadcast:get_active_eam RPC on receipt; push (encrypted, per-user)
-    // still carries the body for notification UX.
+    // The realtime emit is a TRIGGER ONLY ({timestamp}, no message body).
+    // Authorized clients pull the body via the permission-gated
+    // broadcast:get_active_eam RPC on receipt; push (encrypted, per-user) still
+    // carries the body for notification UX.
     await Promise.all([
         broadcastToChannel(
             'auth-alerts',
@@ -1680,11 +1718,9 @@ export async function deleteRadioChannel(id: string) {
 
 export async function verifyApiKey(key: string) {
     // All keys (manual + alliance) are stored as SHA-256 hashes and verified by
-    // hash only. SECURITY (L1): the previous "legacy fallback" compared the
-    // key_hash column against the RAW presented key — meaning any key ever stored
-    // unhashed would authenticate on its plaintext. That fallback is removed; keys
-    // that predate hashing must be re-issued. Revocation is by row deletion
-    // (api:delete_key), so a revoked key no longer matches.
+    // hash only — there is no plaintext fallback, so keys that predate hashing
+    // must be re-issued. Revocation is by row deletion (api:delete_key), so a
+    // revoked key no longer matches.
     if (typeof key !== 'string' || !key) return null;
     const hash = createHash('sha256').update(key).digest('hex');
     const { data } = await supabase.from('api_keys').select('id').eq('key_hash', hash).maybeSingle();
@@ -1743,8 +1779,21 @@ export async function collectShareableIntel(opts: ShareableIntelOpts) {
     const restrictedMarkerIds = new Set(markerRows.filter((m) => m.sync_restricted).map((m) => m.id));
 
     // 2. Query reports, warrants, and active bulletins
-    let reportsQuery = supabase.from('intel_reports').select('id, target_id, subject_type, threat_level, tags, summary, created_at, affiliated_org, classification_level');
-    let warrantsQuery = supabase.from('warrants').select('id, target_rsi_handle, reason, action, uec_reward, status, created_at');
+    // Federation loop guard: items WE ingested from an ally carry a non-null
+    // source_feed_id. Re-sharing them to OTHER allies would relay one ally's intel
+    // to peers it never consented to — so exclude them, mirroring the bulletin
+    // loop guard below (source_bulletin_id / source_organization_id).
+    let reportsQuery = supabase.from('intel_reports').select('id, target_id, subject_type, threat_level, tags, summary, created_at, affiliated_org, classification_level')
+        .is('source_feed_id', null);
+    // Only Active/Standing warrants are shared (a Claimed/Cancelled warrant is no
+    // longer an actionable bounty and must not leave the org), and never one we
+    // ingested from an ally (source_feed_id loop guard). Warrants carry no
+    // classification column today, so the clearance ceiling is applied
+    // conservatively at level 0 in step 4 below.
+    const SHAREABLE_WARRANT_STATUSES = ['Active', 'Standing'];
+    let warrantsQuery = supabase.from('warrants').select('id, target_rsi_handle, reason, action, uec_reward, status, created_at')
+        .is('source_feed_id', null)
+        .in('status', SHAREABLE_WARRANT_STATUSES);
     let bulletinsQuery = supabase.from('intel_bulletins').select('id, title, body, threat_level, location, expires_at, classification_level, created_at')
         .gt('expires_at', new Date().toISOString())
         .is('source_bulletin_id', null)
@@ -1818,14 +1867,21 @@ export async function collectShareableIntel(opts: ShareableIntelOpts) {
         .filter((b) => intelItemPasses(b.classification_level, excludedBulletinIds.has(b.id), maxShareableLevel))
         .map((b) => ({ ...b, limiting_markers: bulletinMarkersMap.get(b.id) || [] }));
 
+    // Warrants carry no per-item classification column, so they are treated as
+    // level 0 and pass the same intelItemPasses ceiling the reports/bulletins do.
+    // This keeps the warrant leg consistent with the other channels (it can no
+    // longer be a raw unfiltered passthrough) and honours a sub-zero ceiling.
+    const shareableWarrants = (warrantsResult.data || [])
+        .filter((w) => intelItemPasses(0, false, maxShareableLevel));
+
     return {
         reports: wantReports ? enrichedReports : [],
-        warrants: wantWarrants ? (warrantsResult.data || []) : [],
+        warrants: wantWarrants ? shareableWarrants : [],
         bulletins: wantBulletins ? enrichedBulletins : [],
-        // SECURITY (L6/federation#4): do NOT disclose how many classified/restricted
-        // items were withheld — the before-filter totals + per-reason excluded
-        // counts told a peer/API-key holder exactly how much intel exists above
-        // their share ceiling. Expose only the ceiling itself.
+        // Do NOT disclose how many classified/restricted items were withheld — the
+        // before-filter totals + per-reason excluded counts told a peer/API-key
+        // holder exactly how much intel exists above their share ceiling. Expose
+        // only the ceiling itself.
         _meta: {
             maxShareableLevel,
             fetchedAt,
@@ -1834,10 +1890,9 @@ export async function collectShareableIntel(opts: ShareableIntelOpts) {
 }
 
 // Legacy org-wide feed projection (/api/intel/feed, /api/query?target=feed).
-// Org clearance ceiling + all channels. SECURITY (H7): bulletins now honour the
-// per-item "Share with Allies" opt-in — previously the legacy feed served EVERY
-// active bulletin regardless of the flag, leaking intended-internal bulletins to
-// any API-key holder. Matches the per-peer alliance channel.
+// Org clearance ceiling + all channels. Bulletins honour the per-item "Share
+// with Allies" opt-in so intended-internal bulletins don't leak to any API-key
+// holder. Matches the per-peer alliance channel.
 export async function getPublicFeedData(since?: string) {
     const maxClearance = await getMaxShareableClearance();
     return collectShareableIntel({
@@ -1848,13 +1903,11 @@ export async function getPublicFeedData(since?: string) {
     });
 }
 
-// NOTE: searchGlobal / the 'system:global_search' action were removed — they
-// called a Postgres RPC (global_search) absent from schema.sql, had no client
-// caller (the search UI uses intel:search), and the action was gated only by the
-// near-public 'user:manage:self' pseudo-permission (latent ungated cross-table
-// read). Removed for schema↔app consistency + to close the latent hole.
+// searchGlobal / the 'system:global_search' action were removed — they called a
+// Postgres RPC (global_search) absent from schema.sql, had no client caller (the
+// search UI uses intel:search), and were gated only by the near-public
+// 'user:manage:self' pseudo-permission (a latent ungated cross-table read).
 
-// ... Database Maintenance ...
 export async function runDatabaseHealthCheck() {
     const results: Array<{ check: string; status: string; count: number | null; action?: string }> = [];
     const { count: requests } = await supabase.from('service_requests')

@@ -4,6 +4,40 @@ import { log as baseLog } from './log.js';
 
 const log = baseLog.child({ module: 'lib.push' });
 
+// A push `endpoint` is a fully client-supplied URL that the service-role server
+// later POSTs to (VAPID-signed) from inside the trust boundary. Without a scheme
+// + host allow-list it is a stored blind-SSRF primitive — a member could register
+// `https://10.0.0.5/internal` and have the server fire requests at internal hosts.
+// Real Web-Push services live on a small set of vendor domains; require https and
+// one of those host suffixes. Suffixes are matched on a dot boundary
+// (".mozilla.com" never matches "evilmozilla.com") or as the exact apex.
+const ALLOWED_PUSH_HOST_SUFFIXES = [
+    'googleapis.com',                 // FCM: fcm.googleapis.com, android.googleapis.com
+    'push.services.mozilla.com',      // Firefox: *.push.services.mozilla.com
+    'push.apple.com',                 // Safari/WebKit: web.push.apple.com, *.push.apple.com
+    'notify.windows.com',             // WNS: *.notify.windows.com (incl. wns*-*.notify.windows.com edge nodes)
+    'push.windows.com',               // WNS (legacy MPNS): *.push.windows.com
+];
+
+/** Max push subscriptions retained per user — a fan-out/amplification bound. */
+export const MAX_PUSH_SUBSCRIPTIONS_PER_USER = 20;
+
+/** True if `endpoint` is an https URL on a known Web-Push vendor host. */
+export function isAllowedPushEndpoint(endpoint: unknown): boolean {
+    if (typeof endpoint !== 'string' || !endpoint) return false;
+    let u: URL;
+    try {
+        u = new URL(endpoint);
+    } catch {
+        return false;
+    }
+    if (u.protocol !== 'https:') return false;
+    const host = u.hostname.toLowerCase();
+    return ALLOWED_PUSH_HOST_SUFFIXES.some(
+        (suffix) => host === suffix || host.endsWith(`.${suffix}`),
+    );
+}
+
 // Lazy load web-push to avoid "url.parse" deprecation warnings in API routes that don't need it
 let webpush: any = null;
 
@@ -72,6 +106,19 @@ async function sendBatch(
     const promises = subscriptions.map(sub => {
         try {
             const pushSub = typeof sub.subscription === 'string' ? JSON.parse(sub.subscription) : sub.subscription;
+
+            // Defense-in-depth: never POST to an endpoint that isn't a known
+            // Web-Push vendor host, even if it slipped past the write boundary
+            // (older row / direct DB edit). Drop the offending subscription so
+            // it can't be re-attempted. The supabase builder is a lazy thenable —
+            // it must be returned/awaited (not `void`-discarded) or the delete
+            // never executes.
+            if (!isAllowedPushEndpoint(pushSub?.endpoint ?? sub.endpoint)) {
+                log.warn('skipping push subscription with disallowed endpoint host', { subscriptionId: sub.id });
+                return sub.id
+                    ? supabase.from('push_subscriptions').delete().eq('id', sub.id).then(() => undefined, () => undefined)
+                    : Promise.resolve();
+            }
 
             let payloadString: string;
             if (isBuilder) {

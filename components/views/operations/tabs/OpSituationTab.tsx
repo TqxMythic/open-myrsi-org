@@ -90,7 +90,6 @@ const OpSituationTab: React.FC<OpSituationTabProps> = ({ operation, canManage, i
 
     return (
         <div className="p-6 lg:p-8 space-y-8">
-            {/* ── ACTION BAR (top) ── */}
             {operation.status !== OperationStatus.Concluded && (
                 <div className="flex flex-wrap items-center gap-3 p-4 bg-linear-to-r from-slate-800/60 to-slate-900/40 rounded-xl border border-slate-700/40 animate-fade-in-down">
                     {isParticipant ? (
@@ -168,7 +167,6 @@ const OpSituationTab: React.FC<OpSituationTabProps> = ({ operation, canManage, i
                 </div>
             )}
 
-            {/* ── TWO-COLUMN LAYOUT ── */}
             <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
                 {/* Left: Op Info */}
                 <div className="xl:col-span-2 space-y-6">

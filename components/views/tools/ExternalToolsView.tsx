@@ -55,7 +55,6 @@ const ExternalToolsView: React.FC = () => {
                 actions={<HeroStat icon="fa-link" label="Available" value={visibleTools.length} accent="cyan" emphasize={visibleTools.length > 0} />}
             />
 
-            {/* Body */}
             <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-8">
                 {visibleTools.length > 0 ? (
                     grouped.map(group => (

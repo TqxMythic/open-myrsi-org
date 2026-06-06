@@ -34,12 +34,10 @@ const ManageParticipantModal: React.FC<ManageParticipantModalProps> = ({ isOpen,
     const [status, setStatus] = useState(participant.attendanceStatus || 'Registered');
     const [isLoading, setIsLoading] = useState(false);
 
-    // Load fleet data if not already loaded
     useEffect(() => {
         if (userShips.length === 0) refreshFleet();
     }, [userShips.length, refreshFleet]);
 
-    // Get ships for this specific participant
     const participantShips = alliedShips
         ? alliedShips.filter(s => s.userId === participant.userId)
         : userShips.filter(s => s.userId === participant.userId);

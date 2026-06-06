@@ -25,10 +25,10 @@ export const systemActions = {
     'system:get_push_config': async () => ({ publicKey: process.env.VAPID_PUBLIC_KEY }),
     'system:get_clearances': () => db.getSecurityClearances(),
     'system:get_markers': () => db.getLimitingMarkers(),
-    // SECURITY: 'system:global_search' removed — it called a
-    // non-existent Postgres RPC (global_search), had no client caller (the search
-    // UI uses intel:search), and was gated only by 'user:manage:self'. A dead
-    // action behind a near-public gate is a latent hole if the RPC is ever added.
+    // 'system:global_search' removed — it called a non-existent Postgres RPC
+    // (global_search), had no client caller (the search UI uses intel:search),
+    // and was gated only by 'user:manage:self'. A dead action behind a
+    // near-public gate is a latent hole if the RPC is ever added.
 
     // Tenant-readable platform location search — backs the location autocomplete
     // on the service request modals. Returns reference data (UEX-sourced), so

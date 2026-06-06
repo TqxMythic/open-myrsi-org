@@ -8,12 +8,8 @@
 //   - IDLE: increments idleTime by 1 every minute; reset to 0 on any of
 //     mousemove/keydown/click/touchstart.
 //
-// Carved out of AuthContext in Phase 2 because its lifecycle (mount-time
-// interval + window listeners) is independent of OAuth/permissions. The
-// heartbeat needs Session's `logout` for the force-logout path, so this
-// provider must mount INSIDE SessionProvider. Force-logout used to be
-// duplicated at two sites (heartbeat path + refreshUser path on init); the
-// helper now lives in SessionContext so both sites share it.
+// Must mount INSIDE SessionProvider: the heartbeat needs Session's `logout`
+// for the force-logout path.
 
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import apiService from '../services/apiService';
@@ -50,10 +46,8 @@ export const ActivityProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             if (timeSinceLastHeartbeat > 4.5 * 60 * 1000 && timeSinceLastInteraction < 5 * 60 * 1000) {
                 lastHeartbeat.current = now;
                 apiService.rpc('user:heartbeat', { userId: currentUser.id }).then((result: any) => {
-                    // Force-logout enforcement. The check is duplicated in
-                    // SessionContext.refreshUser for the page-load path; both
-                    // sites compare against `sessionStartTime.current` (Session
-                    // owns the ref so the two compare the same baseline).
+                    // Force-logout enforcement, compared against the session's
+                    // start baseline. Mirrors SessionContext.refreshUser's page-load path.
                     if (result?.force_logout_timestamp && result.force_logout_timestamp > sessionStartTime.current) {
                         console.warn('[Auth] Force logout triggered by platform admin');
                         logout();
@@ -62,7 +56,7 @@ export const ActivityProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                     console.warn("Heartbeat failed", err);
                 });
             }
-        }, 60 * 1000); // Check every minute
+        }, 60 * 1000);
 
         return () => clearInterval(heartbeatInterval);
     }, [currentUser, sessionStartTime, logout]);

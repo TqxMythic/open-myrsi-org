@@ -44,11 +44,8 @@ const FirstTimeSetupView: React.FC<FirstTimeSetupViewProps> = ({ onFinalizeAdmin
 
     return (
         <div className="relative flex flex-col min-h-dvh bg-slate-950 text-slate-200 font-sans overflow-hidden animate-fade-in">
-            {/* Decorative blur blob */}
             <div className="absolute -top-32 left-1/2 -translate-x-1/2 w-[700px] h-[500px] bg-sky-500/10 rounded-full blur-[140px] pointer-events-none" aria-hidden />
-            {/* Grid overlay */}
             <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-size-[40px_40px] pointer-events-none" aria-hidden />
-            {/* Scan line */}
             <div className="absolute inset-0 overflow-hidden pointer-events-none" aria-hidden>
                 <div className="absolute left-0 right-0 h-[2px] bg-linear-to-r from-transparent via-amber-400/50 to-transparent" style={{ animation: 'setupScan 7s linear infinite' }} />
             </div>
@@ -59,7 +56,6 @@ const FirstTimeSetupView: React.FC<FirstTimeSetupViewProps> = ({ onFinalizeAdmin
 
             <div className="relative z-10 flex-1 flex items-center justify-center px-5 sm:px-8 py-6">
                 <div className="w-full max-w-md flex flex-col items-center text-center">
-                    {/* Logo */}
                     <div className="relative mb-6">
                         <div className="absolute inset-0 bg-amber-500 blur-3xl opacity-25 rounded-full" style={{ animation: 'setupGlow 3s ease-in-out infinite' }} aria-hidden />
                         <div className="relative z-10 w-20 h-20 rounded-2xl bg-slate-900/60 border border-white/10 backdrop-blur-md flex items-center justify-center shadow-[0_0_40px_rgba(245,158,11,0.25)]">

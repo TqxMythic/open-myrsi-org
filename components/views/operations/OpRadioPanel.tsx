@@ -50,7 +50,6 @@ const OpRadioPanel: React.FC<OpRadioPanelProps> = ({ radio, compact }) => {
 
     return (
         <div className={`bg-slate-950/70 backdrop-blur-md border border-amber-500/20 rounded-xl shadow-[0_8px_24px_rgba(0,0,0,0.4)] ${compact ? 'p-2.5 space-y-2.5' : 'p-3.5 space-y-3'}`}>
-            {/* Header */}
             <div className="flex items-center justify-between border-b border-amber-500/10 pb-2">
                 <div className="flex items-center gap-2">
                     <span className="inline-flex items-center justify-center w-6 h-6 rounded-sm bg-amber-500/15 border border-amber-500/30">
@@ -85,7 +84,6 @@ const OpRadioPanel: React.FC<OpRadioPanelProps> = ({ radio, compact }) => {
                 <div className="text-[11px] text-red-300 bg-red-500/10 border border-red-500/30 rounded-sm px-2 py-1">{error}</div>
             )}
 
-            {/* Participants */}
             {isConnected && participants.length > 0 && !compact && (
                 <div className="flex flex-wrap gap-1">
                     {participants.map((name, i) => (
@@ -104,7 +102,6 @@ const OpRadioPanel: React.FC<OpRadioPanelProps> = ({ radio, compact }) => {
                 </div>
             )}
 
-            {/* Controls */}
             <div className="flex items-center gap-2">
                 <button
                     onClick={toggleMute}
@@ -128,7 +125,6 @@ const OpRadioPanel: React.FC<OpRadioPanelProps> = ({ radio, compact }) => {
                 <span className="text-[10px] font-mono text-slate-400 w-9 text-right tabular-nums">{volume}%</span>
             </div>
 
-            {/* PTT Button */}
             <button
                 ref={pttRef}
                 onMouseDown={() => handlePTT(true)}
@@ -147,7 +143,6 @@ const OpRadioPanel: React.FC<OpRadioPanelProps> = ({ radio, compact }) => {
                 {isTransmitting ? 'Transmitting' : 'Push to Talk'}
             </button>
 
-            {/* TX Level Meter */}
             <TXLevelMeter
                 level={localAudioLevel}
                 active={isTransmitting}
@@ -155,7 +150,6 @@ const OpRadioPanel: React.FC<OpRadioPanelProps> = ({ radio, compact }) => {
                 segments={12}
             />
 
-            {/* Reconnect */}
             {!isConnected && !isConnecting && (
                 <button
                     onClick={connect}

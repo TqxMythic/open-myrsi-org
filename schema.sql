@@ -3,9 +3,11 @@
 -- =============================================================================
 -- This is the complete, runnable schema for a self-hosted single-org install
 -- of myRSI. One deployment = one organization: there is deliberately no
--- organization_id column and no multi-tenant / billing surface (organizations,
--- marketplace, diplomacy, Stripe / pricing, platform control tables are all
--- absent by design).
+-- organization_id column and no multi-tenant / billing surface (the
+-- organizations, diplomacy, Stripe / pricing, and platform control tables are
+-- all absent by design). The marketplace IS present, but as a single-org
+-- INTERNAL marketplace only — the SaaS's cross-org / platform listing sharing
+-- and visibility tiers are gone.
 --
 -- It creates everything a fresh database needs, in dependency order: enums,
 -- tables, the warehouse-quantity + unified position-history views, stored
@@ -25,6 +27,45 @@
 --
 --   TIP: apply to a throwaway database first to confirm a clean run for your
 --   Postgres / Supabase version before pointing production at it.
+--
+-- UPDATING AN EXISTING DEPLOYMENT (no migrations folder by design):
+--   This file is RE-RUNNABLE. To pick up schema changes from a newer release,
+--   pull the code, then RE-RUN THIS FILE in the Supabase SQL Editor — it adds
+--   new tables / columns / indexes / functions / policies / permissions WITHOUT
+--   touching existing data (every statement is guarded: CREATE ... IF NOT EXISTS,
+--   DO-block duplicate guards, CREATE OR REPLACE, ON CONFLICT). Then open
+--   Admin → Database Tools → Repair Database to converge role grants + seed data.
+--   The applied version is recorded in settings.schema_version (last section).
+--
+-- ===== AMENDMENT RULES — keep this file re-runnable (read before editing) =====
+--   * New table        → CREATE TABLE IF NOT EXISTS.
+--   * NEW COLUMN on an existing table → a SEPARATE `ALTER TABLE x ADD COLUMN
+--     IF NOT EXISTS col ... ` that is NULLABLE or has a DEFAULT. Editing the
+--     CREATE TABLE body alone does NOTHING on an existing DB (the table already
+--     exists) — this is the #1 footgun.
+--   * New enum TYPE    → wrap in `DO $$ BEGIN CREATE TYPE ...; EXCEPTION WHEN
+--     duplicate_object THEN NULL; END $$;`.
+--   * New enum VALUE   → a BARE `ALTER TYPE x ADD VALUE IF NOT EXISTS 'v';`
+--     (NOT inside a DO/transaction block — Postgres forbids it there).
+--   * New FK/constraint → guarded DO-block (EXCEPTION WHEN duplicate_object).
+--   * New index        → CREATE INDEX IF NOT EXISTS.
+--   * New function/view → CREATE OR REPLACE (a view COLUMN-LIST change needs
+--     DROP VIEW ... CASCADE + recreate + re-GRANT; plain CREATE OR REPLACE
+--     cannot change a view's columns).
+--   * New trigger/policy → DROP ... IF EXISTS first, then CREATE.
+--   * New realtime table → add it to the §6a `CREATE PUBLICATION ... FOR TABLE`
+--     list (the DROP+CREATE re-establishes current membership on re-run).
+--   * New permission   → add to §7 (ON CONFLICT DO NOTHING) AND to
+--     GLOBAL_PERMISSIONS (lib/db/system.ts) — tests/permissionSeedParity enforces it.
+--   * New seed reference data → add to lib/db/seeder.ts with an upsert so Repair
+--     Database converges it on existing installs.
+--   * Breaking change (type change / rename / drop / NOT-NULL tighten / new CHECK
+--     existing data violates) → a SELF-SKIPPING guarded DO-block that checks
+--     information_schema / pg_constraint first (so re-run is a no-op), or a
+--     clearly-fenced one-time block called out in that release's notes.
+--   * BUMP settings.schema_version (last section) on every schema change, and
+--     re-run this whole file TWICE on a data-seeded copy → zero errors, zero loss.
+-- =============================================================================
 
 
 
@@ -41,84 +82,48 @@ CREATE SCHEMA IF NOT EXISTS private;
 -- SECTION 2 — Enums (alliance_status + alliance_type rebuilt for alliance_peers)
 -- =============================================================================
 
-CREATE TYPE public.announcement_type AS ENUM (
-    'Information', 'Warning', 'Danger'
-);
+-- Each enum is wrapped in a duplicate-safe DO block so re-running schema.sql on
+-- an existing DB is a no-op rather than a "type already exists" abort. To ADD a
+-- new VALUE to an existing enum later, use a BARE (not in a DO/txn block)
+-- statement: ALTER TYPE public.x ADD VALUE IF NOT EXISTS 'New';  (see §0 rules).
+DO $$ BEGIN CREATE TYPE public.announcement_type AS ENUM ('Information', 'Warning', 'Danger'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE public.application_status AS ENUM (
-    'Applied', 'Screening', 'Interviewing', 'On Hold', 'Offered',
-    'Rejected', 'Accepted', 'Hired', 'Withdrawn'
-);
+DO $$ BEGIN CREATE TYPE public.application_status AS ENUM ('Applied', 'Screening', 'Interviewing', 'On Hold', 'Offered', 'Rejected', 'Accepted', 'Hired', 'Withdrawn'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE public.conduct_record_type AS ENUM (
-    'Commendation', 'Observation', 'Counseling', 'Warning', 'Infraction'
-);
+DO $$ BEGIN CREATE TYPE public.conduct_record_type AS ENUM ('Commendation', 'Observation', 'Counseling', 'Warning', 'Infraction'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE public.fleet_group_type AS ENUM (
-    'Division', 'Squadron', 'Wing', 'Taskforce', 'Custom'
-);
+DO $$ BEGIN CREATE TYPE public.fleet_group_type AS ENUM ('Division', 'Squadron', 'Wing', 'Taskforce', 'Custom'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE public.intel_subject_type AS ENUM (
-    'Person', 'Organization'
-);
+DO $$ BEGIN CREATE TYPE public.intel_subject_type AS ENUM ('Person', 'Organization'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- Alliance federation (cross-instance diplomacy). See alliance_peers below.
-CREATE TYPE public.alliance_status AS ENUM (
-    'Pending', 'Active', 'Dissolved'
-);
+DO $$ BEGIN CREATE TYPE public.alliance_status AS ENUM ('Pending', 'Active', 'Dissolved'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE public.alliance_type AS ENUM (
-    'Alliance', 'Rivalry', 'Neutral'
-);
+DO $$ BEGIN CREATE TYPE public.alliance_type AS ENUM ('Alliance', 'Rivalry', 'Neutral'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE public.intel_threat_level AS ENUM (
-    'None', 'Low', 'Medium', 'High', 'Critical'
-);
+DO $$ BEGIN CREATE TYPE public.intel_threat_level AS ENUM ('None', 'Low', 'Medium', 'High', 'Critical'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE public.job_posting_status AS ENUM (
-    'Draft', 'Open', 'Closed', 'Filled'
-);
+DO $$ BEGIN CREATE TYPE public.job_posting_status AS ENUM ('Draft', 'Open', 'Closed', 'Filled'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE public.location_type AS ENUM (
-    'System', 'Planet', 'Moon', 'Station', 'Facility'
-);
+DO $$ BEGIN CREATE TYPE public.location_type AS ENUM ('System', 'Planet', 'Moon', 'Station', 'Facility'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE public.operation_status AS ENUM (
-    'Planning', 'Scheduled', 'Active', 'Concluded'
-);
+DO $$ BEGIN CREATE TYPE public.operation_status AS ENUM ('Planning', 'Scheduled', 'Active', 'Concluded'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE public.operation_type AS ENUM (
-    'PvP', 'PvE', 'Non-Combat', 'Training', 'Social', 'Mixed'
-);
+DO $$ BEGIN CREATE TYPE public.operation_type AS ENUM ('PvP', 'PvE', 'Non-Combat', 'Training', 'Social', 'Mixed'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE public.service_request_status AS ENUM (
-    'Submitted', 'Triaged', 'Accepted', 'In-Progress', 'Success',
-    'Failed', 'Cancelled', 'Refused', 'Aborted', 'GameError'
-);
+DO $$ BEGIN CREATE TYPE public.service_request_status AS ENUM ('Submitted', 'Triaged', 'Accepted', 'In-Progress', 'Success', 'Failed', 'Cancelled', 'Refused', 'Aborted', 'GameError'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE public.ship_status AS ENUM (
-    'Active', 'Stored', 'Damaged', 'Lent', 'Sold'
-);
+DO $$ BEGIN CREATE TYPE public.ship_status AS ENUM ('Active', 'Stored', 'Damaged', 'Lent', 'Sold'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE public.threat_level AS ENUM (
-    'None', 'Low', 'Medium', 'High', 'Critical', 'PVP'
-);
+DO $$ BEGIN CREATE TYPE public.threat_level AS ENUM ('None', 'Low', 'Medium', 'High', 'Critical', 'PVP'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE public.transfer_request_status AS ENUM (
-    'Pending', 'Approved', 'Denied', 'Cancelled'
-);
+DO $$ BEGIN CREATE TYPE public.transfer_request_status AS ENUM ('Pending', 'Approved', 'Denied', 'Cancelled'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE public.urgency_level AS ENUM (
-    'Low', 'Medium', 'High', 'Critical'
-);
+DO $$ BEGIN CREATE TYPE public.urgency_level AS ENUM ('Low', 'Medium', 'High', 'Critical'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE public.warrant_action AS ENUM (
-    'Caution', 'High Caution', 'Extreme Caution'
-);
+DO $$ BEGIN CREATE TYPE public.warrant_action AS ENUM ('Caution', 'High Caution', 'Extreme Caution'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TYPE public.warrant_status AS ENUM (
-    'Active', 'Claimed', 'Cancelled', 'Standing'
-);
+DO $$ BEGIN CREATE TYPE public.warrant_status AS ENUM ('Active', 'Claimed', 'Cancelled', 'Standing'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 
 -- =============================================================================
@@ -130,7 +135,7 @@ CREATE TYPE public.warrant_status AS ENUM (
 
 -- ----- 3.0 Global reference / infra tables (no org, no user dependency) ------
 
-CREATE TABLE public.cron_locks (
+CREATE TABLE IF NOT EXISTS public.cron_locks (
     job_name     text PRIMARY KEY,
     locked_until timestamptz NOT NULL DEFAULT now(),
     locked_at    timestamptz NOT NULL DEFAULT now(),
@@ -138,14 +143,14 @@ CREATE TABLE public.cron_locks (
     updated_at   timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.permissions (
+CREATE TABLE IF NOT EXISTS public.permissions (
     id          integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     name        text NOT NULL UNIQUE,
     description text,
     category    text NOT NULL
 );
 
-CREATE TABLE public.platform_ships (
+CREATE TABLE IF NOT EXISTS public.platform_ships (
     id                integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     external_uuid     text UNIQUE,
     name              text NOT NULL,
@@ -176,7 +181,7 @@ CREATE TABLE public.platform_ships (
     external_api_id   integer UNIQUE
 );
 
-CREATE TABLE public.platform_locations (
+CREATE TABLE IF NOT EXISTS public.platform_locations (
     id                  bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     kind                text NOT NULL CHECK (kind IN (
         'star_system', 'orbit', 'planet', 'moon',
@@ -209,7 +214,7 @@ CREATE TABLE public.platform_locations (
     CONSTRAINT uq_platform_locations_kind_external UNIQUE (kind, external_id)
 );
 
-CREATE TABLE public.quartermaster_platform_categories (
+CREATE TABLE IF NOT EXISTS public.quartermaster_platform_categories (
     id                bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     uex_category_id   integer NOT NULL UNIQUE,
     uex_category_name text NOT NULL,
@@ -221,7 +226,7 @@ CREATE TABLE public.quartermaster_platform_categories (
     updated_at        timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.warehouse_platform_categories (
+CREATE TABLE IF NOT EXISTS public.warehouse_platform_categories (
     id           bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     slug         text NOT NULL UNIQUE,
     uex_kind     text NOT NULL,
@@ -232,7 +237,7 @@ CREATE TABLE public.warehouse_platform_categories (
     updated_at   timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.warehouse_platform_commodities (
+CREATE TABLE IF NOT EXISTS public.warehouse_platform_commodities (
     id                   bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     external_id          integer NOT NULL UNIQUE,
     external_uuid        text,
@@ -275,7 +280,7 @@ CREATE TABLE public.warehouse_platform_commodities (
 
 -- ----- 3.1 Org config tables (org column dropped; name/level/key uniques) -----
 
-CREATE TABLE public.roles (
+CREATE TABLE IF NOT EXISTS public.roles (
     id          integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     name        text NOT NULL,
     description text,
@@ -283,13 +288,13 @@ CREATE TABLE public.roles (
     CONSTRAINT roles_name_key UNIQUE (name)
 );
 
-CREATE TABLE public.role_permissions (
+CREATE TABLE IF NOT EXISTS public.role_permissions (
     role_id       integer NOT NULL REFERENCES public.roles(id) ON DELETE CASCADE,
     permission_id integer NOT NULL REFERENCES public.permissions(id) ON DELETE CASCADE,
     CONSTRAINT role_permissions_pkey PRIMARY KEY (role_id, permission_id)
 );
 
-CREATE TABLE public.ranks (
+CREATE TABLE IF NOT EXISTS public.ranks (
     id         integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     name       varchar NOT NULL,
     icon_url   text,
@@ -297,7 +302,7 @@ CREATE TABLE public.ranks (
     CONSTRAINT ranks_name_key UNIQUE (name)
 );
 
-CREATE TABLE public.units (
+CREATE TABLE IF NOT EXISTS public.units (
     id              integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     name            varchar NOT NULL,
     parent_unit_id  integer REFERENCES public.units(id) ON DELETE SET NULL,
@@ -313,7 +318,7 @@ CREATE TABLE public.units (
     CONSTRAINT units_name_key UNIQUE (name)
 );
 
-CREATE TABLE public.security_clearances (
+CREATE TABLE IF NOT EXISTS public.security_clearances (
     id          integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     level       integer NOT NULL,
     name        text NOT NULL,
@@ -322,7 +327,7 @@ CREATE TABLE public.security_clearances (
     CONSTRAINT security_clearances_name_key UNIQUE (name)
 );
 
-CREATE TABLE public.security_limiting_markers (
+CREATE TABLE IF NOT EXISTS public.security_limiting_markers (
     id              integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     name            text NOT NULL,
     code            text NOT NULL,
@@ -330,7 +335,7 @@ CREATE TABLE public.security_limiting_markers (
     sync_restricted boolean DEFAULT false
 );
 
-CREATE TABLE public.personnel_positions (
+CREATE TABLE IF NOT EXISTS public.personnel_positions (
     id          integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     name        text NOT NULL,
     description text,
@@ -339,7 +344,7 @@ CREATE TABLE public.personnel_positions (
     created_at  timestamptz DEFAULT now()
 );
 
-CREATE TABLE public.certifications (
+CREATE TABLE IF NOT EXISTS public.certifications (
     id          integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     name        varchar NOT NULL,
     description text,
@@ -348,7 +353,7 @@ CREATE TABLE public.certifications (
     CONSTRAINT certifications_name_key UNIQUE (name)
 );
 
-CREATE TABLE public.commendations (
+CREATE TABLE IF NOT EXISTS public.commendations (
     id          integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     name        varchar NOT NULL,
     description text,
@@ -357,7 +362,7 @@ CREATE TABLE public.commendations (
     CONSTRAINT commendations_name_key UNIQUE (name)
 );
 
-CREATE TABLE public.specialization_tags (
+CREATE TABLE IF NOT EXISTS public.specialization_tags (
     id          integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     name        varchar NOT NULL,
     description text,
@@ -366,7 +371,7 @@ CREATE TABLE public.specialization_tags (
     CONSTRAINT specialization_tags_name_key UNIQUE (name)
 );
 
-CREATE TABLE public.service_types (
+CREATE TABLE IF NOT EXISTS public.service_types (
     id                 integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     name               varchar NOT NULL,
     icon               text,
@@ -378,7 +383,7 @@ CREATE TABLE public.service_types (
     CONSTRAINT service_types_name_key UNIQUE (name)
 );
 
-CREATE TABLE public.locations (
+CREATE TABLE IF NOT EXISTS public.locations (
     id        integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     name      text NOT NULL,
     type      public.location_type NOT NULL,
@@ -386,13 +391,13 @@ CREATE TABLE public.locations (
     CONSTRAINT locations_name_key UNIQUE (name)
 );
 
-CREATE TABLE public.settings (
+CREATE TABLE IF NOT EXISTS public.settings (
     key   varchar NOT NULL,
     value jsonb,
     CONSTRAINT settings_pkey PRIMARY KEY (key)
 );
 
-CREATE TABLE public.radio_channels (
+CREATE TABLE IF NOT EXISTS public.radio_channels (
     id         text NOT NULL,
     name       text NOT NULL,
     type       text DEFAULT 'public'::text,
@@ -401,21 +406,21 @@ CREATE TABLE public.radio_channels (
     CONSTRAINT radio_channels_pkey PRIMARY KEY (id)
 );
 
-CREATE TABLE public.synced_discord_roles (
+CREATE TABLE IF NOT EXISTS public.synced_discord_roles (
     id    text NOT NULL,
     name  text NOT NULL,
     color text NOT NULL,
     CONSTRAINT synced_discord_roles_pkey PRIMARY KEY (id)
 );
 
-CREATE TABLE public.rank_mappings (
+CREATE TABLE IF NOT EXISTS public.rank_mappings (
     discord_role_id text NOT NULL,
     rank_id         integer REFERENCES public.ranks(id) ON DELETE SET NULL,
     role_id         integer REFERENCES public.roles(id) ON DELETE SET NULL,
     CONSTRAINT rank_mappings_pkey PRIMARY KEY (discord_role_id)
 );
 
-CREATE TABLE public.government_branches (
+CREATE TABLE IF NOT EXISTS public.government_branches (
     id          bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     name        text NOT NULL,
     branch_type text NOT NULL DEFAULT 'Custom'::text,
@@ -426,7 +431,7 @@ CREATE TABLE public.government_branches (
     CONSTRAINT government_branches_name_key UNIQUE (name)
 );
 
-CREATE TABLE public.government_positions (
+CREATE TABLE IF NOT EXISTS public.government_positions (
     id                    bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     branch_id             bigint REFERENCES public.government_branches(id) ON DELETE SET NULL,
     name                  text NOT NULL,
@@ -446,7 +451,7 @@ CREATE TABLE public.government_positions (
     CONSTRAINT government_positions_name_key UNIQUE (name)
 );
 
-CREATE TABLE public.government_configs (
+CREATE TABLE IF NOT EXISTS public.government_configs (
     id                   uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
     government_type      text NOT NULL DEFAULT 'custom'::text,
     name                 text NOT NULL DEFAULT 'Government'::text,
@@ -459,7 +464,7 @@ CREATE TABLE public.government_configs (
 
 -- ----- 3.2 users (org column + org FK dropped) -------------------------------
 
-CREATE TABLE public.users (
+CREATE TABLE IF NOT EXISTS public.users (
     id                    integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     auth_user_id          uuid REFERENCES auth.users(id) ON DELETE SET NULL,
     created_at            timestamptz NOT NULL DEFAULT now(),
@@ -497,13 +502,23 @@ CREATE TABLE public.users (
 );
 
 -- Backfill the units.leader_id FK now that users exists.
-ALTER TABLE public.units
-    ADD CONSTRAINT units_leader_id_fkey FOREIGN KEY (leader_id) REFERENCES public.users(id) ON DELETE SET NULL;
+DO $$ BEGIN
+    ALTER TABLE public.units
+        ADD CONSTRAINT units_leader_id_fkey FOREIGN KEY (leader_id) REFERENCES public.users(id) ON DELETE SET NULL;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- One users row per Discord identity, preventing a second row from being bound
+-- to a victim's discord_id (account squatting). Partial WHERE deleted_at IS NULL
+-- so a soft-deleted account never blocks a legitimate re-registration.
+-- Re-deploy on a populated DB: if two live (deleted_at IS NULL) rows already
+-- share a discord_id, dedup them first or this index creation fails.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_users_discord_id_active
+    ON public.users (discord_id) WHERE deleted_at IS NULL;
 
 
 -- ----- 3.3 Tables referencing users / config (org column dropped) ------------
 
-CREATE TABLE public.announcements (
+CREATE TABLE IF NOT EXISTS public.announcements (
     id           uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
     publish_date timestamptz NOT NULL DEFAULT now(),
     title        text NOT NULL,
@@ -514,7 +529,7 @@ CREATE TABLE public.announcements (
     expiry_date  timestamptz
 );
 
-CREATE TABLE public.api_keys (
+CREATE TABLE IF NOT EXISTS public.api_keys (
     id           uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
     created_at   timestamptz NOT NULL DEFAULT now(),
     label        text NOT NULL,
@@ -522,7 +537,7 @@ CREATE TABLE public.api_keys (
     last_used_at timestamptz
 );
 
-CREATE TABLE public.external_tools (
+CREATE TABLE IF NOT EXISTS public.external_tools (
     id          integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     created_at  timestamptz NOT NULL DEFAULT now(),
     title       text NOT NULL,
@@ -534,14 +549,14 @@ CREATE TABLE public.external_tools (
     sort_order  integer NOT NULL DEFAULT 0
 );
 
-CREATE TABLE public.dossier_summaries (
+CREATE TABLE IF NOT EXISTS public.dossier_summaries (
     target_id    text NOT NULL,
     summary      text NOT NULL,
     generated_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT dossier_summaries_pkey PRIMARY KEY (target_id)
 );
 
-CREATE TABLE public.clearance_history (
+CREATE TABLE IF NOT EXISTS public.clearance_history (
     id                  integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     user_id             integer REFERENCES public.users(id) ON DELETE SET NULL,
     admin_id            integer REFERENCES public.users(id) ON DELETE SET NULL,
@@ -551,7 +566,7 @@ CREATE TABLE public.clearance_history (
     created_at          timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.conduct_records (
+CREATE TABLE IF NOT EXISTS public.conduct_records (
     id             integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     user_id        integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
     type           public.conduct_record_type NOT NULL,
@@ -560,7 +575,7 @@ CREATE TABLE public.conduct_records (
     created_at     timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.reputation_history (
+CREATE TABLE IF NOT EXISTS public.reputation_history (
     id             integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     user_id        integer REFERENCES public.users(id) ON DELETE SET NULL,
     admin_user_id  integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
@@ -570,7 +585,7 @@ CREATE TABLE public.reputation_history (
     reason         text NOT NULL
 );
 
-CREATE TABLE public.unit_posts (
+CREATE TABLE IF NOT EXISTS public.unit_posts (
     id         uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
     unit_id    integer NOT NULL REFERENCES public.units(id) ON DELETE CASCADE,
     author_id  integer REFERENCES public.users(id) ON DELETE SET NULL,
@@ -579,7 +594,7 @@ CREATE TABLE public.unit_posts (
     pinned     boolean DEFAULT false
 );
 
-CREATE TABLE public.user_certifications (
+CREATE TABLE IF NOT EXISTS public.user_certifications (
     user_id          integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
     certification_id integer NOT NULL REFERENCES public.certifications(id) ON DELETE CASCADE,
     awarded_at       timestamptz NOT NULL DEFAULT now(),
@@ -587,7 +602,7 @@ CREATE TABLE public.user_certifications (
     CONSTRAINT user_certifications_pkey PRIMARY KEY (user_id, certification_id)
 );
 
-CREATE TABLE public.user_commendations (
+CREATE TABLE IF NOT EXISTS public.user_commendations (
     id             integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     user_id        integer REFERENCES public.users(id) ON DELETE CASCADE,
     commendation_id integer REFERENCES public.commendations(id) ON DELETE CASCADE,
@@ -596,25 +611,25 @@ CREATE TABLE public.user_commendations (
     reason         text NOT NULL
 );
 
-CREATE TABLE public.user_specializations (
+CREATE TABLE IF NOT EXISTS public.user_specializations (
     user_id          integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
     specialization_id integer NOT NULL REFERENCES public.specialization_tags(id) ON DELETE CASCADE,
     CONSTRAINT user_specializations_pkey PRIMARY KEY (user_id, specialization_id)
 );
 
-CREATE TABLE public.user_limiting_markers (
+CREATE TABLE IF NOT EXISTS public.user_limiting_markers (
     user_id   integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
     marker_id integer NOT NULL REFERENCES public.security_limiting_markers(id) ON DELETE CASCADE,
     CONSTRAINT user_limiting_markers_pkey PRIMARY KEY (user_id, marker_id)
 );
 
-CREATE TABLE public.user_presence (
+CREATE TABLE IF NOT EXISTS public.user_presence (
     user_id             integer NOT NULL PRIMARY KEY REFERENCES public.users(id) ON DELETE CASCADE,
     last_active_at      timestamptz,
     avatar_refreshed_at timestamptz
 );
 
-CREATE TABLE public.user_hr_position_history (
+CREATE TABLE IF NOT EXISTS public.user_hr_position_history (
     id          bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     user_id     integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
     position_id bigint NOT NULL REFERENCES public.personnel_positions(id) ON DELETE CASCADE,
@@ -624,7 +639,7 @@ CREATE TABLE public.user_hr_position_history (
     created_at  timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.push_subscriptions (
+CREATE TABLE IF NOT EXISTS public.push_subscriptions (
     id           uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
     user_id      integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
     endpoint     text UNIQUE,
@@ -635,7 +650,7 @@ CREATE TABLE public.push_subscriptions (
     subscription jsonb
 );
 
-CREATE TABLE public.user_ships (
+CREATE TABLE IF NOT EXISTS public.user_ships (
     id            integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     user_id       integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
     ship_id       integer NOT NULL REFERENCES public.platform_ships(id),
@@ -646,7 +661,7 @@ CREATE TABLE public.user_ships (
     created_at    timestamptz DEFAULT now()
 );
 
-CREATE TABLE public.fleet_groups (
+CREATE TABLE IF NOT EXISTS public.fleet_groups (
     id           integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     name         text NOT NULL,
     type         text NOT NULL DEFAULT 'Custom'::text,
@@ -658,7 +673,7 @@ CREATE TABLE public.fleet_groups (
     created_at   timestamptz DEFAULT now()
 );
 
-CREATE TABLE public.fleet_group_ships (
+CREATE TABLE IF NOT EXISTS public.fleet_group_ships (
     id            integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     fleet_group_id integer NOT NULL REFERENCES public.fleet_groups(id) ON DELETE CASCADE,
     user_ship_id  integer NOT NULL REFERENCES public.user_ships(id) ON DELETE CASCADE,
@@ -669,7 +684,7 @@ CREATE TABLE public.fleet_group_ships (
 
 -- ----- 3.4 HR ----------------------------------------------------------------
 
-CREATE TABLE public.hr_applications (
+CREATE TABLE IF NOT EXISTS public.hr_applications (
     id                   uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
     applicant_name       text NOT NULL,
     applicant_discord_id text NOT NULL,
@@ -684,7 +699,7 @@ CREATE TABLE public.hr_applications (
     updated_at           timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.hr_application_logs (
+CREATE TABLE IF NOT EXISTS public.hr_application_logs (
     id             uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
     application_id uuid REFERENCES public.hr_applications(id) ON DELETE CASCADE,
     user_id        integer REFERENCES public.users(id) ON DELETE SET NULL,
@@ -693,20 +708,20 @@ CREATE TABLE public.hr_application_logs (
     created_at     timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.hr_interview_templates (
+CREATE TABLE IF NOT EXISTS public.hr_interview_templates (
     id          integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     name        text NOT NULL,
     description text
 );
 
-CREATE TABLE public.hr_interview_questions (
+CREATE TABLE IF NOT EXISTS public.hr_interview_questions (
     id            integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     template_id   integer REFERENCES public.hr_interview_templates(id) ON DELETE CASCADE,
     question_text text NOT NULL,
     order_index   integer NOT NULL
 );
 
-CREATE TABLE public.hr_interviews (
+CREATE TABLE IF NOT EXISTS public.hr_interviews (
     id            uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
     application_id uuid REFERENCES public.hr_applications(id) ON DELETE CASCADE,
     template_id   integer REFERENCES public.hr_interview_templates(id) ON DELETE SET NULL,
@@ -719,14 +734,14 @@ CREATE TABLE public.hr_interviews (
     is_recommended boolean
 );
 
-CREATE TABLE public.hr_interview_panel (
+CREATE TABLE IF NOT EXISTS public.hr_interview_panel (
     id           integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     interview_id uuid NOT NULL REFERENCES public.hr_interviews(id) ON DELETE CASCADE,
     user_id      integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
     created_at   timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.hr_interview_responses (
+CREATE TABLE IF NOT EXISTS public.hr_interview_responses (
     id            integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     interview_id  uuid REFERENCES public.hr_interviews(id) ON DELETE CASCADE,
     question_id   integer REFERENCES public.hr_interview_questions(id) ON DELETE SET NULL,
@@ -734,7 +749,7 @@ CREATE TABLE public.hr_interview_responses (
     score         integer
 );
 
-CREATE TABLE public.hr_job_postings (
+CREATE TABLE IF NOT EXISTS public.hr_job_postings (
     id            uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
     title         text NOT NULL,
     department    text NOT NULL,
@@ -748,7 +763,7 @@ CREATE TABLE public.hr_job_postings (
     position_id   integer REFERENCES public.personnel_positions(id) ON DELETE SET NULL
 );
 
-CREATE TABLE public.hr_job_applications (
+CREATE TABLE IF NOT EXISTS public.hr_job_applications (
     id           uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
     job_id       uuid REFERENCES public.hr_job_postings(id) ON DELETE CASCADE,
     applicant_id integer REFERENCES public.users(id) ON DELETE SET NULL,
@@ -757,7 +772,7 @@ CREATE TABLE public.hr_job_applications (
     created_at   timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.hr_transfer_requests (
+CREATE TABLE IF NOT EXISTS public.hr_transfer_requests (
     id              uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
     user_id         integer REFERENCES public.users(id) ON DELETE SET NULL,
     current_unit_id integer REFERENCES public.units(id) ON DELETE SET NULL,
@@ -772,7 +787,7 @@ CREATE TABLE public.hr_transfer_requests (
 
 -- ----- 3.5 Service requests --------------------------------------------------
 
-CREATE TABLE public.service_requests (
+CREATE TABLE IF NOT EXISTS public.service_requests (
     id                           varchar NOT NULL PRIMARY KEY,
     created_at                   timestamptz NOT NULL DEFAULT now(),
     updated_at                   timestamptz NOT NULL DEFAULT now(),
@@ -794,13 +809,13 @@ CREATE TABLE public.service_requests (
     client_feedback              text
 );
 
-CREATE TABLE public.request_responders (
+CREATE TABLE IF NOT EXISTS public.request_responders (
     request_id varchar NOT NULL REFERENCES public.service_requests(id) ON DELETE CASCADE,
     user_id    integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
     CONSTRAINT request_responders_pkey PRIMARY KEY (request_id, user_id)
 );
 
-CREATE TABLE public.status_history (
+CREATE TABLE IF NOT EXISTS public.status_history (
     id         integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     request_id varchar REFERENCES public.service_requests(id) ON DELETE CASCADE,
     updated_at timestamptz NOT NULL DEFAULT now(),
@@ -818,7 +833,7 @@ CREATE TABLE public.status_history (
 -- Supersedes the old trusted_intel_feeds table (intel sharing is one channel).
 -- Directional keys are derived on BOTH sides from a code-authenticated X25519
 -- ECDH handshake and are NEVER transmitted. See migrations/add-alliances.sql.
-CREATE TABLE public.alliance_peers (
+CREATE TABLE IF NOT EXISTS public.alliance_peers (
     id                        uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
     created_at                timestamptz NOT NULL DEFAULT now(),
     updated_at                timestamptz NOT NULL DEFAULT now(),
@@ -876,25 +891,24 @@ CREATE TABLE public.alliance_peers (
     ops_synced_at             timestamptz
 );
 
-CREATE INDEX idx_alliance_peers_status ON public.alliance_peers (status, type);
-CREATE UNIQUE INDEX uq_alliance_peers_base_url ON public.alliance_peers (lower(base_url));
+CREATE INDEX IF NOT EXISTS idx_alliance_peers_status ON public.alliance_peers (status, type);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_alliance_peers_base_url ON public.alliance_peers (lower(base_url));
 
--- Background-refreshed copy of an ally's shared roster/fleet projections
--- (alliance live-sync, D2 slow lane). Deliberately a SEPARATE table: the
--- alliance_peers row is read with select('*') on every inbound federation
--- request (getAlliancePeerByInboundKey), so the jsonb blobs must not ride that
--- hot path. INBOUND-ONLY cache of data the peer chose to share with us — never
--- re-served to other peers and never read by an outbound projection. Image
--- URLs inside are sanitized at write time (sanitizeImageUrl). Server-only:
--- deny-by-default RLS (Section 6 loop), no authenticated_select policy.
-CREATE TABLE public.alliance_peer_directory_cache (
+-- Background-refreshed copy of an ally's shared roster/fleet projections.
+-- A SEPARATE table because the alliance_peers row is read on every inbound
+-- federation request (getAlliancePeerByInboundKey), so the jsonb blobs must not
+-- ride that hot path. Inbound-only cache of data the peer chose to share with
+-- us — never re-served to other peers. Image URLs inside are sanitized at write
+-- time (sanitizeImageUrl). Server-only: deny-by-default RLS, no
+-- authenticated_select policy.
+CREATE TABLE IF NOT EXISTS public.alliance_peer_directory_cache (
     peer_id    uuid NOT NULL PRIMARY KEY REFERENCES public.alliance_peers(id) ON DELETE CASCADE,
     roster     jsonb,
     fleet      jsonb,
     synced_at  timestamptz
 );
 
-CREATE TABLE public.intel_reports (
+CREATE TABLE IF NOT EXISTS public.intel_reports (
     id                  uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
     created_at          timestamptz NOT NULL DEFAULT now(),
     target_id           text NOT NULL,
@@ -920,13 +934,13 @@ CREATE INDEX IF NOT EXISTS idx_intel_reports_created_id
 CREATE UNIQUE INDEX IF NOT EXISTS uq_intel_reports_feed_external
     ON public.intel_reports (source_feed_id, external_id) WHERE source_feed_id IS NOT NULL;
 
-CREATE TABLE public.intel_report_limiting_markers (
+CREATE TABLE IF NOT EXISTS public.intel_report_limiting_markers (
     report_id uuid NOT NULL REFERENCES public.intel_reports(id) ON DELETE CASCADE,
     marker_id integer NOT NULL REFERENCES public.security_limiting_markers(id) ON DELETE CASCADE,
     CONSTRAINT intel_report_limiting_markers_pkey PRIMARY KEY (report_id, marker_id)
 );
 
-CREATE TABLE public.intel_bulletins (
+CREATE TABLE IF NOT EXISTS public.intel_bulletins (
     id                     uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
     title                  text NOT NULL,
     body                   text NOT NULL,
@@ -945,13 +959,13 @@ CREATE TABLE public.intel_bulletins (
     source_organization_id uuid REFERENCES public.alliance_peers(id) ON DELETE SET NULL
 );
 
-CREATE TABLE public.intel_bulletin_limiting_markers (
+CREATE TABLE IF NOT EXISTS public.intel_bulletin_limiting_markers (
     bulletin_id uuid NOT NULL REFERENCES public.intel_bulletins(id) ON DELETE CASCADE,
     marker_id   integer NOT NULL REFERENCES public.security_limiting_markers(id) ON DELETE CASCADE,
     CONSTRAINT intel_bulletin_limiting_markers_pkey PRIMARY KEY (bulletin_id, marker_id)
 );
 
-CREATE TABLE public.warrants (
+CREATE TABLE IF NOT EXISTS public.warrants (
     id              uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
     created_at      timestamptz NOT NULL DEFAULT now(),
     updated_at      timestamptz NOT NULL DEFAULT now(),
@@ -982,7 +996,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_warrants_feed_external
     ON public.warrants (source_feed_id, external_id)
     WHERE source_feed_id IS NOT NULL AND external_id IS NOT NULL;
 
-CREATE TABLE public.warrant_notes (
+CREATE TABLE IF NOT EXISTS public.warrant_notes (
     id         bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     warrant_id uuid NOT NULL REFERENCES public.warrants(id) ON DELETE CASCADE,
     author_id  integer REFERENCES public.users(id) ON DELETE SET NULL,
@@ -993,7 +1007,7 @@ CREATE TABLE public.warrant_notes (
 
 -- ----- 3.7 Operations --------------------------------------------------------
 
-CREATE TABLE public.operations (
+CREATE TABLE IF NOT EXISTS public.operations (
     id                    uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
     name                  text NOT NULL,
     type                  public.operation_type NOT NULL,
@@ -1042,7 +1056,7 @@ CREATE TABLE public.operations (
     joint_version         integer NOT NULL DEFAULT 0
 );
 
-CREATE TABLE public.operation_phases (
+CREATE TABLE IF NOT EXISTS public.operation_phases (
     id           bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     operation_id uuid NOT NULL REFERENCES public.operations(id) ON DELETE CASCADE,
     name         text NOT NULL,
@@ -1054,7 +1068,7 @@ CREATE TABLE public.operation_phases (
     created_at   timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.operation_tasks (
+CREATE TABLE IF NOT EXISTS public.operation_tasks (
     id               bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     operation_id     uuid NOT NULL REFERENCES public.operations(id) ON DELETE CASCADE,
     title            text NOT NULL,
@@ -1069,7 +1083,7 @@ CREATE TABLE public.operation_tasks (
     created_at       timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.operation_participants (
+CREATE TABLE IF NOT EXISTS public.operation_participants (
     operation_id      uuid NOT NULL REFERENCES public.operations(id) ON DELETE CASCADE,
     user_id           integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
     role_requested    text,
@@ -1088,7 +1102,7 @@ CREATE TABLE public.operation_participants (
     CONSTRAINT operation_participants_pkey PRIMARY KEY (operation_id, user_id)
 );
 
-CREATE TABLE public.operation_aar_entries (
+CREATE TABLE IF NOT EXISTS public.operation_aar_entries (
     id           bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     operation_id uuid NOT NULL REFERENCES public.operations(id) ON DELETE CASCADE,
     author_id    integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
@@ -1098,7 +1112,7 @@ CREATE TABLE public.operation_aar_entries (
     created_at   timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.operation_board_elements (
+CREATE TABLE IF NOT EXISTS public.operation_board_elements (
     id           bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     operation_id uuid NOT NULL REFERENCES public.operations(id) ON DELETE CASCADE,
     element_type text NOT NULL DEFAULT 'unit'::text,
@@ -1115,7 +1129,7 @@ CREATE TABLE public.operation_board_elements (
     created_at   timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.operation_command_nodes (
+CREATE TABLE IF NOT EXISTS public.operation_command_nodes (
     id               bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     operation_id     uuid NOT NULL REFERENCES public.operations(id) ON DELETE CASCADE,
     parent_id        bigint REFERENCES public.operation_command_nodes(id) ON DELETE CASCADE,
@@ -1133,13 +1147,13 @@ CREATE TABLE public.operation_command_nodes (
     live_status      text
 );
 
-CREATE TABLE public.operation_limiting_markers (
+CREATE TABLE IF NOT EXISTS public.operation_limiting_markers (
     operation_id uuid NOT NULL REFERENCES public.operations(id) ON DELETE CASCADE,
     marker_id    integer NOT NULL REFERENCES public.security_limiting_markers(id) ON DELETE CASCADE,
     CONSTRAINT operation_limiting_markers_pkey PRIMARY KEY (operation_id, marker_id)
 );
 
-CREATE TABLE public.operation_locations (
+CREATE TABLE IF NOT EXISTS public.operation_locations (
     operation_id uuid NOT NULL REFERENCES public.operations(id) ON DELETE CASCADE,
     location_id  integer NOT NULL REFERENCES public.locations(id) ON DELETE CASCADE,
     is_primary   boolean NOT NULL DEFAULT false,
@@ -1147,7 +1161,7 @@ CREATE TABLE public.operation_locations (
     CONSTRAINT operation_locations_pkey PRIMARY KEY (operation_id, location_id)
 );
 
-CREATE TABLE public.operation_log_entries (
+CREATE TABLE IF NOT EXISTS public.operation_log_entries (
     id              integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     operation_id    uuid NOT NULL REFERENCES public.operations(id) ON DELETE CASCADE,
     entry_type      text NOT NULL,
@@ -1159,7 +1173,7 @@ CREATE TABLE public.operation_log_entries (
     cost_description text
 );
 
-CREATE TABLE public.operation_logistics (
+CREATE TABLE IF NOT EXISTS public.operation_logistics (
     id                 bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     operation_id       uuid NOT NULL REFERENCES public.operations(id) ON DELETE CASCADE,
     item_name          text NOT NULL,
@@ -1178,7 +1192,7 @@ CREATE TABLE public.operation_logistics (
 -- See lib/db/operations-federation.ts.
 
 -- HOST side: which allied peers are invited to a locally-owned joint op.
-CREATE TABLE public.operation_allied_orgs (
+CREATE TABLE IF NOT EXISTS public.operation_allied_orgs (
     id           bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     operation_id uuid NOT NULL REFERENCES public.operations(id) ON DELETE CASCADE,
     peer_id      uuid NOT NULL REFERENCES public.alliance_peers(id) ON DELETE CASCADE,
@@ -1187,12 +1201,12 @@ CREATE TABLE public.operation_allied_orgs (
     accepted_at  timestamptz,
     CONSTRAINT operation_allied_orgs_unique UNIQUE (operation_id, peer_id)
 );
-CREATE INDEX idx_operation_allied_orgs_op ON public.operation_allied_orgs (operation_id);
+CREATE INDEX IF NOT EXISTS idx_operation_allied_orgs_op ON public.operation_allied_orgs (operation_id);
 
 -- HOST side: allied members participating in a locally-owned joint op. These are
 -- members of a PEER instance, so there is deliberately NO users FK — their identity
 -- is a snapshot synced from the peer.
-CREATE TABLE public.operation_allied_participants (
+CREATE TABLE IF NOT EXISTS public.operation_allied_participants (
     operation_id      uuid NOT NULL REFERENCES public.operations(id) ON DELETE CASCADE,
     peer_id           uuid NOT NULL REFERENCES public.alliance_peers(id) ON DELETE CASCADE,
     remote_user_handle text NOT NULL,
@@ -1209,7 +1223,7 @@ CREATE TABLE public.operation_allied_participants (
 -- GUEST side: a read-only mirror of an operation hosted by an allied peer. The
 -- full projected operation is stored as a jsonb snapshot (it deserializes to the
 -- same HydratedOperation shape getFullOperationDetails produces).
-CREATE TABLE public.mirrored_operations (
+CREATE TABLE IF NOT EXISTS public.mirrored_operations (
     id                 uuid NOT NULL PRIMARY KEY,            -- the HOST operation_id
     host_peer_id       uuid NOT NULL REFERENCES public.alliance_peers(id) ON DELETE CASCADE,
     snapshot           jsonb,
@@ -1221,12 +1235,12 @@ CREATE TABLE public.mirrored_operations (
     last_polled_at     timestamptz,
     revoked_at         timestamptz
 );
-CREATE INDEX idx_mirrored_operations_peer ON public.mirrored_operations (host_peer_id);
+CREATE INDEX IF NOT EXISTS idx_mirrored_operations_peer ON public.mirrored_operations (host_peer_id);
 
 -- GUEST side: this instance's own members' participation in a mirrored op. These
 -- ARE local users, so a normal users FK is correct. Survives snapshot replacement
 -- and is overlaid on the read-only host snapshot at render. Pushed back to the host.
-CREATE TABLE public.mirrored_operation_participation (
+CREATE TABLE IF NOT EXISTS public.mirrored_operation_participation (
     mirror_op_id  uuid NOT NULL REFERENCES public.mirrored_operations(id) ON DELETE CASCADE,
     user_id       integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
     rsvp_status   text NOT NULL DEFAULT 'Pending',
@@ -1239,7 +1253,7 @@ CREATE TABLE public.mirrored_operation_participation (
 -- SECTION 6 — Row Level Security. They are server-only (not realtime-subscribed),
 -- so they correctly get no authenticated_select policy.
 
-CREATE TABLE public.operation_reminders (
+CREATE TABLE IF NOT EXISTS public.operation_reminders (
     id           uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
     operation_id uuid NOT NULL REFERENCES public.operations(id) ON DELETE CASCADE,
     remind_at    timestamptz NOT NULL,
@@ -1247,7 +1261,7 @@ CREATE TABLE public.operation_reminders (
     created_at   timestamptz DEFAULT now()
 );
 
-CREATE TABLE public.operation_schedule_entries (
+CREATE TABLE IF NOT EXISTS public.operation_schedule_entries (
     id             bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     operation_id   uuid NOT NULL REFERENCES public.operations(id) ON DELETE CASCADE,
     label          text NOT NULL,
@@ -1259,22 +1273,32 @@ CREATE TABLE public.operation_schedule_entries (
     status         text
 );
 
-CREATE TABLE public.operation_templates (
+CREATE TABLE IF NOT EXISTS public.operation_templates (
     id          bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     name        text NOT NULL UNIQUE,
     description text,
     created_by  integer REFERENCES public.users(id) ON DELETE SET NULL,
     created_at  timestamptz NOT NULL DEFAULT now(),
     updated_at  timestamptz NOT NULL DEFAULT now(),
-    payload     jsonb NOT NULL
+    payload     jsonb NOT NULL,
+    -- A template extracted from an operation inherits that op's clearance so the
+    -- laundered phase/task plan stays as restricted as the source. Snapshot at
+    -- create time; the read path filters templates by these like operations.
+    classification_level integer NOT NULL DEFAULT 0,
+    limiting_marker_ids  bigint[] NOT NULL DEFAULT '{}'
 );
+-- Re-runnable: add the clearance columns to instances created before they existed.
+ALTER TABLE public.operation_templates ADD COLUMN IF NOT EXISTS classification_level integer NOT NULL DEFAULT 0;
+ALTER TABLE public.operation_templates ADD COLUMN IF NOT EXISTS limiting_marker_ids bigint[] NOT NULL DEFAULT '{}';
 
 -- operations.template_id -> operation_templates: FK wired here (deferred) because
 -- operations is created earlier in the file. ON DELETE SET NULL keeps ops if a
 -- template is removed.
-ALTER TABLE public.operations
-    ADD CONSTRAINT operations_template_id_fkey
-    FOREIGN KEY (template_id) REFERENCES public.operation_templates(id) ON DELETE SET NULL;
+DO $$ BEGIN
+    ALTER TABLE public.operations
+        ADD CONSTRAINT operations_template_id_fkey
+        FOREIGN KEY (template_id) REFERENCES public.operation_templates(id) ON DELETE SET NULL;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- updated_at trigger for operation_templates. search_path is pinned (empty) so the
 -- function never resolves unqualified names against a caller-controlled path
@@ -1297,7 +1321,7 @@ CREATE TRIGGER trg_operation_templates_updated_at
 
 -- ----- 3.8 Government (depends on positions/branches/users) ------------------
 
-CREATE TABLE public.government_elections (
+CREATE TABLE IF NOT EXISTS public.government_elections (
     id                  bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     position_id         bigint NOT NULL REFERENCES public.government_positions(id) ON DELETE CASCADE,
     title               text NOT NULL,
@@ -1328,7 +1352,7 @@ CREATE TABLE public.government_elections (
     updated_at          timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.government_election_candidates (
+CREATE TABLE IF NOT EXISTS public.government_election_candidates (
     id                bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     election_id       bigint NOT NULL REFERENCES public.government_elections(id) ON DELETE CASCADE,
     user_id           integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
@@ -1340,7 +1364,15 @@ CREATE TABLE public.government_election_candidates (
     vote_percentage   numeric
 );
 
-CREATE TABLE public.government_election_voter_registry (
+-- One active candidacy per (election, user), so a member can't self-declare N
+-- times to pad the candidate count. Partial WHERE withdrawn_at IS NULL so a
+-- withdrawn run does not block re-declaring.
+-- Re-deploy on a populated DB: dedup any existing active duplicate
+-- (election_id,user_id) rows first or this index creation will fail.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_gov_election_candidacy
+    ON public.government_election_candidates (election_id, user_id) WHERE withdrawn_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS public.government_election_voter_registry (
     id          bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     election_id bigint NOT NULL REFERENCES public.government_elections(id) ON DELETE CASCADE,
     user_id     integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
@@ -1350,7 +1382,7 @@ CREATE TABLE public.government_election_voter_registry (
     CONSTRAINT government_election_voter_registry_unique UNIQUE (election_id, user_id)
 );
 
-CREATE TABLE public.government_election_votes (
+CREATE TABLE IF NOT EXISTS public.government_election_votes (
     id           uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
     election_id  bigint NOT NULL REFERENCES public.government_elections(id) ON DELETE CASCADE,
     voter_hash   text NOT NULL,
@@ -1359,7 +1391,16 @@ CREATE TABLE public.government_election_votes (
     cast_at      timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.government_position_holders (
+-- One vote per (election, candidate, voter), guarding against ballot-stuffing.
+-- The voter key here is voter_hash (this table has no user_id column); the
+-- per-ballot guard is government_election_voter_registry_unique above.
+-- voter_hash is NOT NULL so no partial clause is needed.
+-- Re-deploy on a populated DB: dedup any existing duplicate
+-- (election_id,candidate_id,voter_hash) rows first or this index creation fails.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_gov_election_vote
+    ON public.government_election_votes (election_id, candidate_id, voter_hash);
+
+CREATE TABLE IF NOT EXISTS public.government_position_holders (
     id             bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     position_id    bigint NOT NULL REFERENCES public.government_positions(id) ON DELETE CASCADE,
     user_id        integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
@@ -1376,7 +1417,7 @@ CREATE TABLE public.government_position_holders (
 CREATE UNIQUE INDEX IF NOT EXISTS uq_gov_active_position_holder
     ON public.government_position_holders (position_id, user_id) WHERE ended_at IS NULL;
 
-CREATE TABLE public.government_legislation (
+CREATE TABLE IF NOT EXISTS public.government_legislation (
     id                     bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     title                  text NOT NULL,
     body                   jsonb NOT NULL DEFAULT '""'::jsonb,
@@ -1401,7 +1442,7 @@ CREATE TABLE public.government_legislation (
     updated_at             timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.government_legislation_comments (
+CREATE TABLE IF NOT EXISTS public.government_legislation_comments (
     id             bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     legislation_id bigint NOT NULL REFERENCES public.government_legislation(id) ON DELETE CASCADE,
     user_id        integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
@@ -1409,7 +1450,7 @@ CREATE TABLE public.government_legislation_comments (
     created_at     timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.government_legislation_votes (
+CREATE TABLE IF NOT EXISTS public.government_legislation_votes (
     id             bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     legislation_id bigint NOT NULL REFERENCES public.government_legislation(id) ON DELETE CASCADE,
     user_id        integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
@@ -1417,8 +1458,13 @@ CREATE TABLE public.government_legislation_votes (
     vote           text NOT NULL CHECK (vote IN ('for', 'against', 'abstain')),
     cast_at        timestamptz NOT NULL DEFAULT now()
 );
+-- One-person-one-vote for legislation (the cast function also pre-checks + treats
+-- 23505 as the atomic guard). Re-deploy on a populated DB: dedup duplicate
+-- (legislation_id,user_id) rows first or this index creation will fail.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_gov_legislation_vote
+    ON public.government_legislation_votes (legislation_id, user_id);
 
-CREATE TABLE public.government_motions (
+CREATE TABLE IF NOT EXISTS public.government_motions (
     id                  bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     title               text NOT NULL,
     description         text,
@@ -1436,7 +1482,7 @@ CREATE TABLE public.government_motions (
     updated_at          timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.government_motion_votes (
+CREATE TABLE IF NOT EXISTS public.government_motion_votes (
     id         bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     motion_id  bigint NOT NULL REFERENCES public.government_motions(id) ON DELETE CASCADE,
     user_id    integer REFERENCES public.users(id) ON DELETE SET NULL,
@@ -1444,8 +1490,15 @@ CREATE TABLE public.government_motion_votes (
     vote       text NOT NULL CHECK (vote IN ('for', 'against', 'abstain')),
     cast_at    timestamptz NOT NULL DEFAULT now()
 );
+-- One-person-one-vote for motions: by user (named) or voter_hash (anonymous). The
+-- cast function pre-checks + treats 23505 as the atomic guard. Re-deploy on a
+-- populated DB: dedup duplicates first or these index creations will fail.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_gov_motion_vote_user
+    ON public.government_motion_votes (motion_id, user_id) WHERE user_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_gov_motion_vote_hash
+    ON public.government_motion_votes (motion_id, voter_hash) WHERE voter_hash IS NOT NULL;
 
-CREATE TABLE public.government_orders (
+CREATE TABLE IF NOT EXISTS public.government_orders (
     id                   uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
     issuer_position_id   bigint NOT NULL REFERENCES public.government_positions(id) ON DELETE RESTRICT,
     issuer_user_id       integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
@@ -1469,7 +1522,7 @@ CREATE TABLE public.government_orders (
 
 -- ----- 3.9 Wiki --------------------------------------------------------------
 
-CREATE TABLE public.wiki_pages (
+CREATE TABLE IF NOT EXISTS public.wiki_pages (
     id                  uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
     parent_page_id      uuid REFERENCES public.wiki_pages(id) ON DELETE SET NULL,
     title               text NOT NULL,
@@ -1485,7 +1538,7 @@ CREATE TABLE public.wiki_pages (
     CONSTRAINT wiki_pages_slug_unique UNIQUE (slug)
 );
 
-CREATE TABLE public.wiki_page_limiting_markers (
+CREATE TABLE IF NOT EXISTS public.wiki_page_limiting_markers (
     page_id   uuid NOT NULL REFERENCES public.wiki_pages(id) ON DELETE CASCADE,
     marker_id integer NOT NULL REFERENCES public.security_limiting_markers(id) ON DELETE CASCADE,
     CONSTRAINT wiki_page_limiting_markers_pkey PRIMARY KEY (page_id, marker_id)
@@ -1494,7 +1547,7 @@ CREATE TABLE public.wiki_page_limiting_markers (
 
 -- ----- 3.10 Finances / Treasury ----------------------------------------------
 
-CREATE TABLE public.treasury_accounts (
+CREATE TABLE IF NOT EXISTS public.treasury_accounts (
     id             bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     name           text NOT NULL,
     type           text NOT NULL DEFAULT 'general'::text CHECK (type IN ('general', 'reserve', 'project', 'ops')),
@@ -1505,7 +1558,7 @@ CREATE TABLE public.treasury_accounts (
     updated_at     timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.treasury_ledger_entries (
+CREATE TABLE IF NOT EXISTS public.treasury_ledger_entries (
     id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     account_id          bigint NOT NULL REFERENCES public.treasury_accounts(id) ON DELETE RESTRICT,
     entry_type          text NOT NULL CHECK (entry_type IN ('deposit', 'withdrawal', 'transfer', 'payout', 'adjustment')),
@@ -1532,14 +1585,14 @@ CREATE TABLE public.treasury_ledger_entries (
     )
 );
 
-CREATE INDEX idx_treasury_accounts_active ON public.treasury_accounts(is_active);
-CREATE INDEX idx_treasury_ledger_account_created
+CREATE INDEX IF NOT EXISTS idx_treasury_accounts_active ON public.treasury_accounts(is_active);
+CREATE INDEX IF NOT EXISTS idx_treasury_ledger_account_created
     ON public.treasury_ledger_entries(account_id, created_at DESC);
-CREATE INDEX idx_treasury_ledger_status
+CREATE INDEX IF NOT EXISTS idx_treasury_ledger_status
     ON public.treasury_ledger_entries(status, created_at DESC);
-CREATE INDEX idx_treasury_ledger_pending
+CREATE INDEX IF NOT EXISTS idx_treasury_ledger_pending
     ON public.treasury_ledger_entries(created_at DESC) WHERE status = 'pending';
-CREATE UNIQUE INDEX uq_treasury_ledger_pending_dedup
+CREATE UNIQUE INDEX IF NOT EXISTS uq_treasury_ledger_pending_dedup
     ON public.treasury_ledger_entries(account_id, memo, amount)
     WHERE status = 'pending' AND memo IS NOT NULL;
 
@@ -1549,7 +1602,7 @@ CREATE UNIQUE INDEX uq_treasury_ledger_pending_dedup
 -- plain table (slug UNIQUE) keeping the UEX-sync metadata columns. The original
 -- platform/custom CHECK + partial indexes are removed (no organization_id).
 
-CREATE TABLE public.quartermaster_catalog (
+CREATE TABLE IF NOT EXISTS public.quartermaster_catalog (
     id              bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     slug            text NOT NULL UNIQUE,
     name            text NOT NULL,
@@ -1579,7 +1632,7 @@ CREATE TABLE public.quartermaster_catalog (
     last_synced_at  timestamptz
 );
 
-CREATE TABLE public.quartermaster_locations (
+CREATE TABLE IF NOT EXISTS public.quartermaster_locations (
     id          bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     name        text NOT NULL,
     type        text NOT NULL DEFAULT 'custom'::text CHECK (type IN ('hangar', 'ship', 'station', 'custom')),
@@ -1590,7 +1643,7 @@ CREATE TABLE public.quartermaster_locations (
     updated_at  timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.quartermaster_inventory (
+CREATE TABLE IF NOT EXISTS public.quartermaster_inventory (
     id          bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     catalog_id  bigint REFERENCES public.quartermaster_catalog(id) ON DELETE SET NULL,
     custom_name text,
@@ -1604,7 +1657,7 @@ CREATE TABLE public.quartermaster_inventory (
     CONSTRAINT qm_inventory_has_name CHECK (catalog_id IS NOT NULL OR (custom_name IS NOT NULL AND custom_name <> ''))
 );
 
-CREATE TABLE public.quartermaster_issuances (
+CREATE TABLE IF NOT EXISTS public.quartermaster_issuances (
     id                   bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     inventory_id         bigint NOT NULL REFERENCES public.quartermaster_inventory(id) ON DELETE RESTRICT,
     issued_to_user_id    integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
@@ -1625,7 +1678,7 @@ CREATE TABLE public.quartermaster_issuances (
     updated_at           timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.quartermaster_inventory_movements (
+CREATE TABLE IF NOT EXISTS public.quartermaster_inventory_movements (
     id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     inventory_id        bigint NOT NULL REFERENCES public.quartermaster_inventory(id) ON DELETE RESTRICT,
     delta               integer NOT NULL CHECK (delta <> 0),
@@ -1636,19 +1689,19 @@ CREATE TABLE public.quartermaster_inventory_movements (
     created_at          timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_qm_inventory_archived ON public.quartermaster_inventory(is_archived);
-CREATE INDEX idx_qm_inventory_catalog ON public.quartermaster_inventory(catalog_id);
-CREATE INDEX idx_qm_inventory_location ON public.quartermaster_inventory(location_id);
-CREATE INDEX idx_qm_movements_inventory ON public.quartermaster_inventory_movements(inventory_id, created_at DESC);
-CREATE INDEX idx_qm_issuances_status ON public.quartermaster_issuances(status);
-CREATE INDEX idx_qm_issuances_user ON public.quartermaster_issuances(issued_to_user_id, status);
-CREATE INDEX idx_qm_issuances_due ON public.quartermaster_issuances(due_back_at)
+CREATE INDEX IF NOT EXISTS idx_qm_inventory_archived ON public.quartermaster_inventory(is_archived);
+CREATE INDEX IF NOT EXISTS idx_qm_inventory_catalog ON public.quartermaster_inventory(catalog_id);
+CREATE INDEX IF NOT EXISTS idx_qm_inventory_location ON public.quartermaster_inventory(location_id);
+CREATE INDEX IF NOT EXISTS idx_qm_movements_inventory ON public.quartermaster_inventory_movements(inventory_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_qm_issuances_status ON public.quartermaster_issuances(status);
+CREATE INDEX IF NOT EXISTS idx_qm_issuances_user ON public.quartermaster_issuances(issued_to_user_id, status);
+CREATE INDEX IF NOT EXISTS idx_qm_issuances_due ON public.quartermaster_issuances(due_back_at)
     WHERE status = 'active' AND due_back_at IS NOT NULL;
 
 
 -- ----- 3.12 Warehouse (bulk commodities) -------------------------------------
 
-CREATE TABLE public.warehouse_catalog (
+CREATE TABLE IF NOT EXISTS public.warehouse_catalog (
     id            bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     name          text NOT NULL,
     category      text NOT NULL CHECK (category IN ('ore', 'refined', 'fuel', 'rmc', 'munition', 'consumable', 'misc')),
@@ -1661,10 +1714,10 @@ CREATE TABLE public.warehouse_catalog (
 );
 
 -- One catalog row per (name, quality_label); NULL quality treated as '' .
-CREATE UNIQUE INDEX uq_warehouse_catalog_name_quality
+CREATE UNIQUE INDEX IF NOT EXISTS uq_warehouse_catalog_name_quality
     ON public.warehouse_catalog(name, COALESCE(quality_label, ''));
 
-CREATE TABLE public.warehouse_stock (
+CREATE TABLE IF NOT EXISTS public.warehouse_stock (
     id          bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     catalog_id  bigint NOT NULL REFERENCES public.warehouse_catalog(id) ON DELETE RESTRICT,
     location_id bigint NOT NULL REFERENCES public.quartermaster_locations(id) ON DELETE RESTRICT,
@@ -1673,10 +1726,10 @@ CREATE TABLE public.warehouse_stock (
     updated_at  timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE UNIQUE INDEX uq_warehouse_stock_catalog_location
+CREATE UNIQUE INDEX IF NOT EXISTS uq_warehouse_stock_catalog_location
     ON public.warehouse_stock(catalog_id, location_id);
 
-CREATE TABLE public.warehouse_requests (
+CREATE TABLE IF NOT EXISTS public.warehouse_requests (
     id                   uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     stock_id             bigint NOT NULL REFERENCES public.warehouse_stock(id) ON DELETE RESTRICT,
     requested_by_user_id integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
@@ -1693,7 +1746,7 @@ CREATE TABLE public.warehouse_requests (
     updated_at           timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.warehouse_movements (
+CREATE TABLE IF NOT EXISTS public.warehouse_movements (
     id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     stock_id            bigint NOT NULL REFERENCES public.warehouse_stock(id) ON DELETE RESTRICT,
     delta               integer NOT NULL CHECK (delta <> 0),
@@ -1704,27 +1757,39 @@ CREATE TABLE public.warehouse_movements (
     actor_user_id       integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
     related_request_id  uuid REFERENCES public.warehouse_requests(id) ON DELETE SET NULL,
     related_movement_id uuid REFERENCES public.warehouse_movements(id) ON DELETE SET NULL,
+    -- Marketplace sell/buy contract that drove this movement (auto stock decrement
+    -- on contract delivery / compensating reversal on cancel). FK wired in the
+    -- Marketplace section once marketplace_contracts exists (deferred, like the
+    -- requests→movements FK below).
+    related_contract_id uuid,
     notes               text,
     created_at          timestamptz NOT NULL DEFAULT now()
 );
 
 -- Wire the requests→movements FK now that warehouse_movements exists.
-ALTER TABLE public.warehouse_requests
-    ADD CONSTRAINT warehouse_requests_fulfilled_movement_id_fkey
-    FOREIGN KEY (fulfilled_movement_id) REFERENCES public.warehouse_movements(id) ON DELETE SET NULL;
+DO $$ BEGIN
+    ALTER TABLE public.warehouse_requests
+        ADD CONSTRAINT warehouse_requests_fulfilled_movement_id_fkey
+        FOREIGN KEY (fulfilled_movement_id) REFERENCES public.warehouse_movements(id) ON DELETE SET NULL;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE INDEX idx_warehouse_movements_stock ON public.warehouse_movements(stock_id, created_at DESC);
-CREATE INDEX idx_warehouse_movements_request ON public.warehouse_movements(related_request_id)
+CREATE INDEX IF NOT EXISTS idx_warehouse_movements_stock ON public.warehouse_movements(stock_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_warehouse_movements_request ON public.warehouse_movements(related_request_id)
     WHERE related_request_id IS NOT NULL;
-CREATE INDEX idx_warehouse_requests_status ON public.warehouse_requests(status);
-CREATE INDEX idx_warehouse_stock_catalog ON public.warehouse_stock(catalog_id);
-CREATE INDEX idx_warehouse_stock_location ON public.warehouse_stock(location_id);
+CREATE INDEX IF NOT EXISTS idx_warehouse_requests_status ON public.warehouse_requests(status);
+CREATE INDEX IF NOT EXISTS idx_warehouse_stock_catalog ON public.warehouse_stock(catalog_id);
+CREATE INDEX IF NOT EXISTS idx_warehouse_stock_location ON public.warehouse_stock(location_id);
 
 -- Convenience view: stock + computed on-hand / reserved quantities.
 -- security_invoker=true so the view runs with the QUERYING role's privileges +
 -- RLS (not the view owner's) — server reads bypass RLS via service_role; a direct
 -- anon/authenticated query is gated by the underlying tables' deny-by-default RLS.
 -- (Without this, Supabase flags a SECURITY DEFINER view — lint 0010.)
+-- NOTE: this view is RE-CREATED (extended) in the Marketplace section so that
+-- quantity_reserved ALSO reserves against accepted/in-progress marketplace sell
+-- contracts. The definition here is the warehouse-only base; the marketplace
+-- section's CREATE OR REPLACE supersedes it (it needs marketplace_contracts to
+-- exist first). Keep the two column lists identical.
 CREATE OR REPLACE VIEW public.v_warehouse_stock_with_qty
 WITH (security_invoker = true) AS
 SELECT
@@ -1742,6 +1807,179 @@ SELECT
          WHERE r.stock_id = s.id AND r.status IN ('pending', 'approved')
     ), 0) AS quantity_reserved
 FROM public.warehouse_stock s;
+
+
+-- ----- 3.x Marketplace (single-org internal trading) -------------------------
+-- An internal, single-org marketplace: members post listings (items + services,
+-- four directions sell/buy/offer/request), negotiate contracts through a
+-- lifecycle, optionally reserve/move real warehouse stock, and rate each other.
+-- DELIBERATELY single-org: NO organization_id, NO visibility tiers, NO *_org_id
+-- columns — the cross-org/platform marketplace of the multi-tenant SaaS is gone.
+-- Server-only tables (no realtime publication membership; deny-by-default RLS in
+-- §6); realtime rides the gated 'marketplace:update' broadcast. Categories are
+-- seeded by lib/db/seeder.ts (so a full-reset reseed restores them).
+
+CREATE TABLE IF NOT EXISTS public.marketplace_categories (
+    id           bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    slug         text NOT NULL UNIQUE,
+    name         text NOT NULL,
+    parent_id    bigint REFERENCES public.marketplace_categories(id) ON DELETE CASCADE,
+    listing_kind text NOT NULL DEFAULT 'both' CHECK (listing_kind IN ('item', 'service', 'both')),
+    icon         text,
+    sort_order   integer NOT NULL DEFAULT 0,
+    active       boolean NOT NULL DEFAULT true,
+    created_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_marketplace_categories_parent ON public.marketplace_categories(parent_id);
+
+CREATE TABLE IF NOT EXISTS public.marketplace_listings (
+    id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    seller_id        integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    kind             text NOT NULL CHECK (kind IN ('item', 'service')),
+    listing_type     text NOT NULL CHECK (listing_type IN ('sell', 'buy', 'offer', 'request')),
+    category_id      bigint REFERENCES public.marketplace_categories(id) ON DELETE SET NULL,
+    title            text NOT NULL,
+    description      text,
+    quantity         integer,
+    quantity_claimed integer NOT NULL DEFAULT 0,
+    price_uec        bigint,
+    price_type       text NOT NULL DEFAULT 'fixed' CHECK (price_type IN ('fixed', 'negotiable', 'per_unit', 'hourly')),
+    location         text,
+    tags             text[] NOT NULL DEFAULT '{}'::text[],
+    status           text NOT NULL DEFAULT 'active' CHECK (status IN ('draft', 'active', 'paused', 'closed', 'expired')),
+    expires_at       timestamptz,
+    -- Optional link to a real warehouse stock row (sell ⇒ source, buy ⇒ destination).
+    warehouse_stock_id bigint REFERENCES public.warehouse_stock(id) ON DELETE SET NULL,
+    created_at       timestamptz NOT NULL DEFAULT now(),
+    updated_at       timestamptz NOT NULL DEFAULT now(),
+    -- Items carry a positive quantity; services never do. Claimed never exceeds it.
+    CONSTRAINT marketplace_listings_qty_kind CHECK (
+        (kind = 'item' AND quantity IS NOT NULL AND quantity > 0)
+        OR (kind = 'service' AND quantity IS NULL)),
+    CONSTRAINT marketplace_listings_claimed_bounds CHECK (
+        quantity_claimed >= 0 AND (quantity IS NULL OR quantity_claimed <= quantity))
+);
+CREATE INDEX IF NOT EXISTS idx_marketplace_listings_browse ON public.marketplace_listings(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_marketplace_listings_seller ON public.marketplace_listings(seller_id);
+CREATE INDEX IF NOT EXISTS idx_marketplace_listings_category ON public.marketplace_listings(category_id);
+CREATE INDEX IF NOT EXISTS idx_marketplace_listings_wh_stock ON public.marketplace_listings(warehouse_stock_id)
+    WHERE warehouse_stock_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS public.marketplace_contracts (
+    id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    -- SET NULL (not CASCADE) so a deleted listing leaves the contract history intact.
+    listing_id       uuid REFERENCES public.marketplace_listings(id) ON DELETE SET NULL,
+    seller_id        integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    buyer_id         integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    kind             text NOT NULL CHECK (kind IN ('item', 'service')),
+    title            text NOT NULL,                 -- snapshot of listing.title
+    quantity         integer,                       -- snapshot; items only
+    agreed_price_uec bigint,
+    terms_note       varchar(250),
+    status           text NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed', 'accepted', 'in_progress', 'delivered', 'completed', 'cancelled')),
+    proposed_by_id   integer REFERENCES public.users(id) ON DELETE SET NULL,
+    cancel_reason    text,
+    -- Snapshot of the listing's warehouse link at accept time, so delivery/reversal
+    -- target the right stock even if the listing is later edited/deleted.
+    warehouse_stock_id bigint REFERENCES public.warehouse_stock(id) ON DELETE SET NULL,
+    proposed_at      timestamptz NOT NULL DEFAULT now(),
+    accepted_at      timestamptz,
+    delivered_at     timestamptz,
+    completed_at     timestamptz,
+    cancelled_at     timestamptz,
+    created_at       timestamptz NOT NULL DEFAULT now(),
+    updated_at       timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_marketplace_contracts_listing ON public.marketplace_contracts(listing_id);
+CREATE INDEX IF NOT EXISTS idx_marketplace_contracts_seller ON public.marketplace_contracts(seller_id, status);
+CREATE INDEX IF NOT EXISTS idx_marketplace_contracts_buyer ON public.marketplace_contracts(buyer_id, status);
+-- Backs the warehouse reserve subquery (active sell contracts against a stock row).
+CREATE INDEX IF NOT EXISTS idx_marketplace_contracts_wh_reserve ON public.marketplace_contracts(warehouse_stock_id, status)
+    WHERE warehouse_stock_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS public.marketplace_contract_milestones (
+    id              bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    contract_id     uuid NOT NULL REFERENCES public.marketplace_contracts(id) ON DELETE CASCADE,
+    title           text NOT NULL,
+    description     text,
+    sort_order      integer NOT NULL DEFAULT 0,
+    completed_at    timestamptz,
+    completed_by_id integer REFERENCES public.users(id) ON DELETE SET NULL,
+    created_at      timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_marketplace_milestones_contract ON public.marketplace_contract_milestones(contract_id);
+
+CREATE TABLE IF NOT EXISTS public.marketplace_ratings (
+    id          bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    contract_id uuid NOT NULL REFERENCES public.marketplace_contracts(id) ON DELETE CASCADE,
+    rater_id    integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    ratee_id    integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    rater_role  text NOT NULL CHECK (rater_role IN ('buyer', 'seller')),
+    stars       smallint NOT NULL CHECK (stars BETWEEN 1 AND 5),
+    feedback    text,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT marketplace_ratings_one_per_party UNIQUE (contract_id, rater_id)
+);
+CREATE INDEX IF NOT EXISTS idx_marketplace_ratings_ratee ON public.marketplace_ratings(ratee_id);
+
+CREATE TABLE IF NOT EXISTS public.marketplace_reports (
+    id              bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    listing_id      uuid REFERENCES public.marketplace_listings(id) ON DELETE CASCADE,
+    contract_id     uuid REFERENCES public.marketplace_contracts(id) ON DELETE CASCADE,
+    reporter_id     integer NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    reason_category text NOT NULL,
+    details         text,
+    status          text NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'reviewing', 'actioned', 'dismissed')),
+    reviewed_at     timestamptz,
+    reviewed_by_id  integer REFERENCES public.users(id) ON DELETE SET NULL,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT marketplace_reports_target CHECK (listing_id IS NOT NULL OR contract_id IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS idx_marketplace_reports_status ON public.marketplace_reports(status);
+
+-- Wire the deferred warehouse_movements → marketplace_contracts FK now that the
+-- table exists (mirrors the requests→movements deferral above). Add the column
+-- separately: on an existing DB the CREATE TABLE above is a no-op, so the column
+-- must be added here before the FK + index can reference it.
+ALTER TABLE public.warehouse_movements ADD COLUMN IF NOT EXISTS related_contract_id uuid;
+DO $$ BEGIN
+    ALTER TABLE public.warehouse_movements
+        ADD CONSTRAINT warehouse_movements_related_contract_id_fkey
+        FOREIGN KEY (related_contract_id) REFERENCES public.marketplace_contracts(id) ON DELETE SET NULL;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+CREATE INDEX IF NOT EXISTS idx_warehouse_movements_contract ON public.warehouse_movements(related_contract_id)
+    WHERE related_contract_id IS NOT NULL;
+
+-- Re-create the stock-quantity view to ALSO reserve against accepted/in-progress
+-- marketplace SELL contracts (a member selling from real stock holds it until the
+-- contract completes/cancels). Column list identical to the warehouse-section base.
+CREATE OR REPLACE VIEW public.v_warehouse_stock_with_qty
+WITH (security_invoker = true) AS
+SELECT
+    s.id,
+    s.catalog_id,
+    s.location_id,
+    s.notes,
+    s.created_at,
+    s.updated_at,
+    COALESCE((
+        SELECT SUM(m.delta)::integer FROM public.warehouse_movements m WHERE m.stock_id = s.id
+    ), 0) AS quantity_on_hand,
+    COALESCE((
+        SELECT SUM(r.requested_quantity)::integer FROM public.warehouse_requests r
+         WHERE r.stock_id = s.id AND r.status IN ('pending', 'approved')
+    ), 0)
+    + COALESCE((
+        SELECT SUM(c.quantity)::integer
+          FROM public.marketplace_contracts c
+          JOIN public.marketplace_listings l ON l.id = c.listing_id
+         WHERE c.warehouse_stock_id = s.id
+           AND c.status IN ('accepted', 'in_progress')
+           AND l.listing_type = 'sell'
+           AND c.quantity IS NOT NULL
+    ), 0) AS quantity_reserved
+FROM public.warehouse_stock s;
+
 
 -- Unified position-history view (HR + Government), read by getUserPositionHistory
 -- (lib/db/users.ts) via the gated user:get_position_history RPC. security_invoker
@@ -2289,6 +2527,174 @@ BEGIN
 END;
 $$;
 
+-- Marketplace fulfilment: post the warehouse movement for a delivered sell/buy
+-- contract. Idempotent + row-locked, same pattern as warehouse_fulfil_request:
+-- returns the EXISTING movement id on retry so a double-submit/replay can't
+-- double-move stock. sell ⇒ withdraw from the seller's stock (delta<0); buy ⇒
+-- restock the buyer's stock (delta>0). No-op return for service contracts or
+-- contracts with no warehouse link.
+CREATE OR REPLACE FUNCTION public.warehouse_marketplace_deliver(p_contract_id uuid, p_actor_id integer)
+RETURNS uuid LANGUAGE plpgsql SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_stock_id    bigint;
+    v_qty         integer;
+    v_listing_type text;
+    v_existing    uuid;
+    v_current     integer;
+    v_movement_id uuid;
+BEGIN
+    SELECT c.warehouse_stock_id, c.quantity, l.listing_type
+      INTO v_stock_id, v_qty, v_listing_type
+      FROM public.marketplace_contracts c
+      JOIN public.marketplace_listings l ON l.id = c.listing_id
+     WHERE c.id = p_contract_id;
+    IF v_stock_id IS NULL OR v_qty IS NULL THEN
+        RETURN NULL;  -- service contract or no warehouse link — nothing to move
+    END IF;
+
+    -- Idempotency: a prior delivery for this contract already posted a movement.
+    SELECT id INTO v_existing FROM public.warehouse_movements
+     WHERE related_contract_id = p_contract_id
+       AND reason IN ('withdraw_sale', 'restock')
+       AND related_movement_id IS NULL  -- exclude reversals
+     LIMIT 1;
+    IF v_existing IS NOT NULL THEN RETURN v_existing; END IF;
+
+    PERFORM 1 FROM public.warehouse_stock WHERE id = v_stock_id FOR UPDATE;
+
+    IF v_listing_type = 'sell' THEN
+        SELECT COALESCE(SUM(delta), 0) INTO v_current
+          FROM public.warehouse_movements WHERE stock_id = v_stock_id;
+        IF v_current < v_qty THEN
+            RAISE EXCEPTION 'WAREHOUSE_INSUFFICIENT_STOCK: have %, need %', v_current, v_qty;
+        END IF;
+        INSERT INTO public.warehouse_movements
+            (stock_id, delta, reason, actor_user_id, related_contract_id, notes)
+        VALUES (v_stock_id, -v_qty, 'withdraw_sale', p_actor_id, p_contract_id,
+                'Marketplace sale ' || p_contract_id::text)
+        RETURNING id INTO v_movement_id;
+    ELSE
+        INSERT INTO public.warehouse_movements
+            (stock_id, delta, reason, actor_user_id, related_contract_id, notes)
+        VALUES (v_stock_id, v_qty, 'restock', p_actor_id, p_contract_id,
+                'Marketplace purchase ' || p_contract_id::text)
+        RETURNING id INTO v_movement_id;
+    END IF;
+
+    UPDATE public.warehouse_stock SET updated_at = now() WHERE id = v_stock_id;
+    RETURN v_movement_id;
+END;
+$$;
+
+-- Marketplace reversal: compensating movement when a DELIVERED contract is later
+-- cancelled. Idempotent (returns existing reversal) + chained via
+-- related_movement_id to the original delivery movement.
+CREATE OR REPLACE FUNCTION public.warehouse_marketplace_reverse(p_contract_id uuid, p_actor_id integer, p_reason text)
+RETURNS uuid LANGUAGE plpgsql SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_orig     uuid;
+    v_stock_id bigint;
+    v_delta    integer;
+    v_existing uuid;
+    v_rev_id   uuid;
+BEGIN
+    -- The original delivery movement for this contract.
+    SELECT id, stock_id, delta INTO v_orig, v_stock_id, v_delta
+      FROM public.warehouse_movements
+     WHERE related_contract_id = p_contract_id
+       AND reason IN ('withdraw_sale', 'restock')
+       AND related_movement_id IS NULL
+     LIMIT 1;
+    IF v_orig IS NULL THEN RETURN NULL; END IF;  -- nothing was delivered
+
+    -- Idempotency: reversal already posted.
+    SELECT id INTO v_existing FROM public.warehouse_movements
+     WHERE related_movement_id = v_orig LIMIT 1;
+    IF v_existing IS NOT NULL THEN RETURN v_existing; END IF;
+
+    PERFORM 1 FROM public.warehouse_stock WHERE id = v_stock_id FOR UPDATE;
+    INSERT INTO public.warehouse_movements
+        (stock_id, delta, reason, actor_user_id, related_contract_id, related_movement_id, notes)
+    VALUES (v_stock_id, -v_delta, 'adjust', p_actor_id, p_contract_id, v_orig,
+            COALESCE(p_reason, 'Marketplace contract reversal'))
+    RETURNING id INTO v_rev_id;
+
+    UPDATE public.warehouse_stock SET updated_at = now() WHERE id = v_stock_id;
+    RETURN v_rev_id;
+END;
+$$;
+
+-- Marketplace accept: the ENTIRE accept transition done atomically in one
+-- transaction (PostgREST has none), closing the read-modify-write races a
+-- two-statement accept would otherwise hit. Locks the contract FOR UPDATE,
+-- re-checks the caller is the non-proposer party AND the contract is still
+-- 'proposed' (so a double-accept of the SAME contract finds it already accepted
+-- and does NOT reserve twice), snapshots the sell listing's warehouse link,
+-- reserves the listing only if it stays within quantity (auto-closing when
+-- fully claimed), then flips the contract to accepted. Returns:
+--   'ok' | 'forbidden' (not the non-proposer) | 'bad_state' (not proposed) |
+--   'full' (would over-claim the listing).
+CREATE OR REPLACE FUNCTION public.marketplace_accept_contract(p_contract_id uuid, p_actor_id integer)
+RETURNS text LANGUAGE plpgsql SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_status text; v_seller integer; v_buyer integer; v_proposer integer;
+    v_kind text; v_qty integer; v_listing uuid; v_ltype text; v_wh bigint;
+    v_nonproposer integer; v_reserved boolean;
+BEGIN
+    SELECT status, seller_id, buyer_id, proposed_by_id, kind, quantity, listing_id
+      INTO v_status, v_seller, v_buyer, v_proposer, v_kind, v_qty, v_listing
+      FROM public.marketplace_contracts WHERE id = p_contract_id FOR UPDATE;
+    IF v_status IS NULL THEN RETURN 'forbidden'; END IF;
+    v_nonproposer := CASE WHEN v_proposer = v_seller THEN v_buyer ELSE v_seller END;
+    IF p_actor_id <> v_nonproposer THEN RETURN 'forbidden'; END IF;
+    IF v_status <> 'proposed' THEN RETURN 'bad_state'; END IF;
+
+    IF v_kind = 'item' AND v_listing IS NOT NULL THEN
+        SELECT listing_type, warehouse_stock_id INTO v_ltype, v_wh
+          FROM public.marketplace_listings WHERE id = v_listing;
+        IF v_ltype IS DISTINCT FROM 'sell' THEN v_wh := NULL; END IF;
+        IF v_qty IS NOT NULL THEN
+            UPDATE public.marketplace_listings
+               SET quantity_claimed = quantity_claimed + v_qty,
+                   status = CASE WHEN quantity IS NOT NULL AND quantity_claimed + v_qty >= quantity THEN 'closed' ELSE status END,
+                   updated_at = now()
+             WHERE id = v_listing AND quantity IS NOT NULL AND quantity_claimed + v_qty <= quantity
+            RETURNING true INTO v_reserved;
+            IF NOT COALESCE(v_reserved, false) THEN RETURN 'full'; END IF;
+        END IF;
+    ELSE
+        v_wh := NULL;
+    END IF;
+
+    UPDATE public.marketplace_contracts
+       SET status = 'accepted', accepted_at = now(), warehouse_stock_id = v_wh, updated_at = now()
+     WHERE id = p_contract_id AND status = 'proposed';
+    RETURN 'ok';
+END;
+$$;
+
+-- Marketplace release: atomically return p_qty to a listing on contract cancel,
+-- re-opening it if it had auto-closed and is not expired. GREATEST(0, …) floors
+-- the claim so a double-cancel can't drive it negative.
+CREATE OR REPLACE FUNCTION public.marketplace_release_listing(p_listing_id uuid, p_qty integer)
+RETURNS void LANGUAGE plpgsql SET search_path = public, pg_temp
+AS $$
+BEGIN
+    UPDATE public.marketplace_listings
+       SET quantity_claimed = GREATEST(0, quantity_claimed - p_qty),
+           status = CASE
+               WHEN status = 'closed'
+                    AND (quantity IS NULL OR GREATEST(0, quantity_claimed - p_qty) < quantity)
+                    AND (expires_at IS NULL OR expires_at > now())
+               THEN 'active' ELSE status END,
+           updated_at = now()
+     WHERE id = p_listing_id;
+END;
+$$;
+
 -- DE-ORG'd: cross-org guard removed (single org); still checks same commodity.
 CREATE OR REPLACE FUNCTION public.warehouse_transfer_stock(
     p_from_stock_id bigint, p_to_stock_id bigint, p_quantity integer, p_actor_id integer, p_notes text
@@ -2472,25 +2878,25 @@ GRANT EXECUTE ON FUNCTION public.warehouse_adjust_stock(bigint, integer, text, i
 GRANT EXECUTE ON FUNCTION public.warehouse_fulfil_request(uuid, integer) TO service_role;
 GRANT EXECUTE ON FUNCTION public.warehouse_transfer_stock(bigint, bigint, integer, integer, text) TO service_role;
 GRANT EXECUTE ON FUNCTION public.warehouse_overview_stats() TO service_role;
+GRANT EXECUTE ON FUNCTION public.warehouse_marketplace_deliver(uuid, integer) TO service_role;
+GRANT EXECUTE ON FUNCTION public.warehouse_marketplace_reverse(uuid, integer, text) TO service_role;
+GRANT EXECUTE ON FUNCTION public.marketplace_accept_contract(uuid, integer) TO service_role;
+GRANT EXECUTE ON FUNCTION public.marketplace_release_listing(uuid, integer) TO service_role;
+GRANT EXECUTE ON FUNCTION public.admin_truncate_all_data() TO service_role;
 
--- SECURITY: PostgreSQL grants EXECUTE on every function to PUBLIC by default.
--- Via PostgREST (/rest/v1/rpc/<fn>) with the public anon key, that would let an
--- UNAUTHENTICATED caller invoke the SECURITY DEFINER functions above
--- (admin_adjust_reputation, finance_*, qm_*, warehouse_*, add_uec_to_operation,
--- public_stats_for_org, …) and bypass ALL app-level authorization — these
--- functions trust their caller (the Express server calls them under the
--- service-role key AFTER its own permission checks). Revoke the implicit PUBLIC
--- (and anon) grant; the explicit service_role grant (GRANT ALL ON ALL FUNCTIONS
--- above) plus the per-function service_role grants are the allowlist (no function
--- is granted to `authenticated` — every caller runs server-side under service_role).
+-- PostgreSQL grants EXECUTE on every function to PUBLIC by default, which via
+-- PostgREST (/rest/v1/rpc/<fn>) would let an unauthenticated caller invoke the
+-- SECURITY DEFINER functions above and bypass app-level authorization (these
+-- functions trust their caller — the server calls them under the service-role
+-- key after its own permission checks). Revoke the implicit PUBLIC + anon grant;
+-- the explicit service_role grants are the allowlist (no function is granted to
+-- `authenticated` — every caller runs server-side under service_role).
 REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;
 REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM anon;
--- CRITICAL on Supabase: its bootstrap runs ALTER DEFAULT PRIVILEGES granting
--- EXECUTE on every new function to anon + authenticated EXPLICITLY — so the
--- FROM PUBLIC revoke alone does NOT remove the `authenticated` grant, and a
--- signed-in member could still call these SECURITY DEFINER RPCs directly via
--- /rest/v1/rpc, bypassing the server's permission gate (Supabase lint 0029).
--- Revoke from authenticated too; no function is meant to be PostgREST-callable.
+-- On Supabase, its bootstrap runs ALTER DEFAULT PRIVILEGES granting EXECUTE on
+-- every new function to anon + authenticated explicitly, so the FROM PUBLIC
+-- revoke alone does NOT remove the `authenticated` grant. Revoke from
+-- authenticated too; no function is meant to be PostgREST-callable.
 REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM authenticated;
 -- And for any function added to the schema later in this apply.
 ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC, anon, authenticated;
@@ -2499,7 +2905,7 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLI
 -- =============================================================================
 -- SECTION 6 — Row Level Security (single-org, deny-by-default)
 -- =============================================================================
--- Strategy (per spec §4): enable RLS on every table; service_role bypasses RLS
+-- Strategy: enable RLS on every table; service_role bypasses RLS
 -- (all app reads/writes go through the server). The ONLY non-service-role direct
 -- client is the realtime subscriber (anon/publishable key carrying a logged-in
 -- Supabase Auth session = role `authenticated`). It needs SELECT on the tables
@@ -2612,19 +3018,16 @@ CREATE PUBLICATION supabase_realtime FOR TABLE
 -- -----------------------------------------------------------------------------
 -- SECTION 6b — Realtime Authorization (private broadcast channels)
 -- -----------------------------------------------------------------------------
--- SECURITY: every app broadcast channel ('db-changes', 'auth-alerts',
--- 'op-board-{uuid}') is created with { config: { private: true } } on BOTH the
--- server (lib/db/common.ts) and every client subscriber. Private channels are
+-- Every app broadcast channel ('db-changes', 'auth-alerts', 'op-board-{uuid}')
+-- is created with { config: { private: true } } on BOTH the server
+-- (lib/db/common.ts) and every client subscriber. Private channels are
 -- authorized by these RLS policies on realtime.messages, evaluated against the
 -- JWT the client passed to realtime.setAuth(). The server mints that JWT
 -- (lib/auth.ts signRealtimeToken, signed with SUPABASE_JWT_SECRET) with
--- role='authenticated' and a `user_id` integer claim.
---
--- Effect: the public anon key alone can NO LONGER subscribe to any broadcast
--- channel — previously any anon-key holder (including logged-out visitors)
--- could harvest org event metadata, and the EAM / op-alert / tactical-board
--- channels carried actual content. Clients never SEND broadcasts (no INSERT
--- policy → denied); the service-role server bypasses RLS for sends.
+-- role='authenticated' and a `user_id` integer claim. The public anon key alone
+-- can no longer subscribe to any broadcast channel. Clients never SEND
+-- broadcasts (no INSERT policy → denied); the service-role server bypasses RLS
+-- for sends.
 
 -- Org-wide channels: any authenticated, non-deleted member may receive
 -- (payloads are id-only by design; content rides permission-gated fetches).
@@ -2808,7 +3211,11 @@ INSERT INTO public.permissions (name, description, category) VALUES
     ('warehouse:view', 'View Org Warehouse', 'Warehouse'),
     ('warehouse:request', 'Request Withdrawal of Bulk Stock', 'Warehouse'),
     ('warehouse:manage', 'Manage Stock, Transfers & Withdrawals', 'Warehouse'),
-    ('warehouse:admin', 'Configure Commodity Catalog', 'Warehouse')
+    ('warehouse:admin', 'Configure Commodity Catalog', 'Warehouse'),
+    ('marketplace:view', 'Browse the Marketplace', 'Marketplace'),
+    ('marketplace:list', 'Post & Manage Own Listings', 'Marketplace'),
+    ('marketplace:contract', 'Propose & Fulfil Contracts', 'Marketplace'),
+    ('marketplace:admin', 'Moderate Marketplace & Reports', 'Marketplace')
 ON CONFLICT (name) DO NOTHING;
 
 
@@ -2822,6 +3229,19 @@ ON CONFLICT (name) DO NOTHING;
 -- the sync job (or a manual UEX import) will populate it on first run.
 -- platform_locations / quartermaster_platform_categories /
 -- warehouse_platform_* are likewise empty until the UEX sync runs.
+
+-- =============================================================================
+-- SECTION 9 — Schema version stamp (KEEP LAST)
+-- =============================================================================
+-- Records the schema version this run applied. The app reads settings.schema_version
+-- to tell whether a deployment's DB is behind the code (a future self-update flow
+-- surfaces "re-run schema.sql"). Placed LAST so the stamp only lands if the whole
+-- script ran without aborting. settings.value is jsonb → store the version as a
+-- JSON string. BUMP this whenever you change the schema (see AMENDMENT RULES at top);
+-- keep it aligned with the app version where practical.
+INSERT INTO public.settings (key, value)
+VALUES ('schema_version', '"15.1.0-open"'::jsonb)
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
 
 -- Refresh PostgREST schema cache.
 NOTIFY pgrst, 'reload schema';

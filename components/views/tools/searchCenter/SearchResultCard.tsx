@@ -43,19 +43,16 @@ const SearchResultCard: React.FC<Props> = ({
             }`}
             style={{ height: SEARCH_ROW_HEIGHT }}
         >
-            {/* accent rail */}
             <div
                 className={`absolute inset-y-0 left-0 w-1 ${a.dot} ${pulseRail ? 'animate-pulse' : ''}`}
                 aria-hidden
             />
 
-            {/* hover orb */}
             <div
                 className={`absolute -top-16 -left-8 w-44 h-44 ${a.bg} rounded-full blur-[80px] opacity-0 group-hover:opacity-50 pointer-events-none transition-opacity duration-300`}
                 aria-hidden
             />
 
-            {/* icon tile or avatar */}
             {avatarUrl ? (
                 <img
                     src={avatarUrl}
@@ -70,7 +67,6 @@ const SearchResultCard: React.FC<Props> = ({
                 </div>
             )}
 
-            {/* row body — grow column, child renders title row + meta row */}
             <div className="relative flex-1 min-w-0 flex flex-col justify-center gap-1">
                 {children}
             </div>

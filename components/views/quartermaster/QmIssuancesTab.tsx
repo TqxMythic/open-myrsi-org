@@ -44,7 +44,6 @@ export default function QmIssuancesTab({
     const [expandedMemberId, setExpandedMemberId] = useState<number | null>(null);
     const [memberSearch, setMemberSearch] = useState('');
 
-    // -- Ledger mode --------------------------------------------------------
     const ledgerSorted = useMemo(() => {
         const filtered = issuances.filter((iss) => {
             if (filter === 'all') return true;
@@ -67,7 +66,6 @@ export default function QmIssuancesTab({
         });
     }, [issuances, filter]);
 
-    // -- By-Member mode -----------------------------------------------------
     // Records come from the server (qm:list_member_records) — open issuances
     // aren't capped like the ledger, so no client-side grouping needed.
     const filteredRecords = useMemo(() => {
@@ -81,7 +79,6 @@ export default function QmIssuancesTab({
 
     return (
         <div className="space-y-4">
-            {/* View-mode toggle + filter row */}
             <div className="flex flex-wrap items-center gap-3">
                 <div className="flex items-center gap-1 bg-slate-900 rounded-lg border border-white/10 p-1">
                     <button
@@ -141,7 +138,6 @@ export default function QmIssuancesTab({
                 )}
             </div>
 
-            {/* Ledger view */}
             {viewMode === 'ledger' && (
                 ledgerSorted.length === 0 ? (
                     <div className="rounded-xl border border-white/5 bg-slate-900/30 p-10 text-center text-slate-500 text-sm">
@@ -162,7 +158,6 @@ export default function QmIssuancesTab({
                 )
             )}
 
-            {/* By-Member view */}
             {viewMode === 'byMember' && (
                 filteredRecords.length === 0 ? (
                     <div className="rounded-xl border border-white/5 bg-slate-900/30 p-10 text-center text-slate-500 text-sm">

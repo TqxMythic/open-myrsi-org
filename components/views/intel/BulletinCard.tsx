@@ -95,17 +95,14 @@ const BulletinCard: React.FC<BulletinCardProps> = ({ bulletin, onDelete, isDelet
             onClick={() => onClick?.(bulletin)}
             className={`group relative flex flex-col rounded-xl overflow-hidden border border-white/10 bg-linear-to-br from-slate-900/80 via-slate-900/60 to-slate-950/80 backdrop-blur-xs shadow-lg transition-all duration-300 ${onClick ? 'cursor-pointer hover:border-white/20 hover:shadow-xl' : ''} ${isDeleting ? 'opacity-50 pointer-events-none' : ''}`}
         >
-            {/* threat-accent rail */}
             <div className={`absolute inset-y-0 left-0 w-1 ${a.dot} ${isAlarm ? 'animate-pulse' : ''}`} aria-hidden />
 
-            {/* hover orb */}
             <div
                 className={`absolute -top-20 -left-10 w-56 h-56 ${a.bg} rounded-full blur-[90px] opacity-0 group-hover:opacity-60 pointer-events-none transition-opacity duration-500`}
                 aria-hidden
             />
 
             <div className="relative pl-4 pr-3 py-3 flex flex-col gap-2.5">
-                {/* Header: threat + origin pills + title */}
                 <div className="flex items-start justify-between gap-2">
                     <div className="flex items-center gap-1.5 flex-wrap min-w-0">
                         <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-sm border font-black text-[9px] uppercase tracking-widest ${a.bg} ${a.border} ${a.text} ${isAlarm ? 'animate-pulse' : ''}`}>
@@ -153,10 +150,8 @@ const BulletinCard: React.FC<BulletinCardProps> = ({ bulletin, onDelete, isDelet
                     )}
                 </div>
 
-                {/* Body */}
                 <p className="text-xs text-slate-300 font-mono leading-relaxed line-clamp-3">{safe(bulletin.body)}</p>
 
-                {/* Classification + markers */}
                 <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-mono">
                     <span className="text-slate-600 uppercase font-black tracking-widest">CLR</span>
                     <span className="px-1.5 py-0.5 rounded-sm bg-slate-900/60 text-slate-300 border border-white/10 uppercase font-black tracking-wider">
@@ -179,7 +174,6 @@ const BulletinCard: React.FC<BulletinCardProps> = ({ bulletin, onDelete, isDelet
                 </div>
             </div>
 
-            {/* Footer */}
             <div className="relative pl-4 pr-3 py-2 bg-slate-950/40 border-t border-white/5 flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2 text-[10px] font-mono text-slate-500 uppercase tracking-widest min-w-0">
                     <span className="truncate">{isFromAlly ? safe(bulletin.sourceOrganizationName, 'Allied Org') : safe(bulletin.createdByUser?.name, 'Unknown')}</span>

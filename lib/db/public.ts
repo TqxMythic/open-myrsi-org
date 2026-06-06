@@ -2,6 +2,8 @@ import { supabase, handleSupabaseError } from './common.js';
 import { getAllSettings } from './system.js';
 import { opaqueId } from '../publicId.js';
 import { tryParseTiptapJson, tiptapJsonToSafeHtml, isEmptyTiptapDoc } from '../tiptapValidate.js';
+import { sanitizePublicLinkUrl } from '../linkUrl.js';
+import { sanitizeImageUrl } from '../imageUrl.js';
 import type { Tables } from './rows.js';
 
 // Rows as selected from service_requests for the public/admin testimonial paths.
@@ -22,8 +24,8 @@ interface PublicPageResponse {
     // still display this verbatim with whitespace-pre-line. New clients prefer
     // blurbHtml when present.
     blurb: string;
-    // #14: Sanitized HTML rendering of the Tiptap-JSON blurb. Empty string when
-    // the stored blurb is plain text or absent. Safe to mount via
+    // Sanitized HTML rendering of the Tiptap-JSON blurb. Empty string when the
+    // stored blurb is plain text or absent. Safe to mount via
     // dangerouslySetInnerHTML — emitted by the JSON-to-safe-HTML walker.
     blurbHtml: string;
     heroImageUrl: string;
@@ -45,12 +47,11 @@ export async function getPublicPageData(slug: string): Promise<PublicPageRespons
 
     const branding = settings.brandingConfig || {};
 
-    // #14: Convert Tiptap-JSON blurb to safe HTML server-side. The walker
-    // emits only allowlisted tags (p/h2/h3/ul/ol/li/strong/em/br/a) and
-    // HTML-escapes all text — XSS-safe by construction. Anonymous client
-    // mounts the HTML via dangerouslySetInnerHTML. An empty doc (cleared
-    // editor saves `{doc:[paragraph]}`) is suppressed so the "About" card
-    // is hidden by the client's `(blurb || blurbHtml)` truthy check.
+    // Convert Tiptap-JSON blurb to safe HTML server-side. The walker emits only
+    // allowlisted tags (p/h2/h3/ul/ol/li/strong/em/br/a) and HTML-escapes all
+    // text — XSS-safe by construction. An empty doc (cleared editor saves
+    // `{doc:[paragraph]}`) is suppressed so the "About" card is hidden by the
+    // client's `(blurb || blurbHtml)` truthy check.
     const rawBlurb = typeof cfg.blurb === 'string' ? cfg.blurb : '';
     const parsedBlurb = tryParseTiptapJson(rawBlurb);
     const blurbIsEmpty = parsedBlurb
@@ -70,8 +71,12 @@ export async function getPublicPageData(slug: string): Promise<PublicPageRespons
         // or when the doc is empty.
         blurb: parsedBlurb || blurbIsEmpty ? '' : rawBlurb,
         blurbHtml,
-        heroImageUrl: typeof cfg.heroImageUrl === 'string' ? cfg.heroImageUrl : '',
-        profileImageUrl: typeof cfg.profileImageUrl === 'string' ? cfg.profileImageUrl : '',
+        // Re-validate URLs on the READ/SSR projection, not only at the write gate,
+        // so a legacy row or a drifted gate can't surface a javascript:/data:/
+        // private-host URL on the unauthenticated public page. sanitizeImageUrl →
+        // '' on reject; sanitizePublicLinkUrl → drops the link.
+        heroImageUrl: sanitizeImageUrl(cfg.heroImageUrl) || '',
+        profileImageUrl: sanitizeImageUrl(cfg.profileImageUrl) || '',
         modules: {
             stats: !!cfg.modules?.stats,
             testimonials: !!cfg.modules?.testimonials,
@@ -85,11 +90,15 @@ export async function getPublicPageData(slug: string): Promise<PublicPageRespons
                 // here (and rejected by the save validator), so configured links
                 // vanished from the public page. Synthesize a stable render key below.
                 .filter((l) => l && typeof l.label === 'string' && typeof l.url === 'string')
+                // Re-validate the scheme/host on read — drop any link whose URL
+                // doesn't pass the same validator the write gate uses.
+                .map((l) => ({ l, safeUrl: sanitizePublicLinkUrl(l.url) }))
+                .filter((x): x is { l: typeof x.l; safeUrl: string } => !!x.safeUrl)
                 .slice(0, 10)
-                .map((l, i) => ({
+                .map(({ l, safeUrl }, i) => ({
                     id: (typeof l.id === 'string' && l.id) ? (l.id as string) : `link-${i}`,
                     label: l.label as string,
-                    url: l.url as string,
+                    url: safeUrl,
                     ...(typeof l.icon === 'string' && l.icon ? { icon: l.icon } : {}),
                 }))
             : [],

@@ -18,14 +18,12 @@ export default function QmCatalogTab({ catalog, canAdmin, onRefresh }: Props) {
     const { rpcAction } = useData();
     const { addToast, confirm } = useNotification();
 
-    // --- header / create state -----------------------------------------------
     const [showAddForm, setShowAddForm] = useState(false);
     const [newName, setNewName] = useState('');
     const [newCategory, setNewCategory] = useState<QmCatalogCategory>('weapon');
     const [newSubcategory, setNewSubcategory] = useState('');
     const [submitting, setSubmitting] = useState(false);
 
-    // --- search / scope state ------------------------------------------------
     const [search, setSearch] = useState('');
     const [includePlatform, setIncludePlatform] = useState(false);
     const debouncedSearch = useDebouncedValue(search.trim(), 300);
@@ -61,7 +59,6 @@ export default function QmCatalogTab({ catalog, canAdmin, onRefresh }: Props) {
             });
     }, [debouncedSearch, includePlatform, rpcAction]);
 
-    // --- derived rows --------------------------------------------------------
     const customFiltered = useMemo(() => {
         const q = debouncedSearch.toLowerCase();
         const rows = q
@@ -74,7 +71,6 @@ export default function QmCatalogTab({ catalog, canAdmin, onRefresh }: Props) {
         });
     }, [catalog, debouncedSearch]);
 
-    // --- handlers ------------------------------------------------------------
     const createItem = async () => {
         if (!newName.trim() || submitting) return;
         setSubmitting(true);
@@ -113,12 +109,10 @@ export default function QmCatalogTab({ catalog, canAdmin, onRefresh }: Props) {
         }
     };
 
-    // --- render --------------------------------------------------------------
     const customCount = catalog.length;
 
     return (
         <div className="space-y-4">
-            {/* Header */}
             <div className="flex items-center justify-between gap-3 flex-wrap">
                 <div>
                     <h2 className="text-sm font-bold text-white uppercase tracking-widest">Catalog</h2>
@@ -136,7 +130,6 @@ export default function QmCatalogTab({ catalog, canAdmin, onRefresh }: Props) {
                 )}
             </div>
 
-            {/* Add Form */}
             {showAddForm && canAdmin && (
                 <div className="rounded-xl border border-white/10 bg-slate-900/40 p-4 space-y-3">
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -178,7 +171,6 @@ export default function QmCatalogTab({ catalog, canAdmin, onRefresh }: Props) {
                 </div>
             )}
 
-            {/* Search bar */}
             <div className="rounded-xl border border-white/10 bg-slate-900/30 p-3 flex flex-col sm:flex-row sm:items-center gap-3">
                 <div className="relative flex-1">
                     <input
@@ -201,7 +193,6 @@ export default function QmCatalogTab({ catalog, canAdmin, onRefresh }: Props) {
                 </label>
             </div>
 
-            {/* Custom rows table */}
             {catalog.length === 0 && !debouncedSearch ? (
                 <div className="rounded-xl border border-white/5 bg-slate-900/30 p-10 text-center text-slate-500 text-sm">
                     No org-custom catalog items yet. {canAdmin && 'Click "New Item" to add one, or use the search above with "Include platform catalog" to browse the platform-wide catalog.'}
@@ -255,7 +246,6 @@ export default function QmCatalogTab({ catalog, canAdmin, onRefresh }: Props) {
                         </tbody>
                     </table>
 
-                    {/* Platform results — appended below the custom table when opt-in is on */}
                     {includePlatform && debouncedSearch && (
                         <>
                             <div className="px-3 py-2 bg-black/20 border-t border-white/5 text-[10px] font-mono uppercase tracking-widest text-slate-500 flex items-center gap-2">

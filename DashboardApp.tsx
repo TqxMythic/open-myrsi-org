@@ -141,6 +141,7 @@ const GovernmentView = lazyWithRetry(() => import('./components/views/government
 const FinancesView = lazyWithRetry(() => import('./components/views/finances/FinancesView'));
 const QuartermasterView = lazyWithRetry(() => import('./components/views/quartermaster/QuartermasterView'));
 const WarehouseView = lazyWithRetry(() => import('./components/views/warehouse/WarehouseView'));
+const MarketplaceView = lazyWithRetry(() => import('./components/views/marketplace/MarketplaceView'));
 
 const LoadingFallback = () => (
     <div className="flex items-center justify-center h-64">
@@ -301,7 +302,7 @@ const AppContent: React.FC = () => {
         viewingMember,
     } = useUI();
 
-    // 1. Initialize Supabase Client with Config from API
+    // Initialize Supabase client with config from the API.
     useEffect(() => {
         if (config?.supabaseUrl && config?.supabaseAnonKey) {
             initializeSupabase(config.supabaseUrl, config.supabaseAnonKey);
@@ -446,6 +447,7 @@ const AppContent: React.FC = () => {
             case 'finances': return <FinancesView />;
             case 'quartermaster': return <QuartermasterView />;
             case 'warehouse': return <WarehouseView />;
+            case 'marketplace': return <MarketplaceView />;
             case 'help': return <HelpView />;
             case 'tos': return <TermsOfServiceView onBack={() => setActiveView('help')} />;
             case 'changelog': return <ChangeLogView onBack={() => setActiveView('help')} />;
@@ -462,19 +464,17 @@ const AppContent: React.FC = () => {
     };
 
     // Surface "first time loading may take a moment" helper text if the splash
-    // has been up for more than 4s — real signal that something's slow, not a
-    // fake progress animation.
+    // has been up for more than 4s.
     useEffect(() => {
         const timer = setTimeout(() => setShowExtendedWait(true), 4000);
         return () => clearTimeout(timer);
     }, []);
 
     // One stable splash element, reused by both the boot gate and the wizard's
-    // Suspense fallback. React sees the same element type+props across these
-    // boundaries and never remounts BootSplash, so the logo stays painted
-    // instead of re-fading from the spinner on each phase change. The icon is
-    // passed straight through — no spinner downgrade for the default logo
-    // (BootSplash falls back to window.__BRANDING__ for an instant branded paint).
+    // Suspense fallback. Same element type+props means BootSplash is never
+    // remounted across phase changes, so the logo stays painted instead of
+    // re-fading. BootSplash falls back to window.__BRANDING__ for an instant
+    // branded paint.
     const splash = (
         <BootSplash
             branding={{ name: brandingConfig?.name, iconUrl: brandingConfig?.iconUrl }}
@@ -519,11 +519,10 @@ const AppContent: React.FC = () => {
                         <div className="w-2 h-2 bg-amber-500 rounded-full animate-pulse"></div>
                         <span>System Offline</span>
                     </div>
-                    {/* Admin escape hatch: an admin who isn't signed in (new browser,
-                        cleared/expired token) would otherwise be locked out by this
-                        screen with no way to authenticate. Maintenance mode is still
-                        enforced server-side (services.ts/query.ts re-check role===Admin),
-                        so a non-admin who signs in here just lands back on this screen. */}
+                    {/* Admin escape hatch: lets a signed-out admin authenticate from
+                        the maintenance screen. Maintenance mode is still enforced
+                        server-side (services.ts/query.ts re-check role===Admin), so a
+                        non-admin who signs in here just lands back on this screen. */}
                     <button
                         onClick={handleLogin}
                         className="mt-10 inline-flex items-center gap-2 text-[11px] font-mono uppercase tracking-widest text-slate-600 hover:text-amber-400 transition-colors"
@@ -533,7 +532,7 @@ const AppContent: React.FC = () => {
                     </button>
                 </div>
                 <div className="absolute bottom-8 text-[10px] text-slate-600 font-mono uppercase tracking-[0.3em]">
-                    {brandingConfig?.name || 'Operations'} {'//'} Termlink v15.0.0-open
+                    {brandingConfig?.name || 'Operations'} {'//'} Termlink v15.1.0-open
                 </div>
             </div>
         );
@@ -589,9 +588,8 @@ const AppContent: React.FC = () => {
 
             <div className="fixed top-24 right-6 z-200 flex flex-col space-y-3 pointer-events-none">
                 {toasts.map(toast => {
-                    // Variant tokens. Stripe uses the solid 500 colour for visibility
-                    // against the dark slate base; icon/accent text uses the lighter
-                    // 400 token to avoid washing out on the slate-950/80 surface.
+                    // Variant tokens: solid 500 stripe for contrast on the dark base,
+                    // lighter 400 for icon/accent text.
                     const VARIANT_STRIPE: Record<string, string> = {
                         success: 'bg-emerald-500',
                         error: 'bg-red-500',
@@ -777,7 +775,7 @@ const AppContent: React.FC = () => {
     );
 }
 
-const fullScreenViews = ['admin', 'applicant-detail', 'security-vetting', 'case-file-detail', 'search', 'internal-transfer-detail', 'internal-job-detail', 'intel', 'member-record', 'operation-detail', 'mirrored-operation-detail', 'operations', 'request-detail', 'dispatch', 'wiki', 'government', 'finances', 'quartermaster', 'warehouse', 'requests', 'warrants', 'roster', 'leaderboard', 'external-tools', 'radio-control', 'profile', 'help', 'tos', 'changelog', 'hr', 'fleet', 'org-chart', 'unit-detail'];
+const fullScreenViews = ['admin', 'applicant-detail', 'security-vetting', 'case-file-detail', 'search', 'internal-transfer-detail', 'internal-job-detail', 'intel', 'member-record', 'operation-detail', 'mirrored-operation-detail', 'operations', 'request-detail', 'dispatch', 'wiki', 'government', 'finances', 'quartermaster', 'warehouse', 'marketplace', 'alliances', 'requests', 'warrants', 'roster', 'leaderboard', 'external-tools', 'radio-control', 'profile', 'help', 'tos', 'changelog', 'hr', 'fleet', 'org-chart', 'unit-detail'];
 
 const OperationDetailViewWrapper = () => {
     const { selectedOperation, setActiveView } = useUI();

@@ -8,7 +8,6 @@ import { ApplicationStatus, JobPostingStatus } from '../../../types';
 import HeroShell from '../../shared/ui/HeroShell';
 import HeroStat from '../../shared/ui/HeroStat';
 
-// Import HR Components
 import OverviewTab from './OverviewTab';
 import GazetteTab from './GazetteTab';
 import MyApplicationsTab from './MyApplicationsTab';
@@ -30,7 +29,6 @@ import HRClientRegisterTab from './HRClientRegisterTab';
 import MyUnitView from './MyUnitView';
 import ProbationTab from './ProbationTab';
 
-// Import admin components used in HR views
 import AdminJobsTab from '../admin/AdminJobsTab';
 import AdminTemplatesTab from '../admin/AdminTemplatesTab';
 
@@ -84,12 +82,11 @@ const HRHubView: React.FC = () => {
     // the detail-view drill-in even when the user is already on that tab.
     const [managingMemberId, setManagingMemberId] = useState<number | null>(null);
     // Lifted from HRClientRegisterTab so the "Client Register" nav item can
-    // reset the drill-in (#9). Same pattern as managingMemberId for #19.
+    // reset the drill-in. Same pattern as managingMemberId.
     const [managingClientId, setManagingClientId] = useState<number | null>(null);
 
-    // Wraps tab navigation so clicking "Manage Members" always lands the user
-    // on the roster, even if they were drilled into a member detail. Other
-    // tabs unchanged — only this surface had the in-tab drill-down state.
+    // Wraps tab navigation so clicking "Manage Members" / "Client Register"
+    // always lands on the list, even when drilled into a detail view.
     const handleNavTo = (tab: HRTab) => {
         if (tab === 'manage-members') setManagingMemberId(null);
         if (tab === 'client-register') setManagingClientId(null);
